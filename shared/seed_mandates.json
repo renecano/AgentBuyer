@@ -3,10 +3,10 @@
     "mandate_id": "mnd_marta_001",
     "human": {
       "id": "hum_marta",
-      "name": "Marta",
-      "display_name": "Marta",
-      "id_document": "PASSPORT-AR-948291",
-      "phone": "+525614473083"
+      "name": "Test User",
+      "display_name": "Test User",
+      "id_document": "XXXXXX",
+      "phone": "+520000000000"
     },
     "agent": {
       "id": "agt_saturday",
@@ -22,7 +22,7 @@
     "monthly_limit": 500.0,
     "currency": "USD",
     "passengers": [
-      "PASSPORT-AR-948291"
+      "XXXXXX"
     ],
     "cabin": [
       "ECONOMY"
@@ -65,9 +65,9 @@
       "passkey_verified": true,
       "liveness_verified": true,
       "possession_verified": true,
-      "sms_code": "849201",
-      "enrolled_phone": "5614473083"
+      "sms_code": "000000",
+      "enrolled_phone": "0000000000"
     },
-    "signature": "firma-ed25519-valida-autenticada"
+    "signature": "test-signature-placeholder"
   }
 ]

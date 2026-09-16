@@ -12,7 +12,9 @@ from mandate.issue import emitir_mandato
 from core.verify import evaluar_intento_compra
 
 # Configuración del entorno de prueba
-SECRET_KEY = b"aegis_zero_trust_enterprise_2026"
+# ADVERTENCIA: el valor por defecto es SOLO para desarrollo local. En producción
+# AEGIS_SECRET_KEY debe venir del entorno (gestor de secretos), nunca del código.
+SECRET_KEY = os.getenv("AEGIS_SECRET_KEY", "dev-only-insecure-secret-key").encode("utf-8")
 DB_REVOCACION = {}
 
 if __name__ == "__main__":

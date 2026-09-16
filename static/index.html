@@ -1531,19 +1531,36 @@
         if (!Array.isArray(data) || data.length === 0) return;
 
         const tbody = document.getElementById('audit-table-body');
-        tbody.innerHTML = data.slice(0, 10).map((entry, index) => {
+        // Las filas se construyen con nodos DOM + textContent (no innerHTML): summary,
+        // mandate_id, etc. traen datos controlados por usuarios (p. ej. display_name)
+        // y nunca deben interpretarse como HTML/JS.
+        const rows = data.slice(0, 10).map((entry, index) => {
           const typeColor = entry.type === 'mandate_created' ? '#93c5fd' : entry.type === 'revocation' ? '#FF5C5C' : '#3DDC97';
-          return `
-            <tr>
-              <td><code>#${index} · ${entry.event_id ? entry.event_id.slice(0, 10) : 'hash_' + index}...</code></td>
-              <td><span style="color: ${typeColor}; font-weight: 700;">${entry.type || entry.event_type || 'EVENT'}</span></td>
-              <td>${entry.actor || entry.actor_type || 'SYSTEM'}</td>
-              <td>${entry.mandate_id || '—'}</td>
-              <td>${entry.summary || entry.details?.reason || JSON.stringify(entry.details || {})}</td>
-              <td>${entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : 'Reciente'}</td>
-            </tr>
-          `;
-        }).join('');
+          const row = document.createElement('tr');
+          const addCell = (content) => {
+            const td = document.createElement('td');
+            if (content instanceof Node) td.appendChild(content);
+            else td.textContent = content;
+            row.appendChild(td);
+          };
+
+          const idCode = document.createElement('code');
+          idCode.textContent = `#${index} · ${entry.event_id ? entry.event_id.slice(0, 10) : 'hash_' + index}...`;
+          addCell(idCode);
+
+          const typeSpan = document.createElement('span');
+          typeSpan.style.color = typeColor;
+          typeSpan.style.fontWeight = '700';
+          typeSpan.textContent = entry.type || entry.event_type || 'EVENT';
+          addCell(typeSpan);
+
+          addCell(entry.actor || entry.actor_type || 'SYSTEM');
+          addCell(entry.mandate_id || '—');
+          addCell(entry.summary || entry.details?.reason || JSON.stringify(entry.details || {}));
+          addCell(entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : 'Reciente');
+          return row;
+        });
+        tbody.replaceChildren(...rows);
       } catch (e) {
         console.log("Audit fetch:", e);
       }

@@ -173,7 +173,6 @@ def emitir_mandato_inteligente(
         "created_at": created_at,
         "expires_at": expires_at,
         "status": MandateStatus.ACTIVE.value,
-        "intent_summary": estructura_ia.get("intent_summary"),
     }
 
     # 4. Sello Criptográfico

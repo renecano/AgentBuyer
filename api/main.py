@@ -66,9 +66,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: antes allow_origins=["*"] junto con allow_credentials=True, combinación que
+# el estándar no permite y que Starlette resuelve reflejando cualquier Origin (cualquier
+# sitio podía llamar al API con credenciales). Ahora es una lista explícita tomada de
+# CORS_ALLOWED_ORIGINS (separada por comas); el valor por defecto es SOLO para desarrollo.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://127.0.0.1:8000,http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

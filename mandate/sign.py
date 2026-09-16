@@ -2,9 +2,14 @@ import hmac
 import hashlib
 import base64
 import json
+import os
 from typing import Tuple, Union, Dict, Any
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
+
+# ADVERTENCIA: el valor por defecto es SOLO para desarrollo local. En producción
+# AEGIS_HMAC_SECRET debe venir del entorno (gestor de secretos), nunca del código.
+DEFAULT_HMAC_KEY = os.getenv("AEGIS_HMAC_SECRET", "dev-only-insecure-hmac-key").encode("utf-8")
 
 
 def encode_b64url(data: bytes) -> str:
@@ -12,7 +17,7 @@ def encode_b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
 
 
-def sign_payload(arg1: Any, arg2: Any = b"aegis_zero_trust_enterprise_2026") -> str:
+def sign_payload(arg1: Any, arg2: Any = DEFAULT_HMAC_KEY) -> str:
     """Sella criptográficamente el mandato para evitar manipulación (Tamper-proofing)."""
     if isinstance(arg1, dict):
         payload_dict = arg1
@@ -36,7 +41,7 @@ def sign_payload(arg1: Any, arg2: Any = b"aegis_zero_trust_enterprise_2026") -> 
     elif isinstance(secret_key, bytes):
         key_bytes = secret_key
     else:
-        key_bytes = b"aegis_zero_trust_enterprise_2026"
+        key_bytes = DEFAULT_HMAC_KEY
 
     header = encode_b64url(b'{"alg":"HS256","typ":"JWT"}')
     payload = encode_b64url(json.dumps(payload_dict, sort_keys=True).encode('utf-8'))
