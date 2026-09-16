@@ -21,7 +21,7 @@ from shared.schemas import (
     ActorType,
 )
 from mandate.sign import verify_signature
-from core.mandate_store import mandate_store, get_mandate, apply_approved_purchase, record_verification_event
+from core.mandate_store import mandate_store, get_mandate, apply_approved_purchase
 from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.evaluator import evaluate_mandate_constraints
 from engine.state import state_manager

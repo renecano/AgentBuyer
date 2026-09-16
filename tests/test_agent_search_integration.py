@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import AUDIT_TRAIL
+from audit.log import reset_trail
 from core import mandate_store, merchant_search
 
 WEB_OFFERS = [
@@ -23,10 +23,10 @@ SEARCH_FIELDS = {"origin": "MEX", "destination": "CUN", "departure_date": "2026-
 def client():
     with TestClient(app) as test_client:
         mandate_store.MANDATES.clear()
-        AUDIT_TRAIL.clear()
+        reset_trail()
         yield test_client
     mandate_store.MANDATES.clear()
-    AUDIT_TRAIL.clear()
+    reset_trail()
 
 
 def web_mandate(allowed_merchants: list[str]) -> dict:

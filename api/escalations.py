@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 
-from audit.log import AUDIT_TRAIL, append_entry
+from audit.log import append_entry, get_trail_events
 from core.mandate_store import apply_approved_purchase, get_mandate
 
 
@@ -22,16 +22,16 @@ _OVERRIDE_TYPES = {"human_override_approved", "human_override_declined"}
 
 
 def _latest_verification(attempt_id: str) -> dict | None:
-    """Última verificación registrada para el intento (el trail es append-only)."""
-    for event in reversed(AUDIT_TRAIL):
-        if event.get("type") == "verification" and event.get("attempt_id") == attempt_id:
+    """Última verificación registrada para el intento (el ledger es append-only)."""
+    for event in reversed(get_trail_events(attempt_id=attempt_id)):
+        if event.get("type") == "verification":
             return event
     return None
 
 
 def _existing_override(attempt_id: str) -> dict | None:
-    for event in AUDIT_TRAIL:
-        if event.get("type") in _OVERRIDE_TYPES and event.get("attempt_id") == attempt_id:
+    for event in get_trail_events(attempt_id=attempt_id):
+        if event.get("type") in _OVERRIDE_TYPES:
             return event
     return None
 

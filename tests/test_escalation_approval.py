@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import AUDIT_TRAIL
+from audit.log import get_trail_events, reset_trail
 from core import mandate_store
 
 MANDATE_ID = "mnd_esc_001"
@@ -14,10 +14,10 @@ MANDATE_ID = "mnd_esc_001"
 def client():
     with TestClient(app) as test_client:
         mandate_store.MANDATES.clear()
-        AUDIT_TRAIL.clear()
+        reset_trail()
         yield test_client
     mandate_store.MANDATES.clear()
-    AUDIT_TRAIL.clear()
+    reset_trail()
 
 
 def make_mandate() -> dict:
@@ -82,9 +82,9 @@ def test_human_approves_escalation_updates_state_and_audit(client):
     assert state["amount_spent"] == 300.0
 
     # El trail cuenta la historia completa: escalada -> aprobada por humano.
-    types = [e["type"] for e in AUDIT_TRAIL]
+    types = [e["type"] for e in get_trail_events()]
     assert "verification" in types and "human_override_approved" in types
-    override = next(e for e in AUDIT_TRAIL if e["type"] == "human_override_approved")
+    override = next(e for e in get_trail_events() if e["type"] == "human_override_approved")
     assert override["attempt_id"] == "att_esc_1"
     assert "amount" in override["escalation_reason"]["failed_rules"]
     assert "APROBADA" in override["summary"]
@@ -102,7 +102,7 @@ def test_human_declines_no_state_change(client):
     assert state["uses_count"] == 0
     assert state["amount_spent"] == 0
 
-    override = next(e for e in AUDIT_TRAIL if e["type"] == "human_override_declined")
+    override = next(e for e in get_trail_events() if e["type"] == "human_override_declined")
     assert "RECHAZADA" in override["summary"]
 
 
@@ -118,7 +118,7 @@ def test_cannot_approve_on_revoked_mandate(client):
 
     # Cero cambios de estado y ningún evento de override en el trail.
     assert live_state(client)["uses_count"] == 0
-    assert not any(e["type"].startswith("human_override") for e in AUDIT_TRAIL)
+    assert not any(e["type"].startswith("human_override") for e in get_trail_events())
 
 
 def test_unknown_attempt_id_is_clean_404(client):

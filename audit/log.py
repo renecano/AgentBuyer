@@ -21,9 +21,6 @@ _EVENT_TYPES = {
     "settlement_completed",
 }
 
-# Se agrega únicamente con append_entry; no existe una operación de borrado.
-AUDIT_TRAIL: list[dict] = []
-
 
 class CryptographicAuditLedger:
     """
@@ -162,42 +159,109 @@ class CryptographicAuditLedger:
 # Global singleton audit ledger
 audit_ledger = CryptographicAuditLedger()
 
+# Actor con el que append_entry escribe en el ledger. Identifica los eventos del
+# "trail" (los que ve la UI) frente a los que la línea estricta escribe directo
+# en el ledger (core/verify, core/dispute, mandate_store.save_mandate).
+TRAIL_ACTOR_TYPE = "GATEWAY"
+TRAIL_ACTOR_ID = "system_gateway"
+
+
+def _is_trail_entry(entry: AuditLogEntry) -> bool:
+    return (
+        entry.actor_type == TRAIL_ACTOR_TYPE
+        and entry.actor_id == TRAIL_ACTOR_ID
+        and isinstance(entry.details, dict)
+        and {"type", "mandate_id", "summary"} <= entry.details.keys()
+    )
+
+
+def _trail_entries(mandate_id: str | None = None, attempt_id: str | None = None) -> list[AuditLogEntry]:
+    """Entradas del trail en orden de escritura (index ascendente)."""
+    entries = [
+        entry for entry in audit_ledger.get_trail_for(mandate_id=mandate_id, attempt_id=attempt_id)
+        if _is_trail_entry(entry)
+    ]
+    return sorted(entries, key=lambda entry: entry.index)
+
+
+def get_trail_events(mandate_id: str | None = None, attempt_id: str | None = None) -> list[dict]:
+    """Eventos completos del trail (todos los campos que se escribieron), en orden
+    de escritura. Uso interno del backend (escalaciones, disputas)."""
+    return [
+        {**deepcopy(entry.details), "event_id": entry.entry_id, "timestamp": entry.timestamp}
+        for entry in _trail_entries(mandate_id, attempt_id)
+    ]
+
 
 def append_entry(event: dict) -> dict:
-    """Agrega un evento inmutable para los consumidores del trail de auditoría."""
+    """Agrega un evento del trail al ledger con cadena hash (única fuente de escritura).
+
+    Devuelve el evento completo con el event_id y timestamp de su bloque.
+    """
     event_type = event.get("type")
     if event_type not in _EVENT_TYPES and event_type not in [e.value for e in EventType]:
         raise ValueError(f"Tipo de evento de auditoría inválido: {event_type!r}")
     if "mandate_id" not in event or "summary" not in event:
         raise ValueError("Todo evento requiere mandate_id y summary.")
 
-    entry = deepcopy(event)
-    entry["event_id"] = f"evt_{uuid4().hex}"
-    entry["timestamp"] = datetime.now(timezone.utc).isoformat()
-    AUDIT_TRAIL.append(entry)
-
-    # Replicar al ledger criptográfico
-    audit_ledger.append_entry(
+    entry = audit_ledger.append_entry(
         event_type=event_type,
-        actor_type="GATEWAY",
-        actor_id="system_gateway",
+        actor_type=TRAIL_ACTOR_TYPE,
+        actor_id=TRAIL_ACTOR_ID,
         mandate_id=event.get("mandate_id"),
         attempt_id=event.get("attempt_id"),
-        details=event,
+        # Copia profunda: si el llamador muta su dict después, el bloque no cambia.
+        details=deepcopy(event),
     )
-    return deepcopy(entry)
+    return {**deepcopy(entry.details), "event_id": entry.entry_id, "timestamp": entry.timestamp}
+
+
+def to_frontend_event(entry: AuditLogEntry) -> dict:
+    """ADAPTADOR ledger → evento que consume React (AuditView.tsx / AccountView.tsx).
+
+    Entrada (ledger):  {entry_id, index, prev_hash, hash, timestamp, event_type,
+                        actor_type, actor_id, mandate_id, attempt_id, details{...}}
+    Salida (React):    {event_id, timestamp, type, mandate_id, summary,
+                        attempt_id?, verdict?}
+
+    - event_id / timestamp: los del bloque del ledger (el evento no tiene otros).
+    - type: el tipo tal como lo escribió append_entry ("verification",
+      "agent_run", ... y también "DISPUTE_FILED"/"DISPUTE_RESOLVED" en
+      mayúsculas): se copia literal, NUNCA se normaliza, porque
+      presentation.ts los etiqueta por su valor exacto.
+    - attempt_id / verdict: opcionales. Aparecen solo si el evento original los
+      traía y con su valor literal (verdict puede ser null, p. ej. DISPUTE_RESOLVED).
+    Solo recibe entradas del trail (ver _is_trail_entry).
+    """
+    details = entry.details
+    event = {
+        "event_id": entry.entry_id,
+        "timestamp": entry.timestamp,
+        "type": details["type"],
+        "mandate_id": details["mandate_id"],
+        "summary": details["summary"],
+    }
+    for optional_field in ("attempt_id", "verdict"):
+        if optional_field in details:
+            event[optional_field] = deepcopy(details[optional_field])
+    return event
 
 
 def get_trail_for(role: str = "auditor", mandate_id: str | None = None, attempt_id: str | None = None) -> list[dict]:
-    """Lee el trail descendente y aplica la visibilidad del rol solicitado."""
-    if role == "auditor":
-        entries = AUDIT_TRAIL
-    elif role in {"human", "merchant"}:
-        entries = [entry for entry in AUDIT_TRAIL if mandate_id and entry.get("mandate_id") == mandate_id]
-    else:
-        entries = AUDIT_TRAIL
+    """Vista del trail para la UI: eventos del ledger adaptados a la forma de React,
+    del más nuevo al más viejo, con la visibilidad del rol solicitado.
 
-    return deepcopy(sorted(entries, key=lambda entry: entry["timestamp"], reverse=True))
+    `attempt_id` se acepta por compatibilidad de firma pero, igual que antes de
+    migrar al ledger, no filtra.
+    """
+    if role in {"human", "merchant"}:
+        if not mandate_id:
+            return []
+        entries = _trail_entries(mandate_id=mandate_id)
+    else:
+        entries = _trail_entries()
+
+    return [to_frontend_event(entry) for entry in reversed(entries)]
 
 
 def reset_trail() -> dict:
@@ -206,7 +270,6 @@ def reset_trail() -> dict:
     Durante una sesión el trail sigue siendo append-only. Este corte sólo se
     invoca al iniciar/reiniciar una demo y también reinicia la cadena hash.
     """
-    removed = len(AUDIT_TRAIL)
-    AUDIT_TRAIL.clear()
+    removed = len(_trail_entries())
     audit_ledger.clear()
     return {"cleared": removed, "status": "reset"}

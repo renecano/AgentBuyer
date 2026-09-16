@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from audit.log import append_entry, get_trail_for
+from audit.log import append_entry, get_trail_events
 from core.mandate_store import get_mandate
 
 router = APIRouter()
@@ -92,7 +92,9 @@ def file_dispute(body: FileDisputeBody) -> dict[str, Any]:
         "summary": f"Disputa {dispute_id} abierta por el titular: {body.reason}",
     })
 
-    evidence = get_trail_for("auditor", body.mandate_id)
+    # Misma evidencia que antes (vista de auditor: TODO el trail, del más nuevo al
+    # más viejo), ahora leída del ledger con cadena hash.
+    evidence = list(reversed(get_trail_events()))
     resolution = _resolve(body.attempt_id, body.mandate_id, evidence)
 
     claim = {

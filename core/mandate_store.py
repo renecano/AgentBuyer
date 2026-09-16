@@ -7,7 +7,6 @@ from shared.schemas import Mandate, MandateStatus
 
 # Estado global autoritativo en memoria (Zero-Caching)
 MANDATES: Dict[str, dict] = {}
-VERIFICATION_EVENTS: List[dict] = []
 
 
 class MandateStore:
@@ -135,7 +134,6 @@ class MandateStore:
     def clear(self) -> None:
         with self._lock:
             MANDATES.clear()
-            VERIFICATION_EVENTS.clear()
 
 
 # Global singleton instance
@@ -221,16 +219,3 @@ def apply_approved_purchase(mandate_id: str, amount: int | float) -> dict | None
     record["live_state"]["uses_count"] += 1
     record["live_state"]["amount_spent"] += amount
     return get_mandate(mandate_id)
-
-
-def record_verification_event(
-    mandate_id: str, attempt_id: str, verdict: str, timestamp: str
-) -> None:
-    VERIFICATION_EVENTS.append(
-        {
-            "mandate_id": mandate_id,
-            "attempt_id": attempt_id,
-            "verdict": verdict,
-            "timestamp": timestamp,
-        }
-    )

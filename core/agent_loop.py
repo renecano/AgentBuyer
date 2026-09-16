@@ -12,7 +12,7 @@ from shared.schemas import (
 )
 from mandate.sign import sign_payload
 from core.merchant import vuelaya_merchant, VuelaYaMerchant
-from core.mandate_store import VERIFICATION_EVENTS, get_mandate
+from core.mandate_store import get_mandate
 from audit.log import append_entry
 from core.merchant_search import _merchant_slug, search_merchant_offers
 
@@ -248,16 +248,6 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
     verification = api_verify_purchase(attempt)
     verdict = verification.get("verdict", "REJECT")
     completed = verdict == "APPROVE"
-
-    VERIFICATION_EVENTS.append(
-        {
-            "mandate_id": mandate_id,
-            "attempt_id": attempt_id,
-            "verdict": verdict,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_type": "agent_run",
-        }
-    )
 
     story = (
         f"Encontró {len(flights_seen)} {'hoteles' if category_key == 'hotels' else 'vuelos'} en la web (búsqueda real). "

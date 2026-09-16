@@ -12,7 +12,7 @@ y crea su propio mandato — ningún test depende de otro.
 import pytest
 from fastapi.testclient import TestClient
 
-from audit.log import AUDIT_TRAIL
+from audit.log import get_trail_events, reset_trail
 from api.main import app
 from core import mandate_store
 
@@ -26,10 +26,10 @@ def client():
     # después para que cada test empiece con memoria vacía y estado propio.
     with TestClient(app) as test_client:
         mandate_store.MANDATES.clear()
-        AUDIT_TRAIL.clear()
+        reset_trail()
         yield test_client
     mandate_store.MANDATES.clear()
-    AUDIT_TRAIL.clear()
+    reset_trail()
 
 
 def make_mandate(mandate_id: str = "mnd_test_001", **overrides) -> dict:
@@ -199,7 +199,7 @@ def test_verification_events_are_recorded(client):
     client.post("/verify", json=make_attempt())
     client.post("/verify", json=make_attempt(amount=300.0, attempt_id="att_2"))
 
-    verdicts = [event["verdict"] for event in AUDIT_TRAIL if event["type"] == "verification"]
+    verdicts = [event["verdict"] for event in get_trail_events() if event["type"] == "verification"]
     assert verdicts == ["APPROVE", "ESCALATE"]
 
 
@@ -215,4 +215,4 @@ def test_seed_mandate_loads_on_startup():
         assert record["live_state"]["status"] == "active"
         assert record["mandate"]["constraints"]["max_uses"] == 3
     mandate_store.MANDATES.clear()
-    AUDIT_TRAIL.clear()
+    reset_trail()
