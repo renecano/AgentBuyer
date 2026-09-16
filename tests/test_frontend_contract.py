@@ -92,8 +92,10 @@ def assert_mandate_record(record: dict) -> None:
 
     human = mandate["human"]
     assert isinstance(human, dict)
-    for key in ("id", "name", "display_name"):
+    for key in ("id", "display_name"):
         assert isinstance(human[key], str)
+    # App.tsx lee human.name como opcional: el seed lo trae, MandateCreator no.
+    assert human.get("name") is None or isinstance(human["name"], str)
 
     agent = mandate["agent"]
     assert isinstance(agent, dict)
@@ -201,6 +203,43 @@ def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_
     }
 
 
+def mandate_creator_payload(mandate_id: str = "mnd_test_user_contract") -> dict:
+    """Mismo payload que submitMandate() en MandateCreator.tsx (categoría vuelos)."""
+    return {
+        "mandate_id": mandate_id,
+        "human": {
+            "id": "hum_test_user_contract",
+            "display_name": "Test User",
+            "id_document": "XXXXXX",
+            "phone": "+520000000000",
+            "email": "test.user@example.com",
+        },
+        "agent": {"id": SEED_AGENT_ID, "display_name": "Saturday"},
+        "search_fields": {"origin": "BUE", "destination": "COR", "departure_date": "2026-10-01"},
+        "constraints": {
+            "max_amount_per_purchase": 150,
+            "currency": "USD",
+            "allowed_categories": ["travel.flights"],
+            "allowed_merchants": ["mch_vuelaya"],
+            "max_uses": 3,
+            "conditions": [{"type": "price_below", "value": 150}],
+            "off_session_consent": True,
+        },
+        "authentication": {
+            "passkey_biometrics": "verified_webauthn_touch_id",
+            "receipt_email": "test.user@example.com",
+        },
+        "payment_token": {
+            "token_id": "vtok_contract",
+            "token_type": "SCOPED_VIRTUAL_TOKEN",
+            "masked_card": "•••• 4242",
+            "bank_issuer": "Stripe Elements / Galicia AI Payments",
+        },
+        "valid_until": "2026-09-30",
+        "signature": "ed25519_passkey_signed_jwt_token",
+    }
+
+
 def run_agent(client: TestClient) -> dict:
     """Mismo body que runAgent() en App.tsx."""
     record = client.get(f"/mandates/{SEED_MANDATE_ID}").json()
@@ -232,6 +271,73 @@ def test_get_mandate_returns_mandate_record(client):
     response = client.get(f"/mandates/{SEED_MANDATE_ID}")
     assert response.status_code == 200
     assert_mandate_record(response.json())
+
+
+# ── POST /mandates (MandateCreator.tsx:404) ─────────────────────────────────
+
+def test_create_mandate_from_mandate_creator_shape(client):
+    """Forma ACTUAL: 201 y el registro {mandate, live_state} con el payload
+    devuelto tal cual. React ignora el body: solo mira response.ok y navega con
+    el mandate_id que generó él mismo, así que ese id debe quedar consultable."""
+    payload = mandate_creator_payload()
+    response = client.post("/mandates", json=payload)
+
+    assert response.status_code == 201, response.text
+    record = response.json()
+    assert_mandate_record(record)
+    assert record["mandate"] == payload  # hoy el mandato se guarda y devuelve sin transformar
+    assert record["live_state"] == {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None}
+
+    # El id del cliente es el que usa Mission Control a continuación (GET /mandates/{id}).
+    follow_up = client.get(f"/mandates/{payload['mandate_id']}")
+    assert follow_up.status_code == 200
+    assert_mandate_record(follow_up.json())
+
+    # Un id repetido es un error no-ok con `detail` (React muestra "El sistema respondió 409").
+    duplicate = client.post("/mandates", json=payload)
+    assert duplicate.status_code == 409
+    assert isinstance(duplicate.json()["detail"], str)
+
+
+# ── POST /mandates/{id}/approve_escalation (App.tsx:336) ────────────────────
+
+EXPENSIVE_OFFERS = [
+    {"merchant": "VuelaYa", "price": 300.0, "currency": "USD",
+     "details": "BUE-COR premium", "url": "https://vuelaya.example/premium"},
+]
+
+
+@pytest.mark.parametrize(
+    "decision, expected_verdict",
+    [("approve", "APPROVE"), ("decline", "REJECT")],
+    ids=["approve", "decline"],
+)
+def test_approve_escalation_shape(client, monkeypatch, decision, expected_verdict):
+    """Mismo flujo que React: /agent/run escala, y reviewEscalation() envía
+    {purchase_attempt_id, decision} esperando la forma `verification`."""
+    monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: json.dumps(EXPENSIVE_OFFERS))
+    run = run_agent(client)
+    assert run["verification"]["verdict"] == "ESCALATE"  # garantiza que hay algo que revisar
+
+    url = f"/mandates/{SEED_MANDATE_ID}/approve_escalation"
+    body = {"purchase_attempt_id": run["attempt_id"], "decision": decision}
+    response = client.post(url, json=body)
+
+    assert response.status_code == 200, response.text
+    verification = response.json()
+    assert_verification(verification)
+    assert verification["verdict"] == expected_verdict  # garantiza cada rama
+    assert verification["attempt_id"] == run["attempt_id"]
+    assert verification["mandate_id"] == SEED_MANDATE_ID
+
+    # Los errores llegan como no-ok con `detail` string, que App.tsx traduce y muestra.
+    repeated = client.post(url, json=body)
+    assert repeated.status_code == 409
+    assert isinstance(repeated.json()["detail"], str)
+
+    unknown = client.post(url, json={"purchase_attempt_id": "att_contract_unknown", "decision": decision})
+    assert unknown.status_code == 404
+    assert isinstance(unknown.json()["detail"], str)
 
 
 # ── POST /agent/run ──────────────────────────────────────────────────────────
