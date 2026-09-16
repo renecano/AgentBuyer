@@ -217,8 +217,9 @@ def evaluate(mandate: dict, live_state: dict, attempt: dict) -> dict:
         }
 
 
-def evaluate_mandate_constraints(mandate, attempt, state) -> Tuple[bool, str, Dict[str, bool], bool]:
-    """Adaptador para core/verify.py"""
+def evaluate_mandate_constraints(mandate, attempt, state) -> Tuple[bool, str, List[Dict[str, Any]], bool]:
+    """Adaptador para core/verify.py: devuelve los checks del engine tal cual,
+    como lista de {rule, pass, detail}."""
     mandate_dict = mandate.model_dump() if hasattr(mandate, "model_dump") else mandate
     attempt_dict = attempt.model_dump() if hasattr(attempt, "model_dump") else attempt
     state_dict = {
@@ -229,7 +230,6 @@ def evaluate_mandate_constraints(mandate, attempt, state) -> Tuple[bool, str, Di
     result = evaluate(mandate_dict, state_dict, attempt_dict)
     authorized = (result["verdict"] == "APPROVE")
     reason = result["reason"]
-    checks_dict = {c["rule"]: c["pass"] for c in result["checks"]}
     can_escalate = (result["verdict"] == "ESCALATE")
 
-    return authorized, reason, checks_dict, can_escalate
+    return authorized, reason, result["checks"], can_escalate

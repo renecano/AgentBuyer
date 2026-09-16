@@ -5,11 +5,14 @@ import hashlib
 import base64
 import time
 import urllib.request
+import uuid
+from copy import deepcopy
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
 
 from shared.schemas import (
     Mandate,
+    MandateStatus,
     PurchaseAttempt,
     VerificationResult,
     VerificationStatus,
@@ -19,6 +22,7 @@ from shared.schemas import (
 )
 from mandate.sign import verify_signature
 from core.mandate_store import mandate_store, get_mandate, apply_approved_purchase, record_verification_event
+from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.evaluator import evaluate_mandate_constraints
 from engine.state import state_manager
 from audit.log import audit_ledger
@@ -125,6 +129,151 @@ def evaluar_intento_compra(token_jwt: str, secret_key: bytes, base_datos_revocac
 # =========================================================================
 _escalation_inbox: Dict[str, HITLApprovalRequest] = {}
 
+# Quién firma los eventos de decisión en el ledger con cadena hash.
+_GATEWAY_ACTOR_TYPE = "GATEWAY"
+_GATEWAY_ACTOR_ID = "verification_gateway"
+
+_DECISION_EVENTS = {
+    VerificationStatus.APPROVED: EventType.VERIFICATION_SUCCESS,
+    VerificationStatus.REJECTED: EventType.VERIFICATION_FAILED,
+    VerificationStatus.ESCALATED_HITL: EventType.HITL_ESCALATED,
+}
+
+_FIREWALL_VERDICTS = {"APPROVE", "REJECT", "ESCALATE"}
+
+
+def _check(rule: str, passed: bool, detail: str) -> Dict[str, Any]:
+    """Un check con la misma forma que /verify: {rule, pass, detail}."""
+    return {"rule": rule, "pass": bool(passed), "detail": detail}
+
+
+def _decide(
+    attempt: PurchaseAttempt,
+    mandate_id: str,
+    status: VerificationStatus,
+    reason: str,
+    checks: List[Dict[str, Any]],
+    now_iso: str,
+    event_type: Optional[EventType] = None,
+    **fields: Any,
+) -> VerificationResult:
+    """Construye la decisión y la registra en el ledger ANTES de devolverla.
+
+    Toda decisión (aprobación, rechazo o escalación) deja evidencia. Si el ledger
+    falla, la excepción se propaga: nunca se devuelve una decisión sin registrar.
+    """
+    result = VerificationResult(
+        attempt_id=attempt.attempt_id,
+        status=status,
+        authorized=status == VerificationStatus.APPROVED,
+        reason=reason,
+        checks=checks,
+        timestamp=now_iso,
+        **fields,
+    )
+    audit_ledger.append_entry(
+        event_type=event_type or _DECISION_EVENTS[status],
+        actor_type=_GATEWAY_ACTOR_TYPE,
+        actor_id=_GATEWAY_ACTOR_ID,
+        mandate_id=mandate_id,
+        attempt_id=attempt.attempt_id,
+        details={
+            "status": result.status.value,
+            "authorized": result.authorized,
+            "reason": result.reason,
+            "checks": deepcopy(result.checks),
+            "amount": attempt.amount,
+            "currency": attempt.currency,
+            "agent_id": attempt.agent_id,
+            "merchant_id": attempt.merchant_id,
+            "escalation_id": result.escalation_id,
+            "settlement_id": result.settlement_id,
+        },
+    )
+    return result
+
+
+def _record_settlement(mandate_id: str, attempt: PurchaseAttempt, amount: float, settlement_id: str, dispute_token: str) -> None:
+    audit_ledger.append_entry(
+        event_type=EventType.SETTLEMENT_COMPLETED,
+        actor_type=ActorType.BANK,
+        actor_id="galicia_bank",
+        mandate_id=mandate_id,
+        attempt_id=attempt.attempt_id,
+        details={"amount": amount, "settlement_id": settlement_id, "dispute_token": dispute_token},
+    )
+
+
+def _expiry_check(expires_at: Optional[str]) -> Dict[str, Any]:
+    """Relee expires_at aunque el store ya marque EXPIRED: el store ignora fechas
+    ilegibles, aquí una fecha ilegible falla cerrado."""
+    if not expires_at:
+        return _check("not_expired", True, "Mandate has no expiration date.")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return _check("not_expired", False, f"Unreadable expires_at {expires_at!r}; rejected (fail-closed).")
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) >= expiry:
+        return _check("not_expired", False, f"Mandate expired at {expires_at}.")
+    return _check("not_expired", True, f"Valid until {expires_at}.")
+
+
+def _run_semantic_firewall(mandate: Mandate, attempt: PurchaseAttempt) -> Tuple[str, str]:
+    """Devuelve (veredicto, detalle). Una excepción o un veredicto fuera de
+    APPROVE/REJECT/ESCALATE se reporta como "ERROR" (el llamador lo rechaza)."""
+    scope = mandate.scope
+    constraints = {
+        "max_amount_per_purchase": scope.max_amount_per_tx,
+        "allowed_categories": scope.allowed_categories,
+        "conditions_expression": scope.conditions_expression,
+    }
+    try:
+        audit = auditoria_cognitiva_firewall(
+            mandato_constraints=constraints,
+            # Solo campos cubiertos por la firma del agente: item_title no está
+            # firmado y podría alterarse en tránsito para manipular al auditor.
+            item_titulo=attempt.item_description,
+            item_descripcion=attempt.item_description,
+            precio_declarado=float(attempt.amount),
+            categoria=attempt.category,
+            metadata=attempt.metadata,
+        )
+    except Exception as exc:
+        return "ERROR", f"Semantic firewall failed ({type(exc).__name__}: {exc}); rejected (fail-closed)."
+
+    verdict = audit.get("veredicto") if isinstance(audit, dict) else None
+    if verdict not in _FIREWALL_VERDICTS:
+        return "ERROR", f"Semantic firewall returned an unusable verdict ({verdict!r}); rejected (fail-closed)."
+    detail = str(audit.get("resumen_para_humano") or f"Semantic firewall verdict: {verdict}.")
+    return verdict, detail
+
+
+def _escalate(
+    attempt: PurchaseAttempt,
+    mandate: Mandate,
+    reason: str,
+    checks: List[Dict[str, Any]],
+    now_iso: str,
+) -> VerificationResult:
+    escalation_id = f"esc_{uuid.uuid4().hex[:10]}"
+    _escalation_inbox[escalation_id] = HITLApprovalRequest(
+        escalation_id=escalation_id,
+        attempt_id=attempt.attempt_id,
+        mandate_id=mandate.mandate_id,
+        attempt=attempt,
+        reason=reason,
+        requested_amount=attempt.amount,
+        mandate_limit=mandate.scope.max_amount_per_tx,
+        created_at=now_iso,
+    )
+    return _decide(
+        attempt, mandate.mandate_id, VerificationStatus.ESCALATED_HITL,
+        f"{reason}. Escalated to cardholder for approval.", checks, now_iso,
+        escalation_id=escalation_id,
+    )
+
 
 def get_pending_escalations(mandate_id: Optional[str] = None) -> List[HITLApprovalRequest]:
     if mandate_id:
@@ -155,70 +304,67 @@ def resolve_escalation(
     if not mandate:
         return None
 
+    attempt = esc_req.attempt
+    checks = [_check("hitl_approval", approved, note or ("Approved by cardholder." if approved else "Rejected by cardholder."))]
+
     if approved:
-        import uuid
         settlement_id = f"stl_{uuid.uuid4().hex[:10]}"
         dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
-        
+
         state_manager.record_usage(
             mandate_id=mandate.mandate_id,
-            amount=esc_req.attempt.amount,
-            nonce=esc_req.attempt.nonce,
+            amount=attempt.amount,
+            nonce=attempt.nonce,
         )
+        result = _decide(
+            attempt, mandate.mandate_id, VerificationStatus.APPROVED,
+            f"Approved by cardholder (HITL note: {note})", checks, now_iso,
+            event_type=EventType.HITL_APPROVED,
+            settlement_id=settlement_id, dispute_token=dispute_token, escalation_id=escalation_id,
+        )
+        _record_settlement(mandate.mandate_id, attempt, attempt.amount, settlement_id, dispute_token)
+        return result
 
-        return VerificationResult(
-            attempt_id=esc_req.attempt.attempt_id,
-            status=VerificationStatus.APPROVED,
-            authorized=True,
-            reason=f"Approved by cardholder (HITL note: {note})",
-            checks={"hitl_approval": True},
-            settlement_id=settlement_id,
-            dispute_token=dispute_token,
-            escalation_id=escalation_id,
-            timestamp=now_iso,
-        )
-    else:
-        return VerificationResult(
-            attempt_id=esc_req.attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason=f"Rejected by cardholder during HITL escalation: {note}",
-            checks={"hitl_approval": False},
-            escalation_id=escalation_id,
-            timestamp=now_iso,
-        )
+    return _decide(
+        attempt, mandate.mandate_id, VerificationStatus.REJECTED,
+        f"Rejected by cardholder during HITL escalation: {note}", checks, now_iso,
+        event_type=EventType.HITL_REJECTED,
+        escalation_id=escalation_id,
+    )
 
 
 def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
     now_iso = datetime.now(timezone.utc).isoformat()
-    checks: Dict[str, bool] = {}
+    checks: List[Dict[str, Any]] = []
+
+    def reject(mandate_id: str, reason: str) -> VerificationResult:
+        return _decide(attempt, mandate_id, VerificationStatus.REJECTED, reason, checks, now_iso)
 
     # 1. Look up mandate in live store
     mandate = mandate_store.get_mandate(attempt.mandate_id)
     if not mandate:
-        return VerificationResult(
-            attempt_id=attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason="Mandate not found in live registry.",
-            checks={"mandate_exists": False},
-            timestamp=now_iso,
-        )
-    checks["mandate_exists"] = True
+        checks.append(_check("mandate_exists", False, "Mandate not found in live registry."))
+        return reject(attempt.mandate_id, "Mandate not found in live registry.")
+    checks.append(_check("mandate_exists", True, "Mandate found in live registry."))
 
-    # 2. Check Live Status (Kill Switch)
-    if mandate.status.value == "REVOKED":
-        return VerificationResult(
-            attempt_id=attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason=f"Mandate is REVOKED. Revocation timestamp: {mandate.revoked_at}. Reason: {mandate.revocation_reason}",
-            checks={"status_active": False},
-            timestamp=now_iso,
-        )
-    checks["status_active"] = True
+    # 2. Live status (kill switch): solo ACTIVE puede comprar. REVOKED, PAUSED,
+    # EXPIRED o cualquier estado que se agregue en el futuro se rechaza (fail-closed).
+    if mandate.status != MandateStatus.ACTIVE:
+        checks.append(_check("status_active", False, f"Mandate status is {mandate.status.value}."))
+        if mandate.status == MandateStatus.REVOKED:
+            reason = f"Mandate is REVOKED. Revocation timestamp: {mandate.revoked_at}. Reason: {mandate.revocation_reason}"
+        else:
+            reason = f"Mandate is {mandate.status.value}. Only ACTIVE mandates can authorize purchases."
+        return reject(mandate.mandate_id, reason)
+    checks.append(_check("status_active", True, "Mandate status is ACTIVE."))
 
-    # 3. Verify Human Signature (Ed25519)
+    # 3. Expiration (expires_at)
+    expiry = _expiry_check(mandate.expires_at)
+    checks.append(expiry)
+    if not expiry["pass"]:
+        return reject(mandate.mandate_id, f"Mandate is EXPIRED: {expiry['detail']}")
+
+    # 4. Verify Human Signature (Ed25519)
     unsigned_mandate_payload = {
         "mandate_id": mandate.mandate_id,
         "human_id": mandate.human_id,
@@ -240,18 +386,14 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         mandate.human_signature,
     )
 
-    checks["human_signature_valid"] = human_sig_valid
+    checks.append(_check(
+        "human_signature_valid", human_sig_valid,
+        "Ed25519 cardholder signature verified." if human_sig_valid else "Ed25519 cardholder signature is invalid or forged.",
+    ))
     if not human_sig_valid:
-        return VerificationResult(
-            attempt_id=attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason="403 Forbidden: Human digital signature on mandate is INVALID or forged. Cryptographic verification failed.",
-            checks=checks,
-            timestamp=now_iso,
-        )
+        return reject(mandate.mandate_id, "403 Forbidden: Human digital signature on mandate is INVALID or forged. Cryptographic verification failed.")
 
-    # 4. Verify Agent Signature
+    # 5. Verify Agent Signature
     unsigned_attempt_payload = {
         "attempt_id": attempt.attempt_id,
         "mandate_id": attempt.mandate_id,
@@ -280,75 +422,48 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         except Exception:
             agent_sig_valid = False
 
-    checks["agent_signature_valid"] = agent_sig_valid
+    checks.append(_check(
+        "agent_signature_valid", agent_sig_valid,
+        "Ed25519 agent signature verified." if agent_sig_valid else "Agent signature is missing, invalid, tampered, or from an unauthorized key.",
+    ))
     if not agent_sig_valid:
-        return VerificationResult(
-            attempt_id=attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason="403 Forbidden: Agent signature is INVALID, forged, tampered, or signed by an unauthorized (impersonating) entity.",
-            checks=checks,
-            timestamp=now_iso,
-        )
+        return reject(mandate.mandate_id, "403 Forbidden: Agent signature is INVALID, forged, tampered, or signed by an unauthorized (impersonating) entity.")
 
-    # 5. Nonce Replay Check
+    # 6. Nonce Replay Check
     nonce_valid = state_manager.validate_nonce(attempt.nonce)
-    checks["nonce_fresh"] = nonce_valid
+    checks.append(_check(
+        "nonce_fresh", nonce_valid,
+        "Nonce not seen before." if nonce_valid else "Nonce was already used (replay).",
+    ))
     if not nonce_valid:
-        return VerificationResult(
-            attempt_id=attempt.attempt_id,
-            status=VerificationStatus.REJECTED,
-            authorized=False,
-            reason=f"REPLAY ATTACK DETECTED: Nonce '{attempt.nonce}' was already used in a previous purchase.",
-            checks=checks,
-            timestamp=now_iso,
-        )
+        return reject(mandate.mandate_id, f"REPLAY ATTACK DETECTED: Nonce '{attempt.nonce}' was already used in a previous purchase.")
 
-    # 6. Evaluate Constraints
+    # 7. Evaluate Constraints
     rolling_state = state_manager.get_or_create_state(mandate.mandate_id)
     authorized, reason, constraint_checks, can_escalate = evaluate_mandate_constraints(
         mandate=mandate,
         attempt=attempt,
         state=rolling_state,
     )
-    checks.update(constraint_checks)
+    checks.extend(constraint_checks)
 
     if not authorized:
         if can_escalate and mandate.scope.allow_hitl_escalation:
-            import uuid
-            escalation_id = f"esc_{uuid.uuid4().hex[:10]}"
-            hitl_req = HITLApprovalRequest(
-                escalation_id=escalation_id,
-                attempt_id=attempt.attempt_id,
-                mandate_id=mandate.mandate_id,
-                attempt=attempt,
-                reason=reason,
-                requested_amount=attempt.amount,
-                mandate_limit=mandate.scope.max_amount_per_tx,
-                created_at=now_iso,
-            )
-            _escalation_inbox[escalation_id] = hitl_req
-            return VerificationResult(
-                attempt_id=attempt.attempt_id,
-                status=VerificationStatus.ESCALATED_HITL,
-                authorized=False,
-                reason=f"Out of bounds: {reason}. Escalated to cardholder for approval.",
-                checks=checks,
-                escalation_id=escalation_id,
-                timestamp=now_iso,
-            )
-        else:
-            return VerificationResult(
-                attempt_id=attempt.attempt_id,
-                status=VerificationStatus.REJECTED,
-                authorized=False,
-                reason=f"Constraint violation: {reason}",
-                checks=checks,
-                timestamp=now_iso,
-            )
+            return _escalate(attempt, mandate, f"Out of bounds: {reason}", checks, now_iso)
+        return reject(mandate.mandate_id, f"Constraint violation: {reason}")
 
-    # Approved
-    import uuid
+    # 8. Semantic Firewall. Solo APPROVE deja pasar: ESCALATE va a revisión humana
+    # (o se rechaza si el mandato no la permite) y REJECT/falla se rechaza (fail-closed).
+    firewall_verdict, firewall_detail = _run_semantic_firewall(mandate, attempt)
+    checks.append(_check("semantic_firewall", firewall_verdict == "APPROVE", firewall_detail))
+    if firewall_verdict == "ESCALATE":
+        if mandate.scope.allow_hitl_escalation:
+            return _escalate(attempt, mandate, f"Semantic firewall flagged the purchase: {firewall_detail}", checks, now_iso)
+        return reject(mandate.mandate_id, f"Semantic firewall flagged the purchase and HITL escalation is disabled: {firewall_detail}")
+    if firewall_verdict != "APPROVE":
+        return reject(mandate.mandate_id, f"Semantic firewall veto: {firewall_detail}")
+
+    # Approved: se consume el presupuesto y luego se registra la decisión y la liquidación.
     settlement_id = f"stl_{uuid.uuid4().hex[:10]}"
     dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
     state_manager.record_usage(
@@ -356,31 +471,14 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         amount=attempt.amount,
         nonce=attempt.nonce,
     )
-
-    try:
-        from audit.log import audit_ledger
-        audit_ledger.append_entry(
-            event_type="SETTLEMENT_COMPLETED",
-            actor_type="BANK",
-            actor_id="galicia_bank",
-            mandate_id=mandate.mandate_id,
-            attempt_id=attempt.attempt_id,
-            details={"amount": attempt.amount, "settlement_id": settlement_id, "dispute_token": dispute_token},
-        )
-    except Exception:
-        pass
-
-    return VerificationResult(
-        attempt_id=attempt.attempt_id,
-        status=VerificationStatus.APPROVED,
-        authorized=True,
-        reason="All cryptographic, identity, state, and policy constraints satisfied.",
-        checks=checks,
-        settlement_id=settlement_id,
-        dispute_token=dispute_token,
-        timestamp=now_iso,
+    result = _decide(
+        attempt, mandate.mandate_id, VerificationStatus.APPROVED,
+        "All cryptographic, identity, state, policy, and semantic firewall checks satisfied.",
+        checks, now_iso,
+        settlement_id=settlement_id, dispute_token=dispute_token,
     )
-
+    _record_settlement(mandate.mandate_id, attempt, attempt.amount, settlement_id, dispute_token)
+    return result
 
 
 class VerificationGateway:

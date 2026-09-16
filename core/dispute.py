@@ -113,15 +113,18 @@ class DisputeArbiter:
                     self._log_resolution(claim)
                     return claim
 
-        # Rule 3: Check if purchase was verified or HITL approved
-        valid_event_types = {
+        # Rule 3: Check if purchase was verified or HITL approved.
+        # Un evento "verification" (flujo API) solo cuenta si su veredicto fue APPROVE:
+        # un REJECT o ESCALATE registrado no prueba que la compra estuviera autorizada.
+        success_event_types = {
             EventType.VERIFICATION_SUCCESS.value,
             EventType.SETTLEMENT_COMPLETED.value,
-            "SETTLEMENT_COMPLETED",
-            "VERIFICATION_SUCCESS",
-            "verification",
         }
-        verification_events = [e for e in evidence_entries if e.get("event_type") in valid_event_types]
+        verification_events = [
+            e for e in evidence_entries
+            if e.get("event_type") in success_event_types
+            or (e.get("event_type") == "verification" and (e.get("details") or {}).get("verdict") == "APPROVE")
+        ]
         hitl_events = [e for e in evidence_entries if e.get("event_type") in {EventType.HITL_APPROVED.value, "HITL_APPROVED"}]
 
         if not verification_events and not hitl_events:

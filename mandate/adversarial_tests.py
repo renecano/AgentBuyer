@@ -21,6 +21,12 @@ from core.verify import verify_purchase
 from engine.state import state_manager
 
 
+def _check_passed(result, rule: str):
+    """Valor `pass` del check `rule` en la lista de checks ({rule, pass, detail});
+    None si esa regla no llegó a evaluarse."""
+    return next((check["pass"] for check in result.checks if check["rule"] == rule), None)
+
+
 def run_adversarial_suite() -> bool:
     print("=" * 70)
     print("[SEC-SUITE] RUNNING AGENTBUYER ADVERSARIAL ATTACK TEST SUITE (8 VECTORS)")
@@ -56,7 +62,7 @@ def run_adversarial_suite() -> bool:
     # Replay attempt: exact same nonce and signature
     replay_res = vuelaya_merchant.process_purchase(att1)
     # Propiedad de seguridad: fraude NO autorizado, bloqueado por el guard correcto (nonce).
-    if not replay_res.authorized and replay_res.checks.get("nonce_fresh") is False:
+    if not replay_res.authorized and _check_passed(replay_res, "nonce_fresh") is False:
         print("  [BLOCKED] Replay attack intercepted via nonce verification.")
     else:
         print(f"  [FAILED] Replay attack succeeded! Result: {replay_res}")
@@ -71,7 +77,7 @@ def run_adversarial_suite() -> bool:
     att2.amount = 300.0
     tamper_res = vuelaya_merchant.process_purchase(att2)
     # El monto alterado tras firmar rompe la firma Ed25519 del agente (integridad criptográfica).
-    if not tamper_res.authorized and tamper_res.checks.get("agent_signature_valid") is False:
+    if not tamper_res.authorized and _check_passed(tamper_res, "agent_signature_valid") is False:
         print("  [BLOCKED] Tampered amount detected via agent cryptographic signature check.")
     else:
         print(f"  [FAILED] Tampered payload accepted! Result: {tamper_res}")
@@ -84,7 +90,7 @@ def run_adversarial_suite() -> bool:
     luxury_item = vuelaya_merchant.get_item("LUXURY_WATCH_999")
     att3, res3 = agent.attempt_purchase(m1, luxury_item)
     # No autorizado (rechazado o escalado a HITL) por violación de categoría.
-    if not res3.authorized and res3.checks.get("category") is False:
+    if not res3.authorized and _check_passed(res3, "category") is False:
         print("  [BLOCKED] Category mismatch caught by fail-closed evaluator.")
     else:
         print(f"  [FAILED] Forbidden category accepted! Result: {res3}")
@@ -121,7 +127,7 @@ def run_adversarial_suite() -> bool:
     rogue_agent = PurchasingAgent("rogue_agent_99", rogue_priv, rogue_pub)
     att5, res5 = rogue_agent.attempt_purchase(m1, item, tampered_agent_id="rogue_agent_99")
     # La firma del agente rogue no valida contra la clave pública autorizada del mandato.
-    if not res5.authorized and res5.checks.get("agent_signature_valid") is False:
+    if not res5.authorized and _check_passed(res5, "agent_signature_valid") is False:
         print("  [BLOCKED] Unregistered agent identity rejected.")
     else:
         print(f"  [FAILED] Impersonated agent accepted! Result: {res5}")
@@ -143,7 +149,7 @@ def run_adversarial_suite() -> bool:
     mandate_store.save_mandate(forged_mandate)
     att6, res6 = agent.attempt_purchase(forged_mandate, item)
     # Firmado con la clave del atacante pero declarando la pubkey de la víctima: Ed25519 falla.
-    if not res6.authorized and res6.checks.get("human_signature_valid") is False:
+    if not res6.authorized and _check_passed(res6, "human_signature_valid") is False:
         print("  [BLOCKED] Forged human mandate signature detected and rejected.")
     else:
         print(f"  [FAILED] Forged mandate signature accepted! Result: {res6}")
@@ -170,7 +176,7 @@ def run_adversarial_suite() -> bool:
     # Purchase 2 ($130) -> Total $260 > $200 AND count 2 > 1 -> Should fail
     att7_2, res7_2 = agent.attempt_purchase(m7, item)
     # Contador de usos/presupuesto agotado: no autorizado (segunda compra bloqueada).
-    if not res7_2.authorized and res7_2.checks.get("uses") is False:
+    if not res7_2.authorized and _check_passed(res7_2, "uses") is False:
         print("  [BLOCKED] Budget and execution counter limits strictly enforced.")
     else:
         print(f"  [FAILED] Budget exhaustion not prevented! Result: {res7_2}")

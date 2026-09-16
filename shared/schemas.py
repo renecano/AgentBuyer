@@ -115,7 +115,8 @@ class VerificationResult(BaseModel):
     status: VerificationStatus
     authorized: bool
     reason: str
-    checks: Dict[str, bool] = Field(default_factory=dict)
+    # Misma forma que /verify: [{"rule": str, "pass": bool, "detail": str}, ...]
+    checks: List[Dict[str, Any]] = Field(default_factory=list)
     dispute_token: Optional[str] = None
     settlement_id: Optional[str] = None
     settlement_token: Optional[str] = None
