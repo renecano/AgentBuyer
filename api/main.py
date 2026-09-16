@@ -4,24 +4,17 @@ load_dotenv()
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from shared.schemas import (
     Mandate,
     CreateMandateRequest,
     RevokeMandateRequest,
-    PurchaseAttempt,
     ExecutePurchaseRequest,
-    HITLApprovalRequest,
-    ResolveEscalationRequest,
-    DisputeClaim,
-    FileDisputeRequest,
     CatalogItem,
 )
 from mandate.issue import create_mandate
@@ -33,10 +26,9 @@ from core.mandate_store import (
     revoke_mandate as store_revoke_mandate,
     reset_mandate,
 )
-from core.merchant import vuelaya_merchant, get_flights
-from core.agent_loop import PurchasingAgent, run_agent
+from core.merchant import vuelaya_merchant
+from core.agent_loop import PurchasingAgent
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
-from core.dispute import dispute_arbiter
 from mandate.adversarial_tests import run_adversarial_suite
 
 def load_seed_mandates():
@@ -98,15 +90,10 @@ def _get_or_create_keys(entity_id: str) -> Dict[str, str]:
     return _key_registry[entity_id]
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.get("/app", response_class=HTMLResponse)
-def web_app():
-    static_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "index.html")
-    if os.path.exists(static_file):
-        with open(static_file, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>AgentBuyer Mission Control</h1>"
-
+@app.get("/")
+def root():
+    """Estado mínimo del servicio. La UI es el frontend React (frontend/)."""
+    return {"service": "AgentBuyer API", "status": "ok"}
 
 
 @app.get("/health")
@@ -129,15 +116,6 @@ if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
 
 
 # OTP & SMS Endpoints
-class OtpSendReq(BaseModel):
-    phone: str
-
-
-class OtpVerifyReq(BaseModel):
-    phone: str
-    code: str
-
-
 class SmsStartRequest(BaseModel):
     phone_number: str
 
@@ -232,48 +210,6 @@ def auth_sms_check(payload: SmsCheckRequest):
         }
     raise HTTPException(status_code=401, detail="Código SMS incorrecto o expirado.")
 
-
-@app.post("/api/otp/send")
-def api_otp_send(req: OtpSendReq):
-    import secrets
-    telefono = normalizar_telefono(req.phone)
-    code = str(secrets.randbelow(900000) + 100000)
-    _otp_store[telefono] = code
-    _otp_store[req.phone.strip()] = code
-
-    # Si hay Twilio Verify configurado
-    if twilio_client and TWILIO_VERIFY_SERVICE_SID:
-        try:
-            twilio_client.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verifications.create(
-                to=telefono,
-                channel="sms"
-            )
-        except Exception as err:
-            print("Twilio send notice:", err)
-
-    return {
-        "success": True,
-        "code": code if not (twilio_client and TWILIO_VERIFY_SERVICE_SID) else "******",
-        "message": f"Código SMS OTP enviado a {telefono}",
-        "phone": telefono,
-        "requestId": f"req_{int(time.time())}"
-    }
-
-
-@app.post("/api/otp/verify")
-def api_otp_verify(req: OtpVerifyReq):
-    telefono = normalizar_telefono(req.phone)
-    code_in = req.code.strip()
-    expected = _otp_store.get(telefono) or _otp_store.get(req.phone.strip())
-    
-    if expected and code_in == expected:
-        return {
-            "success": True,
-            "verified": True,
-            "phone": telefono,
-            "verifiedAt": datetime.now(timezone.utc).isoformat()
-        }
-    raise HTTPException(status_code=401, detail="Código SMS OTP inválido")
 
 
 # Email OTP Endpoints (SMTP)
@@ -458,17 +394,6 @@ def api_get_mandate(mandate_id: str):
     rec = store_get_mandate(mandate_id)
     if rec is not None:
         return rec
-    mandate = mandate_store.get_mandate(mandate_id)
-    if mandate is not None:
-        return {
-            "mandate": mandate.model_dump(),
-            "live_state": {
-                "status": mandate.status.value.lower(),
-                "uses_count": 0,
-                "amount_spent": 0.0,
-                "revoked_at": mandate.revoked_at,
-            },
-        }
     raise HTTPException(status_code=404, detail="Mandate not found")
 
 
@@ -645,15 +570,6 @@ def api_webhook_travel_provider(payload: dict):
 def api_reset_audit_trail():
     """Abre una sesión de auditoría limpia al reiniciar/iniciar una demo."""
     return reset_trail()
-
-
-@app.get("/audit/trail")
-def api_get_audit_trail(
-    role: str = Query(default="auditor", pattern="^(human|merchant|auditor)$"),
-    mandate_id: Optional[str] = None,
-    attempt_id: Optional[str] = None,
-):
-    return get_trail_for(role=role, mandate_id=mandate_id, attempt_id=attempt_id)
 
 
 @app.get("/audit/verify")

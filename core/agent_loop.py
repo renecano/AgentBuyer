@@ -1,23 +1,19 @@
-import os
 import uuid
 import secrets
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
 from numbers import Real
-from copy import deepcopy
 
 from shared.schemas import (
     Mandate,
     CatalogItem,
     PurchaseAttempt,
     VerificationResult,
-    EventType,
-    ActorType,
 )
 from mandate.sign import sign_payload
 from core.merchant import vuelaya_merchant, VuelaYaMerchant
 from core.mandate_store import VERIFICATION_EVENTS, get_mandate
-from audit.log import audit_ledger, append_entry
+from audit.log import append_entry
 from core.merchant_search import _merchant_slug, search_merchant_offers
 
 
