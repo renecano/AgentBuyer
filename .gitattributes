@@ -1,0 +1,13 @@
+# Todo el código fuente es UTF-8 con saltos de línea LF.
+# Motivo: un editor en Windows guardó .tsx como CP-1252 y corrompió cada
+# acento/emoji ("búsqueda" -> "b├║squeda"), fabricando conflictos de 90 líneas.
+* text=auto
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

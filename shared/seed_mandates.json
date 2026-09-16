@@ -1,0 +1,73 @@
+[
+  {
+    "mandate_id": "mnd_marta_001",
+    "human": {
+      "id": "hum_marta",
+      "name": "Marta",
+      "display_name": "Marta",
+      "id_document": "PASSPORT-AR-948291",
+      "phone": "+525614473083"
+    },
+    "agent": {
+      "id": "agt_saturday",
+      "display_name": "Saturday"
+    },
+    "destination": "COR",
+    "search_fields": {
+      "origin": "BUE",
+      "destination": "COR",
+      "departure_date": "2026-09-15"
+    },
+    "max_amount_per_tx": 150.0,
+    "monthly_limit": 500.0,
+    "currency": "USD",
+    "passengers": [
+      "PASSPORT-AR-948291"
+    ],
+    "cabin": [
+      "ECONOMY"
+    ],
+    "allowed_dates": {
+      "from": "2026-09-01",
+      "to": "2026-12-31"
+    },
+    "max_stops": 1,
+    "expires_at": "2026-12-31T23:59:59Z",
+    "requires_refundable_fare": false,
+    "status": "active",
+    "constraints": {
+      "max_amount_per_purchase": 150.0,
+      "max_amount_per_tx": 150.0,
+      "monthly_budget": 500.0,
+      "currency": "USD",
+      "allowed_categories": [
+        "travel.flights"
+      ],
+      "allowed_merchants": [
+        "mch_vuelaya"
+      ],
+      "max_uses": 3,
+      "conditions": [
+        {
+          "type": "price_below",
+          "value": 150.0
+        }
+      ],
+      "off_session_consent": true
+    },
+    "payment_token": {
+      "token_id": "vtok_mht94htz",
+      "token_type": "SCOPED_VIRTUAL_TOKEN",
+      "masked_card": "•••• 4242",
+      "bank_issuer": "Stripe Elements / Galicia AI Payments"
+    },
+    "authentication": {
+      "passkey_verified": true,
+      "liveness_verified": true,
+      "possession_verified": true,
+      "sms_code": "849201",
+      "enrolled_phone": "5614473083"
+    },
+    "signature": "firma-ed25519-valida-autenticada"
+  }
+]

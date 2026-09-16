@@ -1,0 +1,44 @@
+name: tests
+
+# Puerta de merge: ningún PR entra a main sin backend (pytest) Y frontend (build) en verde.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Guardia de codificación: un editor mal configurado ya corrompió .tsx
+      # a CP-1252 ("búsqueda" -> "b├║squeda"). Estas secuencias jamás aparecen
+      # en fuente UTF-8 legítima; si aparecen, el PR no entra.
+      - name: Check UTF-8 integrity (no mojibake)
+        run: |
+          if grep -rn "├\|ÔÇ\|Ôî\|­ƒ" --include="*.ts" --include="*.tsx" --include="*.py" --include="*.css" frontend/src api core engine shared; then
+            echo "::error::Archivos con texto corrupto (mojibake CP-1252). Configura tu editor a UTF-8."
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # `npm run build` = `tsc -b && vite build`: falla ante cualquier error de
+      # TypeScript/JSX, atrapando las páginas en blanco antes del merge.
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend

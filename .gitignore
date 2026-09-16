@@ -1,0 +1,10 @@
+.DS_Store
+.ipynb_checkpoints/
+.localized
+.vscode/
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+CLAUDE.md
