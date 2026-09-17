@@ -10,13 +10,13 @@ email verificado; ningún endpoint lo exige todavía (ver api/security.py).
 """
 from __future__ import annotations
 
-import os
 import re
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from core.auth_tokens import create_access_token, validated_token_ttl_seconds
+from core.auth_config import auth_dev_mode_enabled
+from core.auth_tokens import create_access_token, validate_token_config
 from core.email_otp import EmailOtpService, OtpCheck, OtpRateLimited
 from core.notifications import enviar_token_otp
 
@@ -35,11 +35,6 @@ class EmailStartRequest(BaseModel):
 class EmailCheckRequest(BaseModel):
     email: str
     code: str
-
-
-def dev_mode_enabled() -> bool:
-    """Solo el valor explícito "true" activa el modo desarrollo."""
-    return os.getenv("AUTH_DEV_MODE", "").strip().lower() == "true"
 
 
 def send_verification_email(email: str, code: str, ttl_seconds: int) -> bool:
@@ -73,7 +68,7 @@ def auth_email_start(payload: EmailStartRequest):
             headers={"Retry-After": str(limited.retry_after_seconds)},
         ) from None
 
-    dev_mode = dev_mode_enabled()
+    dev_mode = auth_dev_mode_enabled()
     delivered = send_verification_email(email, code, otp_service.ttl_seconds)
     if not delivered and not dev_mode:
         # Fail-closed: un código que nadie recibió no debe quedar vivo, y jamás se revela.
@@ -101,7 +96,7 @@ def auth_email_check(payload: EmailCheckRequest):
     email = _normalize_email(payload.email)
     # Antes de verificar: una configuración de tokens inválida (JWT_SECRET o
     # JWT_TTL_SECONDS) no debe consumir el código de un solo uso.
-    token_ttl = validated_token_ttl_seconds()
+    token_ttl = validate_token_config()
     result = otp_service.verify(email, payload.code)
 
     if result is OtpCheck.VALID:

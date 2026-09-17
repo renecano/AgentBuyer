@@ -11,6 +11,20 @@ import api.main as api_main
 # un test; un año evita cualquier borde de reloj.
 SEED_VALIDITY = timedelta(days=365)
 
+# Clave SOLO para la suite (>= 32 bytes). No es la clave de desarrollo del código.
+TEST_JWT_SECRET = "pytest-only-jwt-secret-not-used-anywhere-else-0123456789"
+
+
+@pytest.fixture(autouse=True)
+def auth_config(monkeypatch):
+    """Configuración de auth que la app EXIGE para arrancar (core/auth_tokens.
+    validate_token_config): JWT_SECRET válido y modo desarrollo apagado, como en
+    producción. Aísla la suite del .env y del entorno de quien la corre; los tests
+    que prueban otras combinaciones las sobrescriben con monkeypatch."""
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
+    monkeypatch.delenv("AUTH_DEV_MODE", raising=False)
+    monkeypatch.delenv("JWT_TTL_SECONDS", raising=False)
+
 
 @pytest.fixture()
 def active_seed(monkeypatch, tmp_path) -> dict:

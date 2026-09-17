@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -29,7 +30,10 @@ from core.mandate_store import (
 from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
+from core.auth_tokens import TokenConfigError, validate_token_config
 from mandate.adversarial_tests import run_adversarial_suite
+
+startup_logger = logging.getLogger("agentbuyer.startup")
 
 # Se lee en cada arranque (no se captura al importar), así los tests pueden
 # apuntarlo a una copia del seed con fechas relativas.
@@ -51,6 +55,13 @@ def load_seed_mandates():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Reemplaza el @app.on_event("startup") deprecado.
+    # Fail-fast: un despliegue sin JWT_SECRET válido (fuera de AUTH_DEV_MODE) no
+    # arranca, en vez de fallar en el primer login o firmar con una clave pública.
+    try:
+        validate_token_config()
+    except TokenConfigError as error:
+        startup_logger.critical("AgentBuyer API no puede arrancar: configuración de tokens inválida. %s", error)
+        raise
     load_seed_mandates()
     yield
 

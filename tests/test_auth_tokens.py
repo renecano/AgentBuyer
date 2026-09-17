@@ -165,6 +165,7 @@ def test_decode_raises_for_invalid_token(make_token):
 
 def test_dev_secret_warns_and_its_tokens_fail_once_real_secret_is_set(monkeypatch, caplog):
     monkeypatch.delenv("JWT_SECRET")
+    monkeypatch.setenv("AUTH_DEV_MODE", "true")  # único caso en que se permite la clave de dev
     monkeypatch.setattr(auth_tokens, "_dev_secret_warned", False)
 
     with caplog.at_level("WARNING", logger="core.auth_tokens"):

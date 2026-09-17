@@ -21,6 +21,7 @@ from typing import Any
 
 import jwt
 
+from core.auth_config import auth_dev_mode_enabled
 from core.email_otp import env_positive_int
 
 logger = logging.getLogger(__name__)
@@ -34,28 +35,52 @@ MIN_SECRET_BYTES = 32  # RFC 7518 §3.2: la clave HMAC de HS256 debe tener al me
 _REQUIRED_CLAIMS = ["iss", "sub", "role", "iat", "exp"]
 
 # ADVERTENCIA: SOLO para desarrollo local. Está en el repositorio, así que cualquiera
-# podría falsificar tokens firmados con ella. En producción JWT_SECRET debe venir
-# del entorno (gestor de secretos), con al menos 32 bytes aleatorios.
+# podría falsificar tokens firmados con ella. Por construcción solo se usa con
+# AUTH_DEV_MODE=true y sin JWT_SECRET; en cualquier otro caso falta de clave = error.
 _DEV_ONLY_SECRET = "dev-only-insecure-jwt-secret-do-not-use-in-production"
 _dev_secret_warned = False
+
+_GENERATE_SECRET_HINT = 'python -c "import secrets; print(secrets.token_urlsafe(48))"'
 
 
 class InvalidAccessToken(Exception):
     """Token mal formado, con firma inválida, expirado o con claims inválidos."""
 
 
+class TokenConfigError(ValueError):
+    """La configuración de firma de tokens es inválida: la app no debe operar."""
+
+
 def _signing_secret() -> str:
+    """Clave de firma. Reglas, en orden:
+      1. JWT_SECRET definido → se usa si tiene al menos MIN_SECRET_BYTES; si no, error
+         (una clave explícita inválida NUNCA cae a la de desarrollo, ni en modo dev).
+      2. Sin JWT_SECRET y AUTH_DEV_MODE=true → clave de desarrollo, con advertencia.
+      3. Sin JWT_SECRET en cualquier otro caso → error. Único camino en producción.
+    """
     global _dev_secret_warned
     secret = os.getenv("JWT_SECRET", "").strip()
     if secret:
         # PyJWT solo advierte con claves cortas y firma igual: aquí se falla cerrado.
         if len(secret.encode("utf-8")) < MIN_SECRET_BYTES:
-            raise ValueError(f"JWT_SECRET debe tener al menos {MIN_SECRET_BYTES} bytes.")
+            raise TokenConfigError(
+                f"JWT_SECRET tiene {len(secret.encode('utf-8'))} bytes; se requieren al menos "
+                f"{MIN_SECRET_BYTES}. Genera uno con: {_GENERATE_SECRET_HINT}"
+            )
         return secret
+
+    if not auth_dev_mode_enabled():
+        raise TokenConfigError(
+            "JWT_SECRET no está definido. Es OBLIGATORIO fuera de desarrollo: define JWT_SECRET "
+            f"con al menos {MIN_SECRET_BYTES} bytes aleatorios (genera uno con: {_GENERATE_SECRET_HINT}). "
+            "Solo para desarrollo local puedes usar AUTH_DEV_MODE=true, que habilita una clave "
+            "de desarrollo insegura; nunca en producción."
+        )
+
     if not _dev_secret_warned:
         logger.warning(
-            "JWT_SECRET no está definido: se firman tokens con una clave de DESARROLLO. "
-            "En producción JWT_SECRET debe venir del entorno."
+            "AUTH_DEV_MODE=true y JWT_SECRET no está definido: se firman tokens con una clave de "
+            "DESARROLLO que está en el repositorio. Nunca usar esta configuración en producción."
         )
         _dev_secret_warned = True
     return _DEV_ONLY_SECRET
@@ -65,11 +90,15 @@ def access_token_ttl_seconds() -> int:
     return env_positive_int("JWT_TTL_SECONDS", DEFAULT_TTL_SECONDS)
 
 
-def validated_token_ttl_seconds() -> int:
-    """Valida TODA la configuración de firma (JWT_SECRET y JWT_TTL_SECONDS) y
-    devuelve el TTL. Lanza ValueError si algo es inválido, antes de emitir nada."""
+def validate_token_config() -> int:
+    """Valida TODA la configuración de firma (JWT_SECRET, AUTH_DEV_MODE y
+    JWT_TTL_SECONDS) y devuelve el TTL. Lanza TokenConfigError si algo es inválido.
+    Se ejecuta al arrancar la app (api/main.py) y antes de consumir un OTP."""
     _signing_secret()
-    return access_token_ttl_seconds()
+    try:
+        return access_token_ttl_seconds()
+    except ValueError as error:
+        raise TokenConfigError(str(error)) from None
 
 
 def create_access_token(
