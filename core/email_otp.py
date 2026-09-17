@@ -44,7 +44,7 @@ class _PendingCode:
     failed_attempts: int = 0
 
 
-def _env_positive_int(name: str, default: int) -> int:
+def env_positive_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
@@ -81,10 +81,10 @@ class EmailOtpService:
     @classmethod
     def from_env(cls) -> "EmailOtpService":
         return cls(
-            ttl_seconds=_env_positive_int("AUTH_OTP_TTL_SECONDS", 600),
-            max_attempts=_env_positive_int("AUTH_OTP_MAX_ATTEMPTS", 5),
-            resend_cooldown_seconds=_env_positive_int("AUTH_OTP_RESEND_COOLDOWN_SECONDS", 60),
-            max_sends_per_window=_env_positive_int("AUTH_OTP_MAX_SENDS_PER_HOUR", 5),
+            ttl_seconds=env_positive_int("AUTH_OTP_TTL_SECONDS", 600),
+            max_attempts=env_positive_int("AUTH_OTP_MAX_ATTEMPTS", 5),
+            resend_cooldown_seconds=env_positive_int("AUTH_OTP_RESEND_COOLDOWN_SECONDS", 60),
+            max_sends_per_window=env_positive_int("AUTH_OTP_MAX_SENDS_PER_HOUR", 5),
             send_window_seconds=3600,
         )
 

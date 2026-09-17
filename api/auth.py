@@ -5,7 +5,8 @@ POST /auth/email/check  → verifica el código (uso único, con TTL y límite d
 
 El código NUNCA viaja en la respuesta, salvo con AUTH_DEV_MODE=true (desarrollo
 local sin SMTP). Ni siquiera si el envío falla: en ese caso se invalida y se
-responde 503. Este paso todavía no emite token de sesión.
+responde 503. Una verificación exitosa emite un access token (JWT) cuyo sub es el
+email verificado; ningún endpoint lo exige todavía (ver api/security.py).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import re
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
+from core.auth_tokens import create_access_token, validated_token_ttl_seconds
 from core.email_otp import EmailOtpService, OtpCheck, OtpRateLimited
 from core.notifications import enviar_token_otp
 
@@ -97,6 +99,9 @@ def auth_email_start(payload: EmailStartRequest):
 @router.post("/auth/email/check")
 def auth_email_check(payload: EmailCheckRequest):
     email = _normalize_email(payload.email)
+    # Antes de verificar: una configuración de tokens inválida (JWT_SECRET o
+    # JWT_TTL_SECONDS) no debe consumir el código de un solo uso.
+    token_ttl = validated_token_ttl_seconds()
     result = otp_service.verify(email, payload.code)
 
     if result is OtpCheck.VALID:
@@ -105,6 +110,9 @@ def auth_email_check(payload: EmailCheckRequest):
             "verified": True,
             "email": email,
             "message": "Email verified successfully.",
+            "access_token": create_access_token(email, ttl_seconds=token_ttl),
+            "token_type": "bearer",
+            "expires_in": token_ttl,
         }
     if result is OtpCheck.LOCKED:
         raise HTTPException(

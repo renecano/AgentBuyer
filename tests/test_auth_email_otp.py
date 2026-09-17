@@ -2,13 +2,16 @@
 límite de intentos, rate limit por destino y el código jamás expuesto fuera del
 cuerpo del correo (salvo AUTH_DEV_MODE=true)."""
 import email as email_lib
+import time
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 import api.auth as auth_api
 import core.notifications as notifications
 from api.main import app
+from core.auth_tokens import ISSUER, decode_access_token
 from core.email_otp import EmailOtpService
 
 EMAIL = "test.user@example.com"
@@ -275,3 +278,46 @@ def test_real_email_carries_code_only_in_body(client, monkeypatch, capsys):
     output = capsys.readouterr()
     assert code not in output.out and code not in output.err
     assert check(client, code).status_code == 200
+
+
+# ── Access token emitido al verificar ───────────────────────────────────────
+
+def test_successful_check_returns_valid_access_token(client, outbox, monkeypatch):
+    secret = "otp-endpoint-test-secret-0123456789-abcdefghij"
+    monkeypatch.setenv("JWT_SECRET", secret)
+    monkeypatch.delenv("JWT_TTL_SECONDS", raising=False)
+    start(client)
+
+    body = check(client, outbox[-1]["code"]).json()
+
+    # Aditivo: la respuesta anterior sigue intacta.
+    assert body["ok"] is True and body["verified"] is True and body["email"] == EMAIL
+    assert body["token_type"] == "bearer"
+    assert body["expires_in"] == 3600
+
+    claims = jwt.decode(body["access_token"], secret, algorithms=["HS256"], issuer=ISSUER)
+    assert claims["sub"] == EMAIL
+    assert claims["role"] == "user"
+    assert claims["exp"] > time.time()
+    assert claims["exp"] - claims["iat"] == 3600
+    assert decode_access_token(body["access_token"])["sub"] == EMAIL
+
+
+def test_failed_check_issues_no_token(client, outbox):
+    start(client)
+    response = check(client, wrong(outbox[-1]["code"]))
+
+    assert response.status_code == 401
+    assert "access_token" not in response.text
+
+
+def test_invalid_token_config_does_not_consume_the_code(client, outbox, monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "too-short")
+    start(client)
+    code = outbox[-1]["code"]
+
+    with pytest.raises(ValueError):
+        check(client, code)  # error de configuración del servidor
+
+    monkeypatch.setenv("JWT_SECRET", "otp-endpoint-test-secret-0123456789-abcdefghij")
+    assert check(client, code).status_code == 200  # el código sigue disponible
