@@ -50,7 +50,9 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture()
-def client():
+def client(active_seed):
+    # active_seed (tests/conftest.py): el seed expira relativo a "ahora", así cada
+    # test ejerce la rama que dice congelar sin depender de la fecha del sistema.
     _clear_backend_state()
     with TestClient(app) as test_client:  # el lifespan carga el seed
         yield test_client

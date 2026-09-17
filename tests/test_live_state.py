@@ -1,11 +1,14 @@
 """Estado vivo unificado: live_state es la ÚNICA fuente de verdad de status,
 uses_count y amount_spent, sin importar qué línea (estricta o permisiva) procesó
 la compra. Es exactamente lo que React lee en GET /mandates/{id}."""
+import json
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 from api.main import app
 from audit.log import reset_trail
 from core.agent_loop import PurchasingAgent
@@ -157,6 +160,31 @@ def test_expiry_is_exposed_without_a_prior_strict_read():
 
         verification = client.post("/verify", json={
             "attempt_id": "att_live_expired", "mandate_id": "mnd_live_expired", "presented_by_agent": "agt_saturday",
+            "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
+        }).json()
+        assert verification["verdict"] == "REJECT"
+        assert next(check for check in verification["checks"] if check["rule"] == "status")["pass"] is False
+
+
+def test_expired_seed_is_still_rejected(monkeypatch, tmp_path):
+    """Contraprueba del fixture active_seed: la expiración NO se debilitó. El mismo
+    seed, con un expires_at realmente vencido y cargado por el arranque normal,
+    se ve EXPIRED desde ambos lectores (UI y línea estricta) y /verify lo rechaza."""
+    seeds = json.loads(Path(api_main.SEED_PATH).read_text(encoding="utf-8"))
+    for seed in seeds:
+        seed["expires_at"] = "2020-01-01T00:00:00Z"
+    expired_seed = tmp_path / "seed_mandates.json"
+    expired_seed.write_text(json.dumps(seeds, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(api_main, "SEED_PATH", str(expired_seed))
+    seed_id = seeds[0]["mandate_id"]
+
+    with TestClient(app) as client:
+        assert client.get(f"/mandates/{seed_id}").json()["live_state"]["status"] == "expired"
+        assert mandate_store.get_mandate(seed_id).status == MandateStatus.EXPIRED
+
+        verification = client.post("/verify", json={
+            "attempt_id": "att_expired_seed", "mandate_id": seed_id,
+            "presented_by_agent": seeds[0]["agent"]["id"],
             "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
         }).json()
         assert verification["verdict"] == "REJECT"

@@ -31,11 +31,15 @@ from core.agent_loop import PurchasingAgent
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from mandate.adversarial_tests import run_adversarial_suite
 
+# Se lee en cada arranque (no se captura al importar), así los tests pueden
+# apuntarlo a una copia del seed con fechas relativas.
+SEED_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shared", "seed_mandates.json")
+
+
 def load_seed_mandates():
-    seed_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shared", "seed_mandates.json")
-    if os.path.exists(seed_path):
+    if os.path.exists(SEED_PATH):
         import json
-        with open(seed_path, "r", encoding="utf-8") as f:
+        with open(SEED_PATH, "r", encoding="utf-8") as f:
             seeds = json.load(f)
             for m in seeds:
                 try:
