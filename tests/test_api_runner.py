@@ -14,7 +14,7 @@ WEB_OFFERS = [
 SEARCH_FIELDS = {"origin": "BUE", "destination": "COR", "departure_date": "2026-09-15"}
 
 
-def test_full_pipeline_headless(monkeypatch):
+def test_full_pipeline_headless(monkeypatch, auth_headers):
     # La búsqueda web SIEMPRE va mockeada en tests (sin red).
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda p: json.dumps(WEB_OFFERS))
     # 1. Health check
@@ -36,7 +36,8 @@ def test_full_pipeline_headless(monkeypatch):
             ]
         }
     }
-    resp = client.post("/mandates", json=mandate_payload)
+    # Crear mandato exige token de persona: el dueño sale de ahí (api/security.py).
+    resp = client.post("/mandates", json=mandate_payload, headers=auth_headers)
     assert resp.status_code == 201
 
     # 3. Get flights

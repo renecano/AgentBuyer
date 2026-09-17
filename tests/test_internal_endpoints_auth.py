@@ -288,7 +288,11 @@ def test_login_without_admin_emails_configured_is_always_user(client, monkeypatc
 
 # ── Guardia: cada endpoint declara el esquema correcto en OpenAPI ───────────
 
+# Operación → esquemas que DEBE declarar. POST /mandates declara los dos porque
+# su dependencia mira ambas credenciales para distinguir 401 (sin credencial) de
+# 403 (servicio autenticado, que no puede ser dueño de un mandato).
 EXPECTED_SECURITY = {
+    ("POST", "/mandates"): {"bearer", "service_key"},
     ("GET", "/inbox/messages"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
@@ -305,8 +309,8 @@ EXPECTED_SECURITY = {
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):
 # protegerlos rompería la UI hasta que el frontend envíe el header.
+# POST /mandates ya NO está aquí: desde 2D-3 exige token (React lo manda).
 REACT_ROUTES = {
-    ("POST", "/mandates"),
     ("GET", "/mandates/{mandate_id}"),
     ("POST", "/mandates/{mandate_id}/revoke"),
     ("POST", "/mandates/{mandate_id}/reset"),
@@ -342,9 +346,10 @@ def _openapi_security_by_operation() -> dict[tuple[str, str], set[str]]:
 
 
 def test_each_internal_endpoint_declares_the_right_security_scheme():
-    """Guardia: cada endpoint interno declara exactamente su esquema (bearer para
-    user/admin, API key para service), ningún otro endpoint declara seguridad, y
-    ninguno de React declara nada (eso rompería el frontend)."""
+    """Guardia: cada endpoint protegido declara exactamente sus esquemas (bearer
+    para user/admin, API key para service), ningún otro endpoint declara seguridad,
+    y los de React que siguen abiertos no declaran nada (protegerlos sin avisar
+    rompería el frontend)."""
     security = _openapi_security_by_operation()
 
     # Las listas apuntan a operaciones que existen (un renombre no deja la guardia vacía).
@@ -352,7 +357,11 @@ def test_each_internal_endpoint_declares_the_right_security_scheme():
     assert REACT_ROUTES <= set(security)
 
     declared = {operation: kinds for operation, kinds in security.items() if kinds}
-    assert declared == {operation: {kind} for operation, kind in EXPECTED_SECURITY.items()}
+    expected = {
+        operation: {kinds} if isinstance(kinds, str) else set(kinds)
+        for operation, kinds in EXPECTED_SECURITY.items()
+    }
+    assert declared == expected
     assert all(not security[operation] for operation in REACT_ROUTES)
 
 

@@ -21,10 +21,11 @@ SECURITY_RULES = {"signature", "agent_identity", "status"}
 
 
 @pytest.fixture()
-def client():
+def client(auth_headers):
     # El context manager dispara el startup (que carga el seed); limpiamos
     # después para que cada test empiece con memoria vacía y estado propio.
-    with TestClient(app) as test_client:
+    # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
+    with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.MANDATES.clear()
         reset_trail()
         yield test_client

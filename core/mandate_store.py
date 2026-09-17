@@ -26,6 +26,12 @@ def _normalize_owner(owner_email: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def mandate_exists(mandate_id: str) -> bool:
+    """¿Existe el mandato? Sin copiarlo: para decidir 404 antes de evaluar propiedad."""
+    with mandate_store._lock:
+        return mandate_id in MANDATES
+
+
 def get_mandate_owner(mandate_id: str) -> Optional[str]:
     """Email del dueño del mandato, o None si no tiene dueño registrado (o no existe)."""
     with mandate_store._lock:

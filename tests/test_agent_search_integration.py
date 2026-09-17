@@ -20,8 +20,10 @@ SEARCH_FIELDS = {"origin": "MEX", "destination": "CUN", "departure_date": "2026-
 
 
 @pytest.fixture()
-def client():
-    with TestClient(app) as test_client:
+def client(auth_headers):
+    # El cliente va autenticado como un usuario real: crear mandatos exige token
+    # (POST /mandates), igual que hace React hoy. La auth no se desactiva.
+    with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.MANDATES.clear()
         reset_trail()
         yield test_client

@@ -142,7 +142,7 @@ def test_status_seen_by_ui_and_strict_line_is_the_same():
     assert strict_view.revoked_at == revoked["live_state"]["revoked_at"]
 
 
-def test_expiry_is_exposed_without_a_prior_strict_read():
+def test_expiry_is_exposed_without_a_prior_strict_read(auth_headers):
     """Antes, GET /mandates/{id} mostraba "active" en un mandato vencido hasta que
     alguien lo leía por la clase. Ahora ambos lectores aplican la misma regla."""
     expired = {
@@ -154,7 +154,7 @@ def test_expiry_is_exposed_without_a_prior_strict_read():
         "signature": "test-signature-placeholder",
     }
     with TestClient(app) as client:
-        assert client.post("/mandates", json=expired).status_code == 201
+        assert client.post("/mandates", json=expired, headers=auth_headers).status_code == 201
 
         live_state = client.get("/mandates/mnd_live_expired").json()["live_state"]
         assert live_state["status"] == "expired"

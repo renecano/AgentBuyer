@@ -11,8 +11,9 @@ MANDATE_ID = "mnd_esc_001"
 
 
 @pytest.fixture()
-def client():
-    with TestClient(app) as test_client:
+def client(auth_headers):
+    # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
+    with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.MANDATES.clear()
         reset_trail()
         yield test_client

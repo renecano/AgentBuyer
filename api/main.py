@@ -29,7 +29,14 @@ from core.mandate_store import (
 )
 from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
-from api.security import Principal, owner_email_for, require_admin, require_principal, require_service
+from api.security import (
+    Principal,
+    owner_email_for,
+    require_admin,
+    require_human_principal,
+    require_principal,
+    require_service,
+)
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
@@ -198,8 +205,13 @@ def api_create_mandate(req: CreateMandateRequest, principal: Principal = Depends
 
 
 @app.post("/mandates", status_code=status.HTTP_201_CREATED)
-def create_mandate_endpoint(mandate: dict[str, Any]):
-    """Crea un mandato firmado y establece su estado vivo inicial."""
+def create_mandate_endpoint(
+    mandate: dict[str, Any],
+    principal: Principal = Depends(require_human_principal),
+):
+    """Crea un mandato firmado y establece su estado vivo inicial.
+
+    Exige token de persona (user/admin): quien lo crea queda como su dueño."""
     mandate_id = mandate.get("mandate_id")
     if not isinstance(mandate_id, str) or not mandate_id.strip():
         raise HTTPException(
@@ -208,10 +220,9 @@ def create_mandate_endpoint(mandate: dict[str, Any]):
         )
 
     try:
-        # Dueño derivado del token, NUNCA del cuerpo. Este endpoint aún no exige
-        # token (lo llama React sin él), así que hoy no hay principal: owner=None.
-        # Al añadir `principal: Principal = Depends(require_principal)`, pasarlo aquí.
-        record = store_create_mandate(mandate, owner_email=owner_email_for(None))
+        # Dueño derivado del token, NUNCA del cuerpo: un owner_email que venga en
+        # `mandate` se guarda como un dato más del cliente, sin ningún efecto.
+        record = store_create_mandate(mandate, owner_email=owner_email_for(principal))
         append_entry(
             {
                 "type": "mandate_created",
