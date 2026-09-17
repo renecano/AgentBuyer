@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { API_BASE } from "../lib/api";
 
 export interface MandatePayload {
   destination: string;
@@ -55,8 +56,6 @@ export interface ZeroTrustSecurityState {
   isLoading: boolean;
   isSubmitEnabled: boolean;
 }
-
-const API_BASE = "http://127.0.0.1:8000";
 
 /**
  * Custom Hook de React para Enrolamiento Fuerte Único (Zero-Trust MFA).
@@ -280,81 +279,6 @@ export function useZeroTrustSecurity() {
     }
   }, [stopCamera]);
 
-  // 4. Factor de Posesión: OTP por email vía API real del backend (único canal de login)
-  const sendOtp = useCallback(async (email: string): Promise<any> => {
-    setIsLoading(true);
-    setErrorMessage(null);
-
-    const endpoint = `${API_BASE}/auth/email/start`;
-    const body = { email: email.trim() };
-
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `Error requesting OTP: HTTP ${response.status}`);
-      }
-
-      const result = await response.json();
-      setIsLoading(false);
-      return result;
-    } catch (err: any) {
-      const errorStr = err?.message || "Couldn't send the verification code.";
-      setErrorMessage(errorStr);
-      setIsLoading(false);
-      throw err;
-    }
-  }, []);
-
-  const verifyOtp = useCallback(async (email: string, code: string): Promise<boolean> => {
-    setIsLoading(true);
-    setErrorMessage(null);
-
-    const cleanCode = code.trim();
-    if (!/^\d{6}$/.test(cleanCode)) {
-      const errStr = "The OTP code must be exactly 6 digits.";
-      setErrorMessage(errStr);
-      setIsLoading(false);
-      throw new Error(errStr);
-    }
-
-    const endpoint = `${API_BASE}/auth/email/check`;
-    const body = { email: email.trim(), code: cleanCode };
-
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || "401 Unauthorized: Incorrect or expired code.");
-      }
-
-      const result = await response.json();
-      if (result.verified || result.ok) {
-        setIsPossessionVerified(true);
-        setIsLoading(false);
-        return true;
-      }
-
-      throw new Error("The code couldn't be verified.");
-    } catch (err: any) {
-      const errorStr = err?.message || "Incorrect or expired code.";
-      setErrorMessage(errorStr);
-      setIsPossessionVerified(false);
-      setIsLoading(false);
-      throw err;
-    }
-  }, []);
-
   // 5. Tokenización PCI: Stripe.js Real con fallback a Scoped Virtual Token (PCI DLP)
   const handleTokenizeCard = useCallback(async (cardData?: string): Promise<string> => {
     setIsLoading(true);
@@ -533,8 +457,6 @@ export function useZeroTrustSecurity() {
     startCamera,
     stopCamera,
     verifyLiveness,
-    sendOtp,
-    verifyOtp,
     handleTokenizeCard,
     submitDelegatedMandate,
     clearError,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { ApiError, request } from "../lib/api";
 import { auditTypeLabel, localizedText, verdictLabel } from "../lib/presentation";
-
-const API_BASE = "http://127.0.0.1:8000";
 
 type AuditEvent = {
   event_id: string; timestamp: string; type: string; mandate_id: string;
@@ -56,15 +55,16 @@ export default function AccountView({ mandateId }: { mandateId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const [trailResponse, mandateResponse] = await Promise.all([
-        fetch(`${API_BASE}/audit/${mandateId}`),
-        fetch(`${API_BASE}/mandates/${mandateId}`),
+      const [trail, mandateRecord] = await Promise.all([
+        request<AuditEvent[]>(`/audit/${mandateId}`),
+        request<MandateRecord>(`/mandates/${mandateId}`),
       ]);
-      if (!trailResponse.ok || !mandateResponse.ok) throw new Error("Couldn't refresh your information.");
-      setEvents(await trailResponse.json() as AuditEvent[]);
-      setMandate(await mandateResponse.json() as MandateRecord);
+      setEvents(trail);
+      setMandate(mandateRecord);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No connection to the system.");
+      // Error HTTP → mensaje fijo de esta vista; error de red → mensaje del navegador.
+      if (caught instanceof ApiError) setError("Couldn't refresh your information.");
+      else setError(caught instanceof Error ? caught.message : "No connection to the system.");
     } finally {
       setLoading(false);
     }
@@ -78,9 +78,8 @@ export default function AccountView({ mandateId }: { mandateId: string }) {
     setDispute(null);
     try {
       const claimantId = mandate?.mandate.human?.id ?? "hum_cardholder";
-      const response = await fetch(`${API_BASE}/disputes/file`, {
+      const claim = await request<DisputeClaim>("/disputes/file", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           attempt_id: attemptId,
           mandate_id: mandateId,
@@ -88,16 +87,13 @@ export default function AccountView({ mandateId }: { mandateId: string }) {
           reason: "I don't recognize this charge — the cardholder denies authorizing it.",
         }),
       });
-      if (!response.ok) {
-        let message = `The system responded ${response.status}.`;
-        try { const body = await response.json() as { detail?: string }; if (body.detail) message = body.detail; } catch { /* no-json */ }
-        throw new Error(message);
-      }
-      setDispute(await response.json() as DisputeClaim);
+      setDispute(claim);
       // El árbitro deja un evento en el trail; refrescamos para que se vea.
       void loadAccount();
     } catch (caught) {
-      setDisputeError(caught instanceof Error ? caught.message : "Couldn't file the dispute.");
+      // Esta vista siempre mostró el `detail` del backend sin traducir.
+      if (caught instanceof ApiError) setDisputeError(caught.detail ?? `The system responded ${caught.status}.`);
+      else setDisputeError(caught instanceof Error ? caught.message : "Couldn't file the dispute.");
     } finally {
       setDisputingId(null);
     }

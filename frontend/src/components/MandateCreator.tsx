@@ -3,8 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import Saturday, { type SaturdayExpression } from "./Saturday";
 import { useLivenessVerification } from "../hooks/useLivenessVerification";
 import { useZeroTrustSecurity } from "../hooks/useZeroTrustSecurity";
-
-const API_BASE = "http://127.0.0.1:8000";
+import { ApiError, request } from "../lib/api";
 
 type MandateCreatorProps = {
   onCreated: (mandateId: string) => void;
@@ -401,17 +400,17 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
 
     setCreating(true);
     try {
-      const response = await fetch(`${API_BASE}/mandates`, {
+      // La respuesta no se usa: se navega con el mandate_id generado aquí.
+      await request<unknown>("/mandates", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(`El sistema respondió ${response.status}.`);
       if (demo) onDemoCreated?.(mandateId);
       else onCreated(mandateId);
       return true;
     } catch (caught) {
-      setError(caught instanceof Error ? `We couldn't create your permission: ${caught.message}` : "We couldn't create your permission. Check the connection to the system.");
+      const reason = caught instanceof ApiError ? `El sistema respondió ${caught.status}.` : caught instanceof Error ? caught.message : null;
+      setError(reason !== null ? `We couldn't create your permission: ${reason}` : "We couldn't create your permission. Check the connection to the system.");
       return false;
     } finally {
       setCreating(false);
@@ -487,8 +486,12 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     setWizardDemoMessage("ACT 1 · ISSUANCE: opening a clean audit session.");
 
     try {
-      const auditReset = await withTimeout(fetch(`${API_BASE}/audit/reset`, { method: "POST" }));
-      if (!auditReset.ok) throw new Error("The audit session could not be reset.");
+      try {
+        await withTimeout(request<unknown>("/audit/reset", { method: "POST" }));
+      } catch (caught) {
+        if (caught instanceof ApiError) throw new Error("The audit session could not be reset.");
+        throw caught;
+      }
       setWizardDemoMessage("ACT 1 · ISSUANCE: loading Marta's demonstration mandate.");
       loadMartaDemoValues();
       setCurrentStep(1);

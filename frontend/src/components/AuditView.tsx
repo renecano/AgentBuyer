@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { ApiError, request } from "../lib/api";
 import { auditTypeLabel, displayName, localizedText, verdictLabel } from "../lib/presentation";
 
-const API_BASE = "http://127.0.0.1:8000";
 type AuditEvent = { event_id: string; timestamp: string; type: string; mandate_id: string; verdict?: "APPROVE" | "ESCALATE" | "REJECT"; summary: string };
 
 function formatDate(timestamp: string) {
@@ -16,11 +16,10 @@ export default function AuditView() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/audit`);
-      if (!response.ok) throw new Error("Couldn't load the full audit trail.");
-      setEvents(await response.json() as AuditEvent[]);
+      setEvents(await request<AuditEvent[]>("/audit"));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No connection to the system.");
+      if (caught instanceof ApiError) setError("Couldn't load the full audit trail.");
+      else setError(caught instanceof Error ? caught.message : "No connection to the system.");
     } finally { setLoading(false); }
   }, []);
 

@@ -4,9 +4,8 @@ import Saturday, { type SaturdayState } from "./components/Saturday";
 import MandateCreator from "./components/MandateCreator";
 import AccountView from "./components/AccountView";
 import AuditView from "./components/AuditView";
-import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayStateLabel, translateBackendText, verdictLabel } from "./lib/presentation";
-
-const API_BASE = "http://127.0.0.1:8000";
+import { request, requestWithTimeout } from "./lib/api";
+import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayStateLabel, verdictLabel } from "./lib/presentation";
 
 type LiveState = {
   status: "active" | "revoked" | "expired";
@@ -67,40 +66,6 @@ const DEMO_ACTS: Record<DemoAct, { title: string; copy: string }> = {
   4: { title: "FINE-PRINT TRAP", copy: "A suspicious purchase — watch the system catch it." },
   5: { title: "REVOCATION", copy: "Marta revokes — Saturday is blocked instantly." },
 };
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...options?.headers },
-  });
-  if (!response.ok) {
-    // El backend explica sus 404/409/422 en `detail`; se traduce en la capa
-    // de presentación (clave para los errores de la revisión humana).
-    let message = `The system responded ${response.status}.`;
-    try {
-      const body = (await response.json()) as { detail?: string };
-      if (typeof body.detail === "string" && body.detail) message = translateBackendText(body.detail);
-    } catch { /* cuerpo no-JSON: se conserva el mensaje genérico */ }
-    throw new Error(message);
-  }
-  return response.json() as Promise<T>;
-}
-
-async function requestWithTimeout<T>(path: string, options: RequestInit, timeoutMs: number, externalSignal?: AbortSignal): Promise<T | null> {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  externalSignal?.addEventListener("abort", abort, { once: true });
-  const timeout = window.setTimeout(abort, timeoutMs);
-  try {
-    return await request<T>(path, { ...options, signal: controller.signal });
-  } catch (caught) {
-    if (controller.signal.aborted) return null;
-    throw caught;
-  } finally {
-    window.clearTimeout(timeout);
-    externalSignal?.removeEventListener("abort", abort);
-  }
-}
 
 function verdictState(verdict: Verification["verdict"]): SaturdayState {
   return verdict === "APPROVE" ? "approve" : verdict === "ESCALATE" ? "escalate" : "reject";

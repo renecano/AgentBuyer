@@ -102,6 +102,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Retry-After no es un header "safelisted": sin exponerlo, el navegador no deja
+    # que el frontend lea el cooldown del 429 (login por email).
+    expose_headers=["Retry-After"],
 )
 
 # Key storage for demo
