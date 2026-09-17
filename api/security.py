@@ -15,12 +15,13 @@ from __future__ import annotations
 import hmac
 import logging
 from dataclasses import dataclass
+from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from core.auth_config import ServiceKeyConfigError, admin_emails, service_api_keys
-from core.auth_tokens import ROLE_ADMIN, InvalidAccessToken, decode_access_token
+from core.auth_tokens import ROLE_ADMIN, ROLE_USER, InvalidAccessToken, decode_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,18 @@ def require_principal(
     except InvalidAccessToken:
         raise _unauthorized("Invalid or expired token.", 'Bearer error="invalid_token"') from None
     return Principal(subject=claims["sub"], role=claims["role"])
+
+
+def owner_email_for(principal: Optional[Principal]) -> Optional[str]:
+    """Gancho de propiedad: email que queda como DUEÑO de un recurso creado por
+    `principal`. Solo humanos autenticados (user/admin) son dueños; sin principal
+    (creación anónima) o con un servicio, no hay dueño (None).
+
+    Hoy POST /mandates no exige token y pasa None; al añadirle require_principal,
+    basta con pasar su Principal aquí para que el dueño se registre solo."""
+    if principal is None or principal.role not in (ROLE_USER, ROLE_ADMIN):
+        return None
+    return principal.subject.strip().lower()
 
 
 def require_admin(principal: Principal = Depends(require_principal)) -> Principal:

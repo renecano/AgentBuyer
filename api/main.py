@@ -29,7 +29,7 @@ from core.mandate_store import (
 )
 from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
-from api.security import Principal, require_admin, require_principal, require_service
+from api.security import Principal, owner_email_for, require_admin, require_principal, require_service
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
@@ -49,7 +49,9 @@ def load_seed_mandates():
             seeds = json.load(f)
             for m in seeds:
                 try:
-                    store_create_mandate(m)
+                    # El seed es config del servidor (no input de un cliente): su dueño
+                    # es el email de su human, igual que si ese humano lo hubiera creado.
+                    store_create_mandate(m, owner_email=(m.get("human") or {}).get("email"))
                 except Exception:
                     pass
 
@@ -188,7 +190,7 @@ def api_create_mandate(req: CreateMandateRequest, principal: Principal = Depends
         masked_card=req.masked_card,
         bank_issuer=req.bank_issuer,
     )
-    mandate_store.save_mandate(mandate)
+    mandate_store.save_mandate(mandate, owner_email=owner_email_for(principal))
     return mandate
 
 
@@ -203,7 +205,10 @@ def create_mandate_endpoint(mandate: dict[str, Any]):
         )
 
     try:
-        record = store_create_mandate(mandate)
+        # Dueño derivado del token, NUNCA del cuerpo. Este endpoint aún no exige
+        # token (lo llama React sin él), así que hoy no hay principal: owner=None.
+        # Al añadir `principal: Principal = Depends(require_principal)`, pasarlo aquí.
+        record = store_create_mandate(mandate, owner_email=owner_email_for(None))
         append_entry(
             {
                 "type": "mandate_created",

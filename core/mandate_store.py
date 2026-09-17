@@ -11,6 +11,26 @@ from shared.schemas import Mandate, MandateStatus
 # ambas líneas de verificación y para lo que expone GET /mandates/{id}.
 MANDATES: Dict[str, dict] = {}
 
+# Dueño de cada mandato (email verificado de quien lo creó), por mandate_id.
+# Vive APARTE de MANDATES a propósito: get_mandate() devuelve el registro
+# {mandate, live_state} tal cual a GET /mandates/{id}, y el dueño es un dato
+# INTERNO de autorización que no debe filtrarse a React ni venir del cliente.
+# None = mandato sin dueño conocido (creado sin token).
+MANDATE_OWNERS: Dict[str, Optional[str]] = {}
+
+
+def _normalize_owner(owner_email: Optional[str]) -> Optional[str]:
+    if owner_email is None:
+        return None
+    normalized = owner_email.strip().lower()
+    return normalized or None
+
+
+def get_mandate_owner(mandate_id: str) -> Optional[str]:
+    """Email del dueño del mandato, o None si no tiene dueño registrado (o no existe)."""
+    with mandate_store._lock:
+        return MANDATE_OWNERS.get(mandate_id)
+
 
 def _apply_live_expiry(record: dict) -> None:
     """Regla de expiración única para todos los lectores (clase y funciones): un
@@ -45,7 +65,7 @@ class MandateStore:
         # RLock: list_mandates() llama a get_mandate() con el lock ya tomado
         self._lock = threading.RLock()
 
-    def save_mandate(self, mandate: Union[Mandate, dict]) -> Mandate:
+    def save_mandate(self, mandate: Union[Mandate, dict], owner_email: Optional[str] = None) -> Mandate:
         with self._lock:
             if isinstance(mandate, dict):
                 m_obj = Mandate(**mandate)
@@ -62,6 +82,7 @@ class MandateStore:
                     "revoked_at": m_obj.revoked_at,
                 },
             }
+            MANDATE_OWNERS[mandate_id] = _normalize_owner(owner_email)
             try:
                 from audit.log import audit_ledger
                 audit_ledger.append_entry(
@@ -144,6 +165,7 @@ class MandateStore:
     def clear(self) -> None:
         with self._lock:
             MANDATES.clear()
+            MANDATE_OWNERS.clear()
 
 
 # Global singleton instance
@@ -151,7 +173,9 @@ mandate_store = MandateStore()
 
 
 # Funciones funcionales para frontend y routers
-def create_mandate(mandate: dict) -> dict:
+def create_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
+    """Crea el mandato (flujo React/API). `owner_email` lo decide el SERVIDOR
+    (token autenticado o seed); nunca se lee del cuerpo `mandate`."""
     import uuid
     from mandate.sign import generate_keypair, sign_payload
 
@@ -188,6 +212,7 @@ def create_mandate(mandate: dict) -> dict:
             "revoked_at": None,
         },
     }
+    MANDATE_OWNERS[mandate_id] = _normalize_owner(owner_email)
     return get_mandate(mandate_id)
 
 

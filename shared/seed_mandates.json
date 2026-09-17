@@ -6,7 +6,8 @@
       "name": "Test User",
       "display_name": "Test User",
       "id_document": "XXXXXX",
-      "phone": "+520000000000"
+      "phone": "+520000000000",
+      "email": "test.user@example.com"
     },
     "agent": {
       "id": "agt_saturday",
