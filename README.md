@@ -84,7 +84,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime + tests (versiones fijadas)
 
 # Real web search (flight/hotel discovery) requires an OpenAI key:
 echo "OPENAI_API_KEY=sk-..." > .env

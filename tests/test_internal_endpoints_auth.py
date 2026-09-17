@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 import api.auth as auth_api
 import core.notifications as notifications
 from api.main import app
-from api.security import require_principal
 from audit.log import get_trail_events, reset_trail
 from core.email_otp import EmailOtpService
 
@@ -75,17 +74,55 @@ def test_protected_endpoint_with_invalid_token_is_401(client, endpoint):
     assert response.json()["detail"] == "Invalid or expired token."
 
 
+# Endpoints que el frontend React llama hoy SIN token (frontend/src): protegerlos
+# rompería la UI hasta que el frontend envíe el header.
+REACT_ROUTES = {
+    ("POST", "/mandates"),
+    ("GET", "/mandates/{mandate_id}"),
+    ("POST", "/mandates/{mandate_id}/revoke"),
+    ("POST", "/mandates/{mandate_id}/reset"),
+    ("POST", "/mandates/{mandate_id}/approve_escalation"),
+    ("POST", "/agent/run"),
+    ("POST", "/verify"),
+    ("POST", "/audit/reset"),
+    ("GET", "/audit"),
+    ("GET", "/audit/{mandate_id}"),
+    ("POST", "/disputes/file"),
+}
+
+
+def _openapi_operations_by_security() -> tuple[set, set]:
+    """(protegidas, todas) según el esquema OpenAPI: contrato PÚBLICO de FastAPI,
+    estable entre versiones (a diferencia de app.routes / route.dependant, que
+    cambió en 0.141 con include_router)."""
+    schema = app.openapi()
+    bearer_schemes = {
+        name
+        for name, scheme in schema.get("components", {}).get("securitySchemes", {}).items()
+        if scheme.get("type") == "http" and scheme.get("scheme", "").lower() == "bearer"
+    }
+    protected, every = set(), set()
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            key = (method.upper(), path)
+            every.add(key)
+            if any(bearer_schemes & set(requirement) for requirement in operation.get("security", [])):
+                protected.add(key)
+    return protected, every
+
+
 def test_exactly_the_internal_endpoints_require_auth():
     """Guardia: ni se desprotege uno de estos, ni se protege por error un endpoint
     de React (eso rompería el frontend, que todavía no envía token)."""
-    protected = {
-        (method, route.path)
-        for route in app.routes
-        if getattr(route, "dependant", None)
-        and any(dependency.call is require_principal for dependency in route.dependant.dependencies)
-        for method in route.methods
-    }
+    protected, every = _openapi_operations_by_security()
+
+    # Las listas de la guardia apuntan a operaciones que existen (evita que un
+    # renombre de ruta deje la guardia comprobando nada).
+    assert EXPECTED_PROTECTED_ROUTES <= every
+    assert REACT_ROUTES <= every
+
     assert protected == EXPECTED_PROTECTED_ROUTES
+    assert not protected & REACT_ROUTES
 
 
 # ── Pares sin token / con token en los endpoints críticos ───────────────────

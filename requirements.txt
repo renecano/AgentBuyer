@@ -1,17 +1,43 @@
-# AgentBuyer — backend + tests
-# Instalar con:  python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+# AgentBuyer — dependencias de RUNTIME (backend), versiones EXACTAS.
+#
+# Lock completo (directas + transitivas) para builds reproducibles: CI y cualquier
+# máquina instalan exactamente esto. Verificado con Python 3.13 (CI) y 3.14.
+# Desarrollo y tests: pip install -r requirements-dev.txt (incluye este archivo).
+#
+# Para actualizar: cambia las DIRECTAS en un venv limpio, corre la suite completa
+# y regenera las transitivas con `pip freeze`. Las marcas de plataforma
+# (sys_platform) no aparecen en `pip freeze` desde Windows: consérvalas.
 
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-pydantic>=2.6.0
-cryptography>=42.0.0
-pytest>=8.0.0
-httpx>=0.28.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-PyJWT>=2.10,<3
-streamlit>=1.32.0
+# ── Directas ─────────────────────────────────────────────────────────────────
+fastapi==0.135.1
+starlette==0.52.1          # fijada aparte: 1.x cambia include_router y emite DeprecationWarning con anyio
+anyio==4.12.1
+pydantic==2.12.5
+uvicorn[standard]==0.42.0
+cryptography==50.0.1       # firmas Ed25519 (mandate/sign.py)
+PyJWT==2.14.0              # access tokens (core/auth_tokens.py)
+python-dotenv==1.2.3
+openai==3.14.1             # búsqueda real de ofertas (core/merchant_search.py)
 
-# Búsqueda real de ofertas (core/merchant_search.py)
-openai>=1.60
-
+# ── Transitivas ──────────────────────────────────────────────────────────────
+annotated-doc==0.0.5
+annotated-types==0.8.0
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6 ; sys_platform == "win32"          # extra [standard] de uvicorn, solo Windows
+h11==0.16.0
+httpcore2==2.13.0
+httptools==0.8.0
+httpx2==2.13.0
+idna==3.20
+jiter==0.17.0
+pycparser==3.0
+pydantic_core==2.41.5
+PyYAML==6.0.3
+sniffio==1.3.1
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvloop==0.22.1 ; sys_platform != "win32" and sys_platform != "cygwin" and platform_python_implementation != "PyPy"  # extra [standard], no-Windows (CI)
+watchfiles==1.2.0
+websockets==17.1
