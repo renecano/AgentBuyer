@@ -85,7 +85,7 @@ def test_short_jwt_secret_is_rejected(monkeypatch):
 
 def test_create_rejects_unknown_role_and_empty_subject():
     with pytest.raises(ValueError):
-        create_access_token(EMAIL, role="admin")
+        create_access_token(EMAIL, role="superuser")
     with pytest.raises(ValueError):
         create_access_token("")
 
@@ -133,7 +133,9 @@ INVALID_TOKENS = {
     "missing-exp": lambda: jwt.encode(valid_claims(exp=None), SECRET, algorithm="HS256"),
     "missing-sub": lambda: jwt.encode(valid_claims(sub=None), SECRET, algorithm="HS256"),
     "missing-role": lambda: jwt.encode(valid_claims(role=None), SECRET, algorithm="HS256"),
-    "unknown-role": lambda: jwt.encode(valid_claims(role="admin"), SECRET, algorithm="HS256"),
+    "unknown-role": lambda: jwt.encode(valid_claims(role="superuser"), SECRET, algorithm="HS256"),
+    # "service" nunca viaja en un JWT: las máquinas se autentican con X-Service-Key.
+    "service-role-in-jwt": lambda: jwt.encode(valid_claims(role="service"), SECRET, algorithm="HS256"),
 }
 
 

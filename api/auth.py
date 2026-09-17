@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from core.auth_config import auth_dev_mode_enabled
-from core.auth_tokens import create_access_token, validate_token_config
+from core.auth_tokens import create_access_token, role_for_email, validate_token_config
 from core.email_otp import EmailOtpService, OtpCheck, OtpRateLimited
 from core.notifications import enviar_token_otp
 
@@ -105,7 +105,7 @@ def auth_email_check(payload: EmailCheckRequest):
             "verified": True,
             "email": email,
             "message": "Email verified successfully.",
-            "access_token": create_access_token(email, ttl_seconds=token_ttl),
+            "access_token": create_access_token(email, role=role_for_email(email), ttl_seconds=token_ttl),
             "token_type": "bearer",
             "expires_in": token_ttl,
         }

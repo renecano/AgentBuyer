@@ -6,7 +6,7 @@ está en api/security.py.
 Claims:
     iss   emisor fijo (ISSUER); se valida al decodificar.
     sub   email verificado (identidad del usuario).
-    role  tipo de principal. Hoy solo "user"; habrá roles de servicio/auditoría.
+    role  "user" o "admin" (email en ADMIN_EMAILS). Las máquinas (service) no usan JWT.
     iat   emitido en (epoch UTC).
     exp   expira en (epoch UTC) = iat + JWT_TTL_SECONDS (default 3600).
     jti   id único del token, para poder revocarlo más adelante.
@@ -21,7 +21,7 @@ from typing import Any
 
 import jwt
 
-from core.auth_config import auth_dev_mode_enabled
+from core.auth_config import admin_emails, auth_dev_mode_enabled
 from core.email_otp import env_positive_int
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 ALGORITHM = "HS256"
 ISSUER = "agentbuyer-api"
 ROLE_USER = "user"
-KNOWN_ROLES = frozenset({ROLE_USER})
+ROLE_ADMIN = "admin"
+# Roles que puede llevar un JWT. "service" NO está: las máquinas se autentican con
+# API key (api/security.py require_service), nunca con token.
+KNOWN_ROLES = frozenset({ROLE_USER, ROLE_ADMIN})
 DEFAULT_TTL_SECONDS = 3600
 MIN_SECRET_BYTES = 32  # RFC 7518 §3.2: la clave HMAC de HS256 debe tener al menos 256 bits
 _REQUIRED_CLAIMS = ["iss", "sub", "role", "iat", "exp"]
@@ -147,3 +150,8 @@ def decode_access_token(token: str) -> dict[str, Any]:
     if claims["role"] not in KNOWN_ROLES:
         raise InvalidAccessToken("UnknownRole")
     return claims
+
+
+def role_for_email(email: str) -> str:
+    """Rol que corresponde a un email ya verificado: admin si está en ADMIN_EMAILS."""
+    return ROLE_ADMIN if email.strip().lower() in admin_emails() else ROLE_USER

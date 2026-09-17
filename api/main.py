@@ -29,7 +29,7 @@ from core.mandate_store import (
 )
 from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
-from api.security import Principal, require_principal
+from api.security import Principal, require_admin, require_principal, require_service
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_tokens import TokenConfigError, validate_token_config
 from mandate.adversarial_tests import run_adversarial_suite
@@ -128,7 +128,7 @@ class TicketSendRequest(BaseModel):
 
 
 @app.get("/inbox/messages")
-def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principal: Principal = Depends(require_principal)):
+def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principal: Principal = Depends(require_admin)):
     """
     Connects to saturday.agentbuyer@gmail.com via IMAP and reads the latest received emails.
     """
@@ -138,7 +138,7 @@ def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principa
 
 
 @app.post("/notifications/send-ticket")
-def api_send_ticket_notification(payload: TicketSendRequest, principal: Principal = Depends(require_principal)):
+def api_send_ticket_notification(payload: TicketSendRequest, principal: Principal = Depends(require_admin)):
     """
     Dispatches an official receipt/ticket with Google Calendar integration to ANY destination email.
     """
@@ -327,7 +327,7 @@ class ApproveExceptionRequest(BaseModel):
 
 
 @app.post("/purchases/{purchase_id}/approve-exception")
-def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None, principal: Principal = Depends(require_principal)):
+def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None, principal: Principal = Depends(require_admin)):
     # Procesa excepción HITL firmada con Passkey
     append_entry({
         "type": "hitl_approved",
@@ -411,7 +411,7 @@ def api_verify_audit_integrity():
 
 # Adversarial Suite Runner
 @app.post("/adversarial/run")
-def api_run_adversarial(principal: Principal = Depends(require_principal)):
+def api_run_adversarial(principal: Principal = Depends(require_service)):
     success = run_adversarial_suite()
     return {
         "success": success,

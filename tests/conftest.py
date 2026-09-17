@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import api.main as api_main
-from core.auth_tokens import create_access_token
+from core.auth_tokens import ROLE_ADMIN, create_access_token
 
 # Holgura de la expiración relativa del seed. Solo tiene que cubrir la duración de
 # un test; un año evita cualquier borde de reloj.
@@ -25,6 +25,9 @@ def auth_config(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     monkeypatch.delenv("AUTH_DEV_MODE", raising=False)
     monkeypatch.delenv("JWT_TTL_SECONDS", raising=False)
+    # Sin admins ni keys de servicio salvo que el test las configure (fail-closed).
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    monkeypatch.delenv("SERVICE_API_KEY", raising=False)
 
 
 # Identidad del usuario de la suite en los tokens de auth_headers.
@@ -69,3 +72,25 @@ def active_seed(monkeypatch, tmp_path) -> dict:
     relative_seed.write_text(json.dumps(seeds, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(api_main, "SEED_PATH", str(relative_seed))
     return seeds[0]
+
+
+# Identidad admin y key de servicio de la suite.
+TEST_ADMIN_EMAIL = "pytest.admin@example.com"
+TEST_SERVICE_KEY = "pytest-only-service-key-0123456789-abcdefghijklmnop"
+
+
+@pytest.fixture()
+def admin_headers(auth_config, monkeypatch) -> dict[str, str]:
+    """Bearer de un ADMIN real: el email está en ADMIN_EMAILS (como exige
+    require_admin) y el token lleva role="admin", igual que el que emite
+    /auth/email/check para ese email."""
+    monkeypatch.setenv("ADMIN_EMAILS", TEST_ADMIN_EMAIL)
+    return {"Authorization": f"Bearer {create_access_token(TEST_ADMIN_EMAIL, role=ROLE_ADMIN)}"}
+
+
+@pytest.fixture()
+def service_headers(auth_config, monkeypatch) -> dict[str, str]:
+    """Header X-Service-Key con una key configurada en SERVICE_API_KEY, validada
+    por require_service por el camino normal (comparación en tiempo constante)."""
+    monkeypatch.setenv("SERVICE_API_KEY", TEST_SERVICE_KEY)
+    return {"X-Service-Key": TEST_SERVICE_KEY}
