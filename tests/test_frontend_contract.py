@@ -206,7 +206,8 @@ def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_
 
 
 def mandate_creator_payload(mandate_id: str = "mnd_test_user_contract") -> dict:
-    """Mismo payload que submitMandate() en MandateCreator.tsx (categoría vuelos)."""
+    """Mismo payload que submitMandate() en MandateCreator.tsx (categoría vuelos).
+    human.email es el email verificado por OTP."""
     return {
         "mandate_id": mandate_id,
         "human": {
@@ -227,18 +228,9 @@ def mandate_creator_payload(mandate_id: str = "mnd_test_user_contract") -> dict:
             "conditions": [{"type": "price_below", "value": 150}],
             "off_session_consent": True,
         },
-        "authentication": {
-            "passkey_biometrics": "verified_webauthn_touch_id",
-            "receipt_email": "test.user@example.com",
-        },
-        "payment_token": {
-            "token_id": "vtok_contract",
-            "token_type": "SCOPED_VIRTUAL_TOKEN",
-            "masked_card": "•••• 4242",
-            "bank_issuer": "Stripe Elements / Galicia AI Payments",
-        },
+        # Sin signature, payment_token ni authentication: desde el login OTP real el
+        # cliente ya no los declara; el servidor genera el token y firma (Ed25519).
         "valid_until": "2026-09-30",
-        "signature": "ed25519_passkey_signed_jwt_token",
     }
 
 
@@ -278,16 +270,24 @@ def test_get_mandate_returns_mandate_record(client):
 # ── POST /mandates (MandateCreator.tsx:404) ─────────────────────────────────
 
 def test_create_mandate_from_mandate_creator_shape(client):
-    """Forma ACTUAL: 201 y el registro {mandate, live_state} con el payload
-    devuelto tal cual. React ignora el body: solo mira response.ok y navega con
-    el mandate_id que generó él mismo, así que ese id debe quedar consultable."""
+    """Forma ACTUAL: 201 y el registro {mandate, live_state}: el payload del
+    cliente tal cual, más payment_token y firma generados por el servidor. React
+    ignora el body: solo mira response.ok y navega con el mandate_id que generó
+    él mismo, así que ese id debe quedar consultable."""
     payload = mandate_creator_payload()
     response = client.post("/mandates", json=payload)
 
     assert response.status_code == 201, response.text
     record = response.json()
     assert_mandate_record(record)
-    assert record["mandate"] == payload  # hoy el mandato se guarda y devuelve sin transformar
+    # El cuerpo del cliente se guarda tal cual; el servidor solo AGREGA lo que el
+    # cliente ya no declara: payment_token y la firma Ed25519 con su clave pública.
+    stored = record["mandate"]
+    assert {key: stored[key] for key in payload} == payload
+    assert set(stored) - set(payload) == {"payment_token", "human_pubkey", "signature"}
+    assert stored["payment_token"]["token_type"] == "SCOPED_VIRTUAL_TOKEN"
+    assert stored["payment_token"]["bound_mandate_id"] == payload["mandate_id"]
+    assert len(stored["human_pubkey"]) == 64 and len(stored["signature"]) == 128  # Ed25519 en hex
     assert record["live_state"] == {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None}
 
     # El id del cliente es el que usa Mission Control a continuación (GET /mandates/{id}).

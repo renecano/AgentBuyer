@@ -52,7 +52,7 @@ def enviar_ticket_confirmacion(correo_destino: str, detalles_reserva: dict) -> d
         f"Passenger: {pasajero}\n"
         f"Total Charged: ${precio:.2f} {moneda}\n"
         f"Payment Method: Scoped Virtual Token ({token_id})\n"
-        f"Security Seal: Ed25519 & Semantic Firewall Validated.\n\n"
+        f"Mandate signature: Ed25519, verified before the purchase.\n\n"
         f"Online check-in available 24h before departure."
     )
     cal_location = f"{destino}"
@@ -287,18 +287,10 @@ def enviar_ticket_confirmacion(correo_destino: str, detalles_reserva: dict) -> d
             <tr>
               <td>1</td>
               <td><code>FLT-COR-130</code></td>
-              <td>{destino}<br><small style="color: #22c55e;">✓ Verified by Semantic Firewall</small></td>
+              <td>{destino}</td>
               <td>{pasajero}</td>
               <td class="text-right">${precio:.2f}</td>
               <td class="text-right">${precio:.2f}</td>
-            </tr>
-            <tr>
-              <td>1</td>
-              <td><code>DLP-SCOPED</code></td>
-              <td>Scoped Virtual Token (<span class="badge-zero-trust">{token_id}</span>)</td>
-              <td>Stripe PCI Vault</td>
-              <td class="text-right">$0.00</td>
-              <td class="text-right">$0.00</td>
             </tr>
             <tr>
               <td>1</td>
@@ -329,9 +321,8 @@ def enviar_ticket_confirmacion(correo_destino: str, detalles_reserva: dict) -> d
             🛡️ CRYPTOGRAPHIC SECURITY AUDIT (ZERO-TRUST)
           </div>
           <div style="font-size: 0.72rem; color: #94a3b8; line-height: 1.4;">
-            • <strong>Digital Signature:</strong> Ed25519 Asymmetric Signature Validated.<br>
-            • <strong>DLP Tokenization:</strong> PAN protected. Scoped Virtual Token rotated after settlement.<br>
-            • <strong>Audit Ledger:</strong> SHA-256 Merkle Block append_entry recorded on immutable ledger.
+            • <strong>Digital Signature:</strong> the mandate's Ed25519 signature was verified before the purchase.<br>
+            • <strong>Audit Ledger:</strong> decision recorded in the SHA-256 hash-chained audit ledger.
           </div>
         </div>
 

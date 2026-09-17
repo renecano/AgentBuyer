@@ -1,9 +1,8 @@
 /**
  * Login por OTP de email contra el backend (api/auth.py).
  *
- * Reemplaza a sendOtp/verifyOtp de useZeroTrustSecurity, con dos correcciones:
- * verifyEmailLogin DEVUELVE el access token (los hooks viejos lo descartaban) y
- * falla si el backend no lo entrega; y el 429 expone el cooldown (Retry-After).
+ * verifyEmailLogin DEVUELVE el access token y falla si el backend no lo entrega;
+ * startEmailLogin expone el cooldown del 429 (Retry-After, expuesto por CORS).
  */
 import { ApiError, request } from "./api";
 

@@ -220,3 +220,24 @@ def test_seed_mandate_loads_on_startup(active_seed):
         assert record["mandate"]["expires_at"] == active_seed["expires_at"]
     mandate_store.MANDATES.clear()
     reset_trail()
+
+
+# ── Mandato firmado por el servidor (payload del wizard con login OTP) ──────
+
+def test_server_signed_mandate_passes_real_ed25519_verification(client):
+    """El wizard ya no envía firma: el servidor firma con Ed25519 al crear.
+    Ese mandato debe pasar la verificación criptográfica REAL de /verify, y
+    alterar las constraints firmadas debe romperla."""
+    mandate = make_mandate(mandate_id="mnd_server_signed")
+    del mandate["signature"]
+    create_mandate(client, mandate)
+
+    approved = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_1")).json()
+    signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
+    assert approved["verdict"] == "APPROVE"
+    assert signature_check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+
+    mandate_store.MANDATES["mnd_server_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
+    tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_2")).json()
+    assert tampered["verdict"] == "REJECT"
+    assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False
