@@ -390,27 +390,29 @@ END:VCALENDAR"""
     return {"status": 200, "message": "Receipt generated in local mode.", "sent_to": dest}
 
 
-def enviar_token_otp(correo_destino: str, codigo_otp: str) -> dict:
+def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int = 10) -> dict:
     """
-    Sends the 6-digit Zero-Trust security token (OTP) from saturday.agentbuyer@gmail.com
-    to ANY destination email address.
+    Sends the 6-digit verification code (OTP) from the configured SMTP account.
+
+    The code travels ONLY in the email body: never in the subject, logs, or the
+    returned dict. Returns sent_via="smtp" only when delivery actually succeeded.
     """
     dest = (correo_destino or "").strip().lower()
     if not dest or "@" not in dest:
-        return {"status": 400, "message": "Invalid email address."}
+        return {"status": 400, "message": "Invalid email address.", "sent_via": "error"}
 
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_PASS", "")
 
     msg = MIMEText(
         f"🛡️ Zero-Trust Verification Code (Aegis):\n\n"
-        f"Your 6-digit security token is: {codigo_otp}\n\n"
-        f"This token expires in 10 minutes. Use it to authenticate your mandate with Saturday Agent.\n"
-        f"Security Seal: Ed25519 & Zero-Trust MFA.",
+        f"Your 6-digit verification code is: {codigo_otp}\n\n"
+        f"This code expires in {minutos_validez} minutes and can be used only once. "
+        f"Do not share it with anyone.",
         "plain",
         "utf-8"
     )
-    msg["Subject"] = f"Aegis Security OTP: {codigo_otp}"
+    msg["Subject"] = "Your Aegis verification code"
     msg["From"] = f"Saturday Agent <{smtp_user}>" if smtp_user else "Saturday Agent <saturday.agentbuyer@gmail.com>"
     msg["To"] = dest
 
@@ -419,13 +421,14 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str) -> dict:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(smtp_user, smtp_pass)
                 server.sendmail(smtp_user, [dest], msg.as_string())
-            print(f"[Gmail SMTP OTP] Successfully sent OTP {codigo_otp} to {dest}")
-            return {"status": 200, "message": f"OTP token sent to {dest}", "sent_via": "smtp"}
+            print(f"[Gmail SMTP OTP] Verification code sent to {dest}")
+            return {"status": 200, "message": f"Verification code sent to {dest}", "sent_via": "smtp"}
         except Exception as err:
-            print(f"[Gmail SMTP ERROR] Failed to send OTP to {dest}: {err}")
-            return {"status": 500, "message": str(err), "sent_via": "error"}
+            # Solo el tipo de error: el detalle del servidor SMTP podría reflejar el mensaje.
+            print(f"[Gmail SMTP ERROR] Failed to send verification code to {dest}: {type(err).__name__}")
+            return {"status": 500, "message": "Email delivery failed.", "sent_via": "error"}
 
-    return {"status": 200, "message": f"OTP generated in local mode for {dest}", "sent_via": "memory"}
+    return {"status": 200, "message": "SMTP not configured; email not sent.", "sent_via": "memory"}
 
 
 def leer_correos_recibidos(limite: int = 10) -> dict:

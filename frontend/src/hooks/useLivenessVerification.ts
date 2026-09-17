@@ -17,28 +17,11 @@ export interface LivenessVerificationResult {
   attestationHash: string;
 }
 
-export interface OtpSendResponse {
-  success: boolean;
-  message: string;
-  phone: string;
-  requestId: string;
-}
-
-export interface OtpVerifyResponse {
-  success: boolean;
-  verified: boolean;
-  phone: string;
-  verifiedAt: string;
-}
-
-const API_BASE = "http://127.0.0.1:8000";
-
 /**
  * Hook de seguridad de grado bancario (KYC & Zero-Trust):
  * 1) Video Feed en tiempo real vía WebRTC (videoRef)
  * 2) Liveness Detection Anti-Spoofing (Bloqueo de cámara tapada / análisis de luminancia y varianza)
- * 3) Validación de SMS OTP contra backend
- * 4) Limpieza estricta de memoria y tracks de hardware
+ * 3) Limpieza estricta de memoria y tracks de hardware
  */
 export function useLivenessVerification() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -50,18 +33,6 @@ export function useLivenessVerification() {
     isLiveFaceVerified: false,
     livenessConfidence: 0,
     faceAttestationHash: null,
-    error: null,
-  });
-
-  const [smsState, setSmsState] = useState<{
-    isSending: boolean;
-    isVerifying: boolean;
-    isSmsVerified: boolean;
-    error: string | null;
-  }>({
-    isSending: false,
-    isVerifying: false,
-    isSmsVerified: false,
     error: null,
   });
 
@@ -265,86 +236,6 @@ export function useLivenessVerification() {
     }
   }, [stopCamera]);
 
-  /**
-   * Validación Real de SMS OTP: Enviar código al backend (POST /api/otp/send)
-   */
-  const sendSmsCode = useCallback(async (phone: string): Promise<OtpSendResponse> => {
-    setSmsState((prev) => ({ ...prev, isSending: true, error: null }));
-
-    try {
-      const response = await fetch(`${API_BASE}/api/otp/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`El servidor respondió con código HTTP ${response.status}`);
-      }
-
-      const data: OtpSendResponse = await response.json();
-      setSmsState((prev) => ({ ...prev, isSending: false }));
-      return data;
-    } catch (err: any) {
-      // Fallback robusto si el backend no expone el endpoint todavía
-      console.warn("Endpoint OTP fallback:", err);
-      const fallbackResponse: OtpSendResponse = {
-        success: true,
-        message: "SMS OTP code sent successfully.",
-        phone,
-        requestId: `req_${Date.now().toString(36)}`,
-      };
-      setSmsState((prev) => ({ ...prev, isSending: false }));
-      return fallbackResponse;
-    }
-  }, []);
-
-  /**
-   * Validación Real de SMS OTP: Verificar código de 6 dígitos en backend (POST /api/otp/verify)
-   */
-  const verifySmsCode = useCallback(async (phone: string, code: string): Promise<OtpVerifyResponse> => {
-    setSmsState((prev) => ({ ...prev, isVerifying: true, error: null }));
-
-    const sanitized = code.trim();
-    if (!/^\d{6}$/.test(sanitized)) {
-      const err = "The SMS code must be exactly 6 digits.";
-      setSmsState((prev) => ({ ...prev, isVerifying: false, error: err }));
-      throw new Error(err);
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/api/otp/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, code: sanitized }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 400) {
-          throw new Error("401 Unauthorized: Invalid or expired SMS OTP code.");
-        }
-        throw new Error(`Error en servidor OTP: HTTP ${response.status}`);
-      }
-
-      const data: OtpVerifyResponse = await response.json();
-      setSmsState((prev) => ({
-        ...prev,
-        isVerifying: false,
-        isSmsVerified: true,
-        error: null,
-      }));
-      return data;
-    } catch (err: any) {
-      setSmsState((prev) => ({
-        ...prev,
-        isVerifying: false,
-        isSmsVerified: false,
-        error: err.message || "Incorrect or expired verification code.",
-      }));
-      throw err;
-    }
-  }, []);
-
   // Limpieza estricta al desmontar el componente
   useEffect(() => {
     return () => {
@@ -355,11 +246,8 @@ export function useLivenessVerification() {
   return {
     videoRef,
     livenessState,
-    smsState,
     startCamera,
     stopCamera,
     verifyFacePresence,
-    sendSmsCode,
-    verifySmsCode,
   };
 }

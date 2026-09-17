@@ -149,10 +149,8 @@ const BACKEND_PHRASES: Array<[RegExp, string]> = [
   [/El titular queda protegido\./g, "The cardholder is protected."],
   // OTP / errores HTTP frecuentes
   [/Código email OTP incorrecto o expirado\./g, "Incorrect or expired email OTP code."],
-  [/Código SMS incorrecto o expirado\./g, "Incorrect or expired SMS code."],
   [/Código OTP enviado a /g, "OTP code sent to "],
   [/Email verificado correctamente\./g, "Email verified successfully."],
-  [/Número verificado correctamente\./g, "Number verified successfully."],
 ];
 
 /** Traduce el texto del backend a inglés (capa de presentación; el backend no cambia). */

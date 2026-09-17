@@ -13,6 +13,4 @@ streamlit>=1.32.0
 
 # Búsqueda real de ofertas (core/merchant_search.py)
 openai>=1.60
-phonenumbers>=8.13.0
-twilio>=9.0.0
 

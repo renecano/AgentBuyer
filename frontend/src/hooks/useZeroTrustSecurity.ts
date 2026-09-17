@@ -280,13 +280,13 @@ export function useZeroTrustSecurity() {
     }
   }, [stopCamera]);
 
-  // 4. Factor de Posesión: SMS / Email OTP vía API Real Backend (Twilio Verify)
-  const sendOtp = useCallback(async (contact: string, channel: "sms" | "email" = "sms"): Promise<any> => {
+  // 4. Factor de Posesión: OTP por email vía API real del backend (único canal de login)
+  const sendOtp = useCallback(async (email: string): Promise<any> => {
     setIsLoading(true);
     setErrorMessage(null);
 
-    const endpoint = channel === "email" ? `${API_BASE}/auth/email/start` : `${API_BASE}/auth/sms/start`;
-    const body = channel === "email" ? { email: contact.trim() } : { phone_number: contact.trim() };
+    const endpoint = `${API_BASE}/auth/email/start`;
+    const body = { email: email.trim() };
 
     try {
       const response = await fetch(endpoint, {
@@ -311,7 +311,7 @@ export function useZeroTrustSecurity() {
     }
   }, []);
 
-  const verifyOtp = useCallback(async (contact: string, code: string, channel: "sms" | "email" = "sms"): Promise<boolean> => {
+  const verifyOtp = useCallback(async (email: string, code: string): Promise<boolean> => {
     setIsLoading(true);
     setErrorMessage(null);
 
@@ -323,10 +323,8 @@ export function useZeroTrustSecurity() {
       throw new Error(errStr);
     }
 
-    const endpoint = channel === "email" ? `${API_BASE}/auth/email/check` : `${API_BASE}/auth/sms/check`;
-    const body = channel === "email"
-      ? { email: contact.trim(), code: cleanCode }
-      : { phone_number: contact.trim(), code: cleanCode };
+    const endpoint = `${API_BASE}/auth/email/check`;
+    const body = { email: email.trim(), code: cleanCode };
 
     try {
       const response = await fetch(endpoint, {
