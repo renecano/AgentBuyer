@@ -2,8 +2,9 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from api.security import Principal, require_principal
 from core.merchant import get_flights
 from core.merchant_search import CATEGORY_SPECS, search_merchant_offers
 
@@ -18,7 +19,7 @@ def list_flights():
 
 
 @router.post("/merchant/search")
-def search_offers(request: dict[str, Any]):
+def search_offers(request: dict[str, Any], principal: Principal = Depends(require_principal)):
     """Busca ofertas REALES vía web search (Despegar, Expedia, Kayak, ...).
 
     Body: {"category": "flights", "fields": {"origin": ..., ...}, "max_results": 3}

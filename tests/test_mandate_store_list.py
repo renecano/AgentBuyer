@@ -14,7 +14,7 @@ from api.main import app
 from core.mandate_store import mandate_store, MANDATES
 
 
-def test_list_mandates_no_deadlock():
+def test_list_mandates_no_deadlock(auth_headers):
     # El context manager dispara el evento de startup que carga el seed
     with TestClient(app) as client:
         assert MANDATES, "el seed debería cargar al menos un mandato"
@@ -23,7 +23,7 @@ def test_list_mandates_no_deadlock():
 
         def worker():
             result["mandates"] = mandate_store.list_mandates()
-            result["response"] = client.get("/mandates")
+            result["response"] = client.get("/mandates", headers=auth_headers)
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()

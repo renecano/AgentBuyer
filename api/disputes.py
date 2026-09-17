@@ -18,9 +18,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from api.security import Principal, require_principal
 from audit.log import append_entry, get_trail_events
 from core.mandate_store import get_mandate
 
@@ -116,5 +117,5 @@ def file_dispute(body: FileDisputeBody) -> dict[str, Any]:
 
 
 @router.get("/disputes")
-def list_disputes() -> list[dict]:
+def list_disputes(principal: Principal = Depends(require_principal)) -> list[dict]:
     return list(_disputes.values())

@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from core.mandate_store import (
 )
 from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
+from api.security import Principal, require_principal
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_tokens import TokenConfigError, validate_token_config
 from mandate.adversarial_tests import run_adversarial_suite
@@ -127,7 +128,7 @@ class TicketSendRequest(BaseModel):
 
 
 @app.get("/inbox/messages")
-def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50)):
+def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principal: Principal = Depends(require_principal)):
     """
     Connects to saturday.agentbuyer@gmail.com via IMAP and reads the latest received emails.
     """
@@ -137,7 +138,7 @@ def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50)):
 
 
 @app.post("/notifications/send-ticket")
-def api_send_ticket_notification(payload: TicketSendRequest):
+def api_send_ticket_notification(payload: TicketSendRequest, principal: Principal = Depends(require_principal)):
     """
     Dispatches an official receipt/ticket with Google Calendar integration to ANY destination email.
     """
@@ -157,7 +158,7 @@ def api_send_ticket_notification(payload: TicketSendRequest):
 
 # Mandate Endpoints
 @app.post("/mandates/create", response_model=Mandate)
-def api_create_mandate(req: CreateMandateRequest):
+def api_create_mandate(req: CreateMandateRequest, principal: Principal = Depends(require_principal)):
     h_keys = _get_or_create_keys(req.human_id)
     a_keys = _get_or_create_keys("agent_marta")
 
@@ -210,7 +211,7 @@ def create_mandate_endpoint(mandate: dict[str, Any]):
 
 
 @app.get("/mandates", response_model=List[Mandate])
-def api_list_mandates(human_id: Optional[str] = None):
+def api_list_mandates(human_id: Optional[str] = None, principal: Principal = Depends(require_principal)):
     return mandate_store.list_mandates(human_id)
 
 
@@ -244,7 +245,7 @@ def api_revoke_mandate(mandate_id: str, req: Optional[RevokeMandateRequest] = No
 
 
 @app.post("/mandates/{mandate_id}/pause")
-def api_pause_mandate(mandate_id: str):
+def api_pause_mandate(mandate_id: str, principal: Principal = Depends(require_principal)):
     success = mandate_store.pause_mandate(mandate_id)
     if not success:
         raise HTTPException(status_code=404, detail="Mandate not found")
@@ -261,7 +262,7 @@ def reset_mandate_endpoint(mandate_id: str):
 
 
 @app.post("/mandates/{mandate_id}/resume")
-def api_resume_mandate(mandate_id: str):
+def api_resume_mandate(mandate_id: str, principal: Principal = Depends(require_principal)):
     success = mandate_store.resume_mandate(mandate_id)
     if not success:
         raise HTTPException(status_code=404, detail="Mandate not found")
@@ -279,7 +280,7 @@ def api_get_catalog():
 
 
 @app.post("/purchases/execute")
-def api_execute_purchase(req: ExecutePurchaseRequest):
+def api_execute_purchase(req: ExecutePurchaseRequest, principal: Principal = Depends(require_principal)):
     mandate = mandate_store.get_mandate(req.mandate_id)
     if not mandate:
         raise HTTPException(status_code=404, detail="Mandate not found")
@@ -306,7 +307,7 @@ def api_execute_purchase(req: ExecutePurchaseRequest):
 
 # Mandate Activity Trail for User
 @app.get("/mandates/{mandate_id}/activity")
-def api_get_mandate_activity(mandate_id: str):
+def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(require_principal)):
     mandate = mandate_store.get_mandate(mandate_id)
     if not mandate:
         raise HTTPException(status_code=404, detail="Mandato no encontrado")
@@ -326,7 +327,7 @@ class ApproveExceptionRequest(BaseModel):
 
 
 @app.post("/purchases/{purchase_id}/approve-exception")
-def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None):
+def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None, principal: Principal = Depends(require_principal)):
     # Procesa excepción HITL firmada con Passkey
     append_entry({
         "type": "hitl_approved",
@@ -410,7 +411,7 @@ def api_verify_audit_integrity():
 
 # Adversarial Suite Runner
 @app.post("/adversarial/run")
-def api_run_adversarial():
+def api_run_adversarial(principal: Principal = Depends(require_principal)):
     success = run_adversarial_suite()
     return {
         "success": success,

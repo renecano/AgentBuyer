@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import api.main as api_main
+from core.auth_tokens import create_access_token
 
 # Holgura de la expiración relativa del seed. Solo tiene que cubrir la duración de
 # un test; un año evita cualquier borde de reloj.
@@ -24,6 +25,24 @@ def auth_config(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     monkeypatch.delenv("AUTH_DEV_MODE", raising=False)
     monkeypatch.delenv("JWT_TTL_SECONDS", raising=False)
+
+
+# Identidad del usuario de la suite en los tokens de auth_headers.
+TEST_USER_EMAIL = "pytest.user@example.com"
+
+
+@pytest.fixture()
+def auth_headers(auth_config) -> dict[str, str]:
+    """Header `Authorization: Bearer <JWT>` de un usuario válido, para llamar a
+    endpoints protegidos con require_principal (api/security.py).
+
+    El token es real: lo firma create_access_token con el mismo JWT_SECRET con el
+    que arranca la app (auth_config), y la dependencia lo valida por el camino
+    normal (firma, emisor, expiración, rol). No se desactiva ni se simula la auth.
+    Es el mismo token que /auth/email/check emite tras verificar el OTP (ver
+    test_token_from_real_email_login_opens_protected_endpoint).
+    """
+    return {"Authorization": f"Bearer {create_access_token(TEST_USER_EMAIL)}"}
 
 
 @pytest.fixture()

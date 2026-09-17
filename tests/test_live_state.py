@@ -57,15 +57,17 @@ def live(mandate_id: str) -> dict:
 
 # ── La línea estricta escribe en lo que lee React ───────────────────────────
 
-def test_strict_purchase_is_visible_in_get_mandate():
+def test_strict_purchase_is_visible_in_get_mandate(auth_headers):
     """/purchases/execute (estricta) → GET /mandates/{id} (lo que lee la UI)."""
     with TestClient(app) as client:
-        mandate = client.post("/mandates/create", json={"human_id": "hum_live", "max_amount_per_tx": 150}).json()
+        mandate = client.post(
+            "/mandates/create", json={"human_id": "hum_live", "max_amount_per_tx": 150}, headers=auth_headers
+        ).json()
         mandate_id = mandate["mandate_id"]
 
         response = client.post("/purchases/execute", json={
             "mandate_id": mandate_id, "agent_id": "agent_marta", "item_id": "FLIGHT_COR_130",
-        })
+        }, headers=auth_headers)
         assert response.json()["verification_result"]["status"] == "APPROVED"
 
         live_state = client.get(f"/mandates/{mandate_id}").json()["live_state"]

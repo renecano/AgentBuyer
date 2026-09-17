@@ -45,19 +45,26 @@ def web_mandate(allowed_merchants: list[str]) -> dict:
     }
 
 
-def test_merchant_search_endpoint_returns_offers(client, monkeypatch):
+def test_merchant_search_endpoint_returns_offers(client, monkeypatch, auth_headers):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda p: json.dumps(WEB_OFFERS))
-    response = client.post("/merchant/search", json={"category": "flights", "fields": SEARCH_FIELDS})
+    response = client.post(
+        "/merchant/search", json={"category": "flights", "fields": SEARCH_FIELDS}, headers=auth_headers
+    )
     assert response.status_code == 200
     offers = response.json()
     assert len(offers) == 2 and offers[0]["merchant"] == "Despegar"
 
 
-def test_merchant_search_endpoint_validates_body(client):
-    assert client.post("/merchant/search", json={"category": "yates", "fields": {}}).status_code == 422
-    assert client.post("/merchant/search", json={"category": "flights", "fields": "x"}).status_code == 422
+def test_merchant_search_endpoint_validates_body(client, auth_headers):
     assert client.post(
-        "/merchant/search", json={"category": "flights", "fields": SEARCH_FIELDS, "max_results": 99}
+        "/merchant/search", json={"category": "yates", "fields": {}}, headers=auth_headers
+    ).status_code == 422
+    assert client.post(
+        "/merchant/search", json={"category": "flights", "fields": "x"}, headers=auth_headers
+    ).status_code == 422
+    assert client.post(
+        "/merchant/search", json={"category": "flights", "fields": SEARCH_FIELDS, "max_results": 99},
+        headers=auth_headers,
     ).status_code == 422
 
 
