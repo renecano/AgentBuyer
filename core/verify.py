@@ -311,11 +311,10 @@ def resolve_escalation(
         settlement_id = f"stl_{uuid.uuid4().hex[:10]}"
         dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
 
-        state_manager.record_usage(
-            mandate_id=mandate.mandate_id,
-            amount=attempt.amount,
-            nonce=attempt.nonce,
-        )
+        # Consume el uso en live_state (única fuente de verdad, la que ve React).
+        if apply_approved_purchase(mandate.mandate_id, attempt.amount) is None:
+            return None
+        state_manager.record_attempt(mandate.mandate_id, attempt.nonce)
         result = _decide(
             attempt, mandate.mandate_id, VerificationStatus.APPROVED,
             f"Approved by cardholder (HITL note: {note})", checks, now_iso,
@@ -438,12 +437,14 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
     if not nonce_valid:
         return reject(mandate.mandate_id, f"REPLAY ATTACK DETECTED: Nonce '{attempt.nonce}' was already used in a previous purchase.")
 
-    # 7. Evaluate Constraints
-    rolling_state = state_manager.get_or_create_state(mandate.mandate_id)
+    # 7. Evaluate Constraints contra live_state (mismos contadores que api/verify y la UI)
+    record = get_mandate(mandate.mandate_id)
+    if record is None:
+        return reject(mandate.mandate_id, "Mandate not found in live registry.")
     authorized, reason, constraint_checks, can_escalate = evaluate_mandate_constraints(
         mandate=mandate,
         attempt=attempt,
-        state=rolling_state,
+        live_state=record["live_state"],
     )
     checks.extend(constraint_checks)
 
@@ -463,14 +464,13 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
     if firewall_verdict != "APPROVE":
         return reject(mandate.mandate_id, f"Semantic firewall veto: {firewall_detail}")
 
-    # Approved: se consume el presupuesto y luego se registra la decisión y la liquidación.
+    # Approved: se consume el uso en live_state (única fuente de verdad, la que ve
+    # React) y luego se registra la decisión y la liquidación.
     settlement_id = f"stl_{uuid.uuid4().hex[:10]}"
     dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
-    state_manager.record_usage(
-        mandate_id=mandate.mandate_id,
-        amount=attempt.amount,
-        nonce=attempt.nonce,
-    )
+    if apply_approved_purchase(mandate.mandate_id, attempt.amount) is None:
+        return reject(mandate.mandate_id, "Mandate not found in live registry at settlement time.")
+    state_manager.record_attempt(mandate.mandate_id, attempt.nonce)
     result = _decide(
         attempt, mandate.mandate_id, VerificationStatus.APPROVED,
         "All cryptographic, identity, state, policy, and semantic firewall checks satisfied.",

@@ -7,16 +7,17 @@ import threading
 @dataclass
 class MandateRollingState:
     mandate_id: str
-    spent_this_month: float = 0.0
-    count_this_month: int = 0
     used_nonces: Set[str] = field(default_factory=set)
     last_attempt_at: Optional[str] = None
-    last_settled_at: Optional[str] = None
 
 
 class MandateStateManager:
     """
-    Thread-safe manager for rolling counters, budget depletion, and replay-protection nonces.
+    Thread-safe registry of replay-protection nonces.
+
+    Los contadores de uso y gasto NO viven aquí: su única fuente de verdad es
+    live_state en core/mandate_store (apply_approved_purchase), compartida por
+    todas las líneas de verificación.
     """
 
     def __init__(self):
@@ -60,17 +61,6 @@ class MandateStateManager:
             state.used_nonces.add(nonce)
             self._all_nonces.add(nonce)
             state.last_attempt_at = datetime.now(timezone.utc).isoformat()
-
-    def record_successful_purchase(self, mandate_id: str, amount: float) -> None:
-        with self._lock:
-            state = self.get_state(mandate_id)
-            state.spent_this_month += amount
-            state.count_this_month += 1
-            state.last_settled_at = datetime.now(timezone.utc).isoformat()
-
-    def record_usage(self, mandate_id: str, amount: float, nonce: str) -> None:
-        self.record_attempt(mandate_id, nonce)
-        self.record_successful_purchase(mandate_id, amount)
 
     def reset_state(self, mandate_id: str) -> None:
         with self._lock:

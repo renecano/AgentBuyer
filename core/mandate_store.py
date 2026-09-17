@@ -5,8 +5,34 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 
 from shared.schemas import Mandate, MandateStatus
 
-# Estado global autoritativo en memoria (Zero-Caching)
+# Estado global autoritativo en memoria (Zero-Caching).
+# Cada registro es {"mandate": {...}, "live_state": {status, uses_count, amount_spent, revoked_at}}.
+# live_state es la ÚNICA fuente de verdad del estado vivo (status y contadores) para
+# ambas líneas de verificación y para lo que expone GET /mandates/{id}.
 MANDATES: Dict[str, dict] = {}
+
+
+def _apply_live_expiry(record: dict) -> None:
+    """Regla de expiración única para todos los lectores (clase y funciones): un
+    mandato activo cuyo expires_at ya pasó queda "expired" en live_state.
+
+    Una fecha ilegible se ignora aquí, igual que antes; core/verify la rechaza por
+    su cuenta (fail-closed).
+    """
+    live_state = record["live_state"]
+    expires_at = record["mandate"].get("expires_at")
+    if live_state["status"] != "active" or not isinstance(expires_at, str) or not expires_at:
+        return
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expiry:
+        live_state["status"] = "expired"
+        if "status" in record["mandate"]:
+            record["mandate"]["status"] = "EXPIRED"
 
 
 class MandateStore:
@@ -55,31 +81,15 @@ class MandateStore:
             record = MANDATES.get(mandate_id)
             if not record:
                 return None
-            m_dict = record["mandate"]
-            # Los mandatos del flujo API guardan status en minúsculas ("active");
-            # el enum MandateStatus exige mayúsculas.
-            status_raw = m_dict.get("status")
-            if isinstance(status_raw, str):
-                m_dict = {**m_dict, "status": status_raw.upper()}
-            m_obj = Mandate(**m_dict)
-            
-            # Chequeo en vivo de expiración
-            if m_obj.status == MandateStatus.ACTIVE and m_obj.expires_at:
-                now = datetime.now(timezone.utc)
-                try:
-                    exp = datetime.fromisoformat(m_obj.expires_at.replace("Z", "+00:00"))
-                    if now > exp:
-                        m_obj.status = MandateStatus.EXPIRED
-                        record["live_state"]["status"] = "expired"
-                        record["mandate"]["status"] = "EXPIRED"
-                except Exception:
-                    pass
-
-            if record["live_state"]["status"] == "revoked":
-                m_obj.status = MandateStatus.REVOKED
-                m_obj.revoked_at = record["live_state"].get("revoked_at")
-
-            return m_obj
+            _apply_live_expiry(record)
+            live_state = record["live_state"]
+            # status y revoked_at salen de live_state (única fuente de verdad), no
+            # del dict del mandato, que puede quedar desactualizado.
+            return Mandate(**{
+                **record["mandate"],
+                "status": live_state["status"].upper(),
+                "revoked_at": live_state.get("revoked_at"),
+            })
 
     def list_mandates(self, human_id: Optional[str] = None) -> List[Mandate]:
         with self._lock:
@@ -182,8 +192,12 @@ def create_mandate(mandate: dict) -> dict:
 
 
 def get_mandate(mandate_id: str) -> dict | None:
-    record = MANDATES.get(mandate_id)
-    return deepcopy(record) if record is not None else None
+    with mandate_store._lock:
+        record = MANDATES.get(mandate_id)
+        if record is None:
+            return None
+        _apply_live_expiry(record)
+        return deepcopy(record)
 
 
 def revoke_mandate(mandate_id: str) -> dict | None:
@@ -213,9 +227,13 @@ def reset_mandate(mandate_id: str) -> dict | None:
 
 
 def apply_approved_purchase(mandate_id: str, amount: int | float) -> dict | None:
-    record = MANDATES.get(mandate_id)
-    if record is None:
-        return None
-    record["live_state"]["uses_count"] += 1
-    record["live_state"]["amount_spent"] += amount
-    return get_mandate(mandate_id)
+    """ÚNICO punto que consume un uso y suma gasto, sea cual sea la línea que
+    aprobó la compra (api/verify, api/escalations o core/verify)."""
+    with mandate_store._lock:
+        record = MANDATES.get(mandate_id)
+        if record is None:
+            return None
+        live_state = record["live_state"]
+        live_state["uses_count"] += 1
+        live_state["amount_spent"] += amount
+        return get_mandate(mandate_id)

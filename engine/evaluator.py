@@ -217,17 +217,14 @@ def evaluate(mandate: dict, live_state: dict, attempt: dict) -> dict:
         }
 
 
-def evaluate_mandate_constraints(mandate, attempt, state) -> Tuple[bool, str, List[Dict[str, Any]], bool]:
-    """Adaptador para core/verify.py: devuelve los checks del engine tal cual,
-    como lista de {rule, pass, detail}."""
+def evaluate_mandate_constraints(mandate, attempt, live_state: dict) -> Tuple[bool, str, List[Dict[str, Any]], bool]:
+    """Adaptador para core/verify.py: evalúa contra el MISMO live_state
+    {uses_count, amount_spent, ...} que usa api/verify, y devuelve los checks del
+    engine tal cual, como lista de {rule, pass, detail}."""
     mandate_dict = mandate.model_dump() if hasattr(mandate, "model_dump") else mandate
     attempt_dict = attempt.model_dump() if hasattr(attempt, "model_dump") else attempt
-    state_dict = {
-        "uses_count": getattr(state, "count_this_month", 0),
-        "amount_spent": getattr(state, "spent_this_month", 0.0),
-    }
 
-    result = evaluate(mandate_dict, state_dict, attempt_dict)
+    result = evaluate(mandate_dict, live_state, attempt_dict)
     authorized = (result["verdict"] == "APPROVE")
     reason = result["reason"]
     can_escalate = (result["verdict"] == "ESCALATE")

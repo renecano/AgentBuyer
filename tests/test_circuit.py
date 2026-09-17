@@ -5,13 +5,12 @@ from shared.schemas import MandateStatus, VerificationStatus
 from mandate.sign import generate_keypair
 from mandate.issue import create_mandate
 from core import verify as core_verify
-from core.mandate_store import MANDATES, mandate_store
+from core.mandate_store import MANDATES, get_mandate, mandate_store
 from core.agent_loop import PurchasingAgent
 from core.merchant import vuelaya_merchant
 from core.verify import get_pending_escalations, resolve_escalation
 from core.dispute import dispute_arbiter
 from audit.log import audit_ledger
-from engine.state import state_manager
 
 
 @pytest.fixture(autouse=True)
@@ -285,7 +284,7 @@ def test_paused_mandate_is_rejected():
     assert result.status == VerificationStatus.REJECTED
     assert "PAUSED" in result.reason
     assert checks_by_rule(result)["status_active"]["pass"] is False
-    assert state_manager.get_state(mandate.mandate_id).count_this_month == 0
+    assert get_mandate(mandate.mandate_id)["live_state"]["uses_count"] == 0
     assert ledger_event_types(attempt.attempt_id) == ["VERIFICATION_FAILED"]
 
 
@@ -394,7 +393,7 @@ def test_semantic_firewall_never_approves_unless_it_says_approve(monkeypatch, fi
     assert checks_by_rule(result)["semantic_firewall"]["pass"] is False
     # Las reglas del mandato sí pasaron: lo único que frena es el firewall.
     assert all(check["pass"] for check in result.checks if check["rule"] != "semantic_firewall")
-    assert state_manager.get_state(mandate.mandate_id).count_this_month == 0
+    assert get_mandate(mandate.mandate_id)["live_state"]["uses_count"] == 0
     assert "SETTLEMENT_COMPLETED" not in ledger_event_types(attempt.attempt_id)
 
 
