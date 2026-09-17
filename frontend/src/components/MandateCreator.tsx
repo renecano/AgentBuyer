@@ -188,7 +188,7 @@ function withTimeout<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> {
 type Outcome<T> = { ok: true; value: T } | { ok: false; message: string };
 
 export default function MandateCreator({ onCreated, onDemoCreated }: MandateCreatorProps) {
-  const { session, isAuthenticated, startEmailLogin, verifyEmailLogin, logout } = useAuth();
+  const { session, isAuthenticated, sessionNotice, startEmailLogin, verifyEmailLogin, logout } = useAuth();
 
   // Límites prellenados con valores de demo (no son datos personales).
   const [humanName, setHumanName] = useState("Marta");
@@ -259,6 +259,18 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     () => `Saturday will be able to buy ${selectedCategory.toLowerCase()} at ${selectedMerchant}, up to $${maxAmount || "—"} per purchase, at most ${maxUses || "—"} times, only if the price drops below $${priceBelow || "—"}${validUntil ? `, valid until ${validUntil}.` : "."}${session ? ` Authorized by ${session.email}.` : ""}`,
     [maxAmount, maxUses, priceBelow, selectedCategory, selectedMerchant, validUntil, session],
   );
+
+  // Si la sesión se cae (expiró o el backend devolvió 401), el wizard vuelve al
+  // paso de login con el estado del código limpio: quedarse en "Confirmar" con
+  // un botón que ya no puede autorizar sería exactamente la sorpresa a evitar.
+  useEffect(() => {
+    if (isAuthenticated || sessionNotice === null) return;
+    setCurrentStep(1);
+    setCodeSent(false);
+    setCodeDemo(null);
+    setLoginCode("");
+    setLoginError(null);
+  }, [isAuthenticated, sessionNotice]);
 
   // Cuenta regresiva del cooldown del 429 (Retry-After).
   useEffect(() => {
@@ -719,6 +731,8 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
                 {isAuthenticated && <button className="verify-edit" type="button" onClick={signOut}>Use another email</button>}
               </header>
               {!isAuthenticated && <div className="verify-item-body">
+                {/* El banner global puede cerrarse; aquí el aviso queda donde se actúa. */}
+                {sessionNotice && <p className="verify-hint verify-hint-warn">{sessionNotice}</p>}
                 <label>
                   Email (your receipt will be sent here)
                   <input value={userEmail} onChange={(e) => { setUserEmail(e.target.value); setCodeSent(false); setCodeDemo(null); }} onFocus={() => setSensitiveFieldFocused(true)} onBlur={() => setSensitiveFieldFocused(false)} type="email" inputMode="email" placeholder="you@example.com" disabled={sendingCode || verifyingCode} />

@@ -242,6 +242,12 @@ button { font: inherit; }
 .verify-hint { margin: 0; color: #8A94AD; font-size: .66rem; line-height: 1.4; }
 .field-hint { display: block; margin-top: .3rem; color: #8A94AD; font-size: .64rem; line-height: 1.4; font-weight: 400; }
 .verify-hint-warn { color: #FFB84D; }
+
+/* Aviso de sesión caída: por encima de la nav, visible en cualquier vista. */
+.session-banner { position: fixed; z-index: 60; top: .75rem; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: .6rem; max-width: min(90vw, 34rem); padding: .6rem .8rem; border: 1px solid rgba(255,184,77,.45); border-radius: .6rem; background: rgba(38,28,10,.96); box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+.session-banner p { margin: 0; color: #FFDFA8; font-size: .78rem; line-height: 1.35; }
+.session-banner button { border: 0; border-radius: .35rem; background: transparent; color: #FFB84D; font-size: .8rem; line-height: 1; cursor: pointer; padding: .25rem .35rem; }
+.session-banner button:hover { background: rgba(255,184,77,.16); }
 .verify-hint-tip { color: #3DDC97; }
 .verify-tabs { display: flex; gap: .35rem; padding: .25rem; border-radius: .6rem; border: 1px solid #232D45; background: rgba(10, 14, 26, .5); width: fit-content; }
 .verify-tab { border: 1px solid transparent; background: transparent; color: #8A94AD; border-radius: .45rem; padding: .35rem .7rem; font-family: "Space Grotesk", sans-serif; font-size: .68rem; font-weight: 700; cursor: pointer; }

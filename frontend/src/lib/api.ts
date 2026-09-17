@@ -7,8 +7,10 @@
  *   abort por timeout o señal externa → null).
  * - Token: si el getter registrado (setTokenGetter) devuelve un token, se envía
  *   `Authorization: Bearer <token>`. Por defecto no hay getter → no se envía nada.
- * - 401: si se registró un handler (setUnauthorizedHandler) y la petición llevaba
- *   token, se le avisa. Todavía no hay handler registrado.
+ * - 401: si la petición LLEVABA token, se avisa al handler registrado con
+ *   setUnauthorizedHandler (lo registra AuthProvider: cierra la sesión caída).
+ *   Las llamadas de login van con skipAuth → sin token → no avisan: ahí un 401
+ *   es "código incorrecto", no "sesión expirada".
  */
 import { translateBackendText } from "./presentation";
 
