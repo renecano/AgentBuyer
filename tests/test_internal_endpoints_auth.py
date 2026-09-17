@@ -14,6 +14,7 @@ import api.main as api_main
 import core.notifications as notifications
 from api.main import app
 from audit.log import get_trail_events, reset_trail
+from core.auth_config import MIN_SERVICE_KEY_BYTES, ServiceKeyConfigError, service_api_keys
 from core.auth_tokens import ISSUER, create_access_token
 from core.email_otp import EmailOtpService
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_JWT_SECRET, TEST_SERVICE_KEY
@@ -353,3 +354,51 @@ def test_each_internal_endpoint_declares_the_right_security_scheme():
     declared = {operation: kinds for operation, kinds in security.items() if kinds}
     assert declared == {operation: {kind} for operation, kind in EXPECTED_SECURITY.items()}
     assert all(not security[operation] for operation in REACT_ROUTES)
+
+
+# ── Salvaguarda de SERVICE_API_KEY (largo mínimo) ───────────────────────────
+
+def test_short_service_key_is_rejected_as_invalid_config(monkeypatch, caplog):
+    # Una key corta, aunque venga junto a una válida, invalida la configuración.
+    monkeypatch.setenv("SERVICE_API_KEY", "valid-service-key-0123456789," + "x" * (MIN_SERVICE_KEY_BYTES - 1))
+    with pytest.raises(ServiceKeyConfigError, match="#2"):
+        service_api_keys()
+
+    # Al arrancar: error claro y la app no inicia.
+    with caplog.at_level("CRITICAL", logger="agentbuyer.startup"):
+        with pytest.raises(ServiceKeyConfigError):
+            with TestClient(app):
+                pass
+    assert "SERVICE_API_KEY" in caplog.text and str(MIN_SERVICE_KEY_BYTES) in caplog.text
+
+
+def test_short_service_key_set_after_startup_fails_closed(client, monkeypatch):
+    """Config cambiada en caliente a una key débil: nunca se acepta (401, no 500)."""
+    runs = []
+    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: runs.append(1) or True)
+    monkeypatch.setenv("SERVICE_API_KEY", "short-key")
+
+    assert client.post("/adversarial/run", headers={"X-Service-Key": "short-key"}).status_code == 401
+    assert runs == []
+
+
+def test_service_key_of_minimum_length_works(client, monkeypatch):
+    key = "k" * MIN_SERVICE_KEY_BYTES
+    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: True)
+    monkeypatch.setenv("SERVICE_API_KEY", key)
+
+    assert service_api_keys() == [key.encode()]
+    assert client.post("/adversarial/run", headers={"X-Service-Key": key}).status_code == 200
+
+
+def test_app_starts_without_service_key_and_service_endpoint_is_closed(monkeypatch):
+    monkeypatch.delenv("SERVICE_API_KEY", raising=False)
+    runs = []
+    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: runs.append(1) or True)
+
+    with TestClient(app) as started_client:  # arranca sin error
+        assert started_client.get("/health").status_code == 200
+        response = started_client.post("/adversarial/run", headers={"X-Service-Key": "any-key-at-all-0123456789"})
+
+    assert response.status_code == 401
+    assert runs == []

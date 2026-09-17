@@ -31,6 +31,7 @@ from core.merchant import vuelaya_merchant
 from core.agent_loop import PurchasingAgent
 from api.security import Principal, require_admin, require_principal, require_service
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
+from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
 from mandate.adversarial_tests import run_adversarial_suite
 
@@ -62,6 +63,13 @@ async def lifespan(_app: FastAPI):
         validate_token_config()
     except TokenConfigError as error:
         startup_logger.critical("AgentBuyer API no puede arrancar: configuración de tokens inválida. %s", error)
+        raise
+    # SERVICE_API_KEY ausente es válido (endpoints de servicio cerrados); configurada
+    # pero débil es un error de configuración y se reporta al arrancar.
+    try:
+        validate_service_key_config()
+    except ServiceKeyConfigError as error:
+        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
         raise
     load_seed_mandates()
     yield

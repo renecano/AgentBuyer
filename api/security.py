@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
-from core.auth_config import admin_emails, service_api_keys
+from core.auth_config import ServiceKeyConfigError, admin_emails, service_api_keys
 from core.auth_tokens import ROLE_ADMIN, InvalidAccessToken, decode_access_token
 
 logger = logging.getLogger(__name__)
@@ -78,11 +78,17 @@ def require_service(provided_key: str | None = Depends(_service_key_scheme)) -> 
 
     - Comparación en tiempo constante contra TODAS las keys (sin cortar en la
       primera coincidencia): el tiempo no revela cuál key ni cuántos bytes acertó.
-    - Fail-closed: sin SERVICE_API_KEY configurada no existe ninguna key válida y
-      todo se rechaza con 401.
+    - Fail-closed: sin SERVICE_API_KEY configurada (o si es inválida) no existe
+      ninguna key válida y todo se rechaza con 401.
     - Sin key o key inválida → 401. Un JWT (aunque sea admin) no sirve aquí.
     """
-    valid_keys = service_api_keys()
+    try:
+        valid_keys = service_api_keys()
+    except ServiceKeyConfigError as error:
+        # Config inválida (p. ej. cambiada en caliente tras arrancar): nunca se
+        # acepta una key débil; se cierra como si no hubiera keys.
+        logger.error("%s Se rechaza toda llamada de servicio.", error)
+        valid_keys = []
     if not valid_keys:
         logger.warning("SERVICE_API_KEY no está configurada: se rechaza toda llamada de servicio.")
 
