@@ -294,6 +294,12 @@ def test_login_without_admin_emails_configured_is_always_user(client, monkeypatc
 EXPECTED_SECURITY = {
     ("POST", "/mandates"): {"bearer", "service_key"},
     ("GET", "/inbox/messages"): "bearer",
+    # Por-mandato: token + ser dueño o admin (require_mandate_access).
+    ("GET", "/mandates/{mandate_id}"): "bearer",
+    ("POST", "/mandates/{mandate_id}/revoke"): "bearer",
+    ("POST", "/mandates/{mandate_id}/reset"): "bearer",
+    ("POST", "/mandates/{mandate_id}/approve_escalation"): "bearer",
+    ("GET", "/audit/{mandate_id}"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",
@@ -309,17 +315,12 @@ EXPECTED_SECURITY = {
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):
 # protegerlos rompería la UI hasta que el frontend envíe el header.
-# POST /mandates ya NO está aquí: desde 2D-3 exige token (React lo manda).
+# Los de por-mandato ya NO están aquí: exigen token y propiedad (EXPECTED_SECURITY).
 REACT_ROUTES = {
-    ("GET", "/mandates/{mandate_id}"),
-    ("POST", "/mandates/{mandate_id}/revoke"),
-    ("POST", "/mandates/{mandate_id}/reset"),
-    ("POST", "/mandates/{mandate_id}/approve_escalation"),
     ("POST", "/agent/run"),
     ("POST", "/verify"),
     ("POST", "/audit/reset"),
     ("GET", "/audit"),
-    ("GET", "/audit/{mandate_id}"),
     ("POST", "/disputes/file"),
 }
 

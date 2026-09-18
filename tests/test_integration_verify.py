@@ -206,13 +206,13 @@ def test_verification_events_are_recorded(client):
 
 # ── Seed de la demo ──────────────────────────────────────────────────────────
 
-def test_seed_mandate_loads_on_startup(active_seed):
+def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
     """El startup carga el seed — Marta existe sin POST previo.
 
     active_seed (tests/conftest.py) le da una expiración relativa a "ahora": el
     test no caduca con la fecha absoluta de shared/seed_mandates.json."""
     mandate_store.MANDATES.clear()
-    with TestClient(app) as fresh_client:
+    with TestClient(app, headers=seed_owner_headers) as fresh_client:
         response = fresh_client.get("/mandates/mnd_marta_001")
         assert response.status_code == 200
         record = response.json()

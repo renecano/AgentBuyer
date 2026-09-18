@@ -74,6 +74,17 @@ def active_seed(monkeypatch, tmp_path) -> dict:
     return seeds[0]
 
 
+@pytest.fixture()
+def seed_owner_headers(active_seed) -> dict[str, str]:
+    """Bearer del DUEÑO del mandato semilla, para los endpoints que exigen
+    propiedad (api/security.py: require_mandate_access).
+
+    El email NO se escribe a mano: sale del propio seed (human.email), que es de
+    donde el arranque saca el dueño. Si el seed cambia de dueño, el token lo sigue
+    y los tests no empiezan a mentir en silencio."""
+    return {"Authorization": f"Bearer {create_access_token(active_seed['human']['email'])}"}
+
+
 # Identidad admin y key de servicio de la suite.
 TEST_ADMIN_EMAIL = "pytest.admin@example.com"
 TEST_SERVICE_KEY = "pytest-only-service-key-0123456789-abcdefghijklmnop"

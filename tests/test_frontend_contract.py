@@ -50,14 +50,14 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture()
-def client(active_seed, auth_headers):
+def client(active_seed, seed_owner_headers):
     # active_seed (tests/conftest.py): el seed expira relativo a "ahora", así cada
     # test ejerce la rama que dice congelar sin depender de la fecha del sistema.
-    # auth_headers: desde 2D-3 React inicia sesión por OTP y manda el token en
-    # todas sus llamadas; el cliente de contrato hace lo mismo. Solo POST /mandates
-    # lo EXIGE hoy; en el resto viaja sin efecto, como en el navegador.
+    # seed_owner_headers: React inicia sesión por OTP y manda el token en todas sus
+    # llamadas. Se autentica como el DUEÑO del seed porque los endpoints por-mandato
+    # exigen propiedad: es la misma persona que en el navegador abre SU mandato.
     _clear_backend_state()
-    with TestClient(app, headers=auth_headers) as test_client:  # el lifespan carga el seed
+    with TestClient(app, headers=seed_owner_headers) as test_client:  # el lifespan carga el seed
         yield test_client
     _clear_backend_state()
 

@@ -54,7 +54,7 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
     assert "verification" in agent_res
 
     # 5. Revoke mandate (Kill Switch)
-    resp = client.post("/mandates/mandate_test_001/revoke")
+    resp = client.post("/mandates/mandate_test_001/revoke", headers=auth_headers)
     assert resp.status_code == 200
 
     # 6. Run agent after revocation -> Must fail immediately

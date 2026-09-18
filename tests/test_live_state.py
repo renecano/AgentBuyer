@@ -12,6 +12,7 @@ import api.main as api_main
 from api.main import app
 from audit.log import reset_trail
 from core.agent_loop import PurchasingAgent
+from core.auth_tokens import create_access_token
 from core.mandate_store import (
     apply_approved_purchase,
     get_mandate,
@@ -70,7 +71,7 @@ def test_strict_purchase_is_visible_in_get_mandate(auth_headers):
         }, headers=auth_headers)
         assert response.json()["verification_result"]["status"] == "APPROVED"
 
-        live_state = client.get(f"/mandates/{mandate_id}").json()["live_state"]
+        live_state = client.get(f"/mandates/{mandate_id}", headers=auth_headers).json()["live_state"]
 
     assert set(live_state) == LIVE_STATE_KEYS
     assert live_state == {"status": "active", "uses_count": 1, "amount_spent": 130.0, "revoked_at": None}
@@ -156,7 +157,7 @@ def test_expiry_is_exposed_without_a_prior_strict_read(auth_headers):
     with TestClient(app) as client:
         assert client.post("/mandates", json=expired, headers=auth_headers).status_code == 201
 
-        live_state = client.get("/mandates/mnd_live_expired").json()["live_state"]
+        live_state = client.get("/mandates/mnd_live_expired", headers=auth_headers).json()["live_state"]
         assert live_state["status"] == "expired"
         assert mandate_store.get_mandate("mnd_live_expired").status == MandateStatus.EXPIRED
 
@@ -179,9 +180,11 @@ def test_expired_seed_is_still_rejected(monkeypatch, tmp_path):
     expired_seed.write_text(json.dumps(seeds, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(api_main, "SEED_PATH", str(expired_seed))
     seed_id = seeds[0]["mandate_id"]
+    # Leer un mandato exige ser su dueño: el del seed es su human.email.
+    owner_headers = {"Authorization": f"Bearer {create_access_token(seeds[0]['human']['email'])}"}
 
     with TestClient(app) as client:
-        assert client.get(f"/mandates/{seed_id}").json()["live_state"]["status"] == "expired"
+        assert client.get(f"/mandates/{seed_id}", headers=owner_headers).json()["live_state"]["status"] == "expired"
         assert mandate_store.get_mandate(seed_id).status == MandateStatus.EXPIRED
 
         verification = client.post("/verify", json={

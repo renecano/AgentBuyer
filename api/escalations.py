@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 from numbers import Real
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from api.security import Principal, require_mandate_access
 from audit.log import append_entry, get_trail_events
 from core.mandate_store import apply_approved_purchase, get_mandate
 
@@ -37,7 +38,11 @@ def _existing_override(attempt_id: str) -> dict | None:
 
 
 @router.post("/mandates/{mandate_id}/approve_escalation")
-def approve_escalation(mandate_id: str, request: dict[str, Any]):
+def approve_escalation(
+    mandate_id: str,
+    request: dict[str, Any],
+    principal: Principal = Depends(require_mandate_access),
+):
     """Registra la decisión humana (approve/decline) sobre un intento escalado."""
     attempt_id = request.get("purchase_attempt_id")
     decision = request.get("decision")

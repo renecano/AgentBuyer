@@ -148,6 +148,19 @@ def is_admin(principal: Principal) -> bool:
     return principal.role == ROLE_ADMIN and principal.subject.strip().lower() in admin_emails()
 
 
+def require_mandate_access(
+    mandate_id: str,
+    principal: Principal = Depends(require_principal),
+) -> Principal:
+    """Dependencia de los endpoints por-mandato: token válido (401) Y ser dueño
+    o admin (403). `mandate_id` lo inyecta FastAPI desde el path.
+
+    Es la forma inyectable de assert_can_access_mandate: así el cuerpo de cada
+    endpoint no cambia y la autorización ocurre ANTES de ejecutar nada."""
+    assert_can_access_mandate(principal, mandate_id)
+    return principal
+
+
 def assert_can_access_mandate(principal: Principal, mandate_id: str) -> None:
     """Autorización por mandato: pasa si `principal` es su dueño o es admin.
 

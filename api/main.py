@@ -34,6 +34,7 @@ from api.security import (
     owner_email_for,
     require_admin,
     require_human_principal,
+    require_mandate_access,
     require_principal,
     require_service,
 )
@@ -243,7 +244,7 @@ def api_list_mandates(human_id: Optional[str] = None, principal: Principal = Dep
 
 
 @app.get("/mandates/{mandate_id}")
-def api_get_mandate(mandate_id: str):
+def api_get_mandate(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     rec = store_get_mandate(mandate_id)
     if rec is not None:
         return rec
@@ -252,7 +253,11 @@ def api_get_mandate(mandate_id: str):
 
 
 @app.post("/mandates/{mandate_id}/revoke")
-def api_revoke_mandate(mandate_id: str, req: Optional[RevokeMandateRequest] = None):
+def api_revoke_mandate(
+    mandate_id: str,
+    req: Optional[RevokeMandateRequest] = None,
+    principal: Principal = Depends(require_mandate_access),
+):
     reason = req.reason if req else "Revocado por el usuario"
     previous = store_get_mandate(mandate_id)
     success = mandate_store.revoke_mandate(mandate_id, reason)
@@ -272,7 +277,7 @@ def api_revoke_mandate(mandate_id: str, req: Optional[RevokeMandateRequest] = No
 
 
 @app.post("/mandates/{mandate_id}/pause")
-def api_pause_mandate(mandate_id: str, principal: Principal = Depends(require_principal)):
+def api_pause_mandate(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     success = mandate_store.pause_mandate(mandate_id)
     if not success:
         raise HTTPException(status_code=404, detail="Mandate not found")
@@ -280,7 +285,7 @@ def api_pause_mandate(mandate_id: str, principal: Principal = Depends(require_pr
 
 
 @app.post("/mandates/{mandate_id}/reset")
-def reset_mandate_endpoint(mandate_id: str):
+def reset_mandate_endpoint(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     """Restaura el mandato a un estado vivo fresco para reiniciar la demo."""
     record = reset_mandate(mandate_id)
     if record is None:
@@ -289,7 +294,7 @@ def reset_mandate_endpoint(mandate_id: str):
 
 
 @app.post("/mandates/{mandate_id}/resume")
-def api_resume_mandate(mandate_id: str, principal: Principal = Depends(require_principal)):
+def api_resume_mandate(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     success = mandate_store.resume_mandate(mandate_id)
     if not success:
         raise HTTPException(status_code=404, detail="Mandate not found")
@@ -334,7 +339,7 @@ def api_execute_purchase(req: ExecutePurchaseRequest, principal: Principal = Dep
 
 # Mandate Activity Trail for User
 @app.get("/mandates/{mandate_id}/activity")
-def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(require_principal)):
+def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     mandate = mandate_store.get_mandate(mandate_id)
     if not mandate:
         raise HTTPException(status_code=404, detail="Mandato no encontrado")

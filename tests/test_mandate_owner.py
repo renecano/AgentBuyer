@@ -130,24 +130,25 @@ def _keys_deep(value) -> set[str]:
     return set()
 
 
-def test_public_mandate_record_shape_is_unchanged(client, auth_headers):
+def test_public_mandate_record_shape_is_unchanged(client, auth_headers, seed_owner_headers):
     created = client.post("/mandates/create", json={"human_id": "hum_x", "max_amount_per_tx": 150}, headers=auth_headers)
     strict_id = created.json()["mandate_id"]
 
-    for mandate_id in (SEED_ID, strict_id):
-        record = client.get(f"/mandates/{mandate_id}").json()
+    # Cada mandato se lee con el token de SU dueño (leerlos exige propiedad).
+    for mandate_id, headers in ((SEED_ID, seed_owner_headers), (strict_id, auth_headers)):
+        record = client.get(f"/mandates/{mandate_id}", headers=headers).json()
         assert set(record) == {"mandate", "live_state"}
         assert set(record["live_state"]) == {"status", "uses_count", "amount_spent", "revoked_at"}
         assert not any("owner" in key for key in _keys_deep(record))
 
     # El email del token no aparece en la respuesta del mandato estricto.
-    assert TEST_USER_EMAIL not in client.get(f"/mandates/{strict_id}").text
+    assert TEST_USER_EMAIL not in client.get(f"/mandates/{strict_id}", headers=auth_headers).text
 
 
-def test_revoke_and_reset_keep_the_owner(client, active_seed):
+def test_revoke_and_reset_keep_the_owner(client, active_seed, seed_owner_headers):
     owner = get_mandate_owner(SEED_ID)
-    client.post(f"/mandates/{SEED_ID}/revoke")
-    client.post(f"/mandates/{SEED_ID}/reset")
+    assert client.post(f"/mandates/{SEED_ID}/revoke", headers=seed_owner_headers).status_code == 200
+    assert client.post(f"/mandates/{SEED_ID}/reset", headers=seed_owner_headers).status_code == 200
     assert get_mandate_owner(SEED_ID) == owner
 
 
