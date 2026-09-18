@@ -79,6 +79,6 @@ export function canonicalize(value: unknown): string {
 }
 
 /** Bytes UTF-8 canónicos de `value`: lo que se firma. */
-export function canonicalBytes(value: unknown): Uint8Array {
+export function canonicalBytes(value: unknown): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(canonicalize(value));
 }
