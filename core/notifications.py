@@ -381,29 +381,53 @@ END:VCALENDAR"""
     return {"status": 200, "message": "Receipt generated in local mode.", "sent_to": dest}
 
 
-def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int = 10) -> dict:
+# Qué autoriza cada código: el correo lo dice, para que la persona sepa qué está
+# aprobando. Un código de "registrar llave" que no pidió es la señal de que alguien
+# usa su sesión.
+OTP_PURPOSE_LOGIN = "login"
+OTP_PURPOSE_REGISTER_KEY = "register-key"
+_OTP_EMAIL_TEXT = {
+    OTP_PURPOSE_LOGIN: (
+        "Your Aegis verification code",
+        "🛡️ Zero-Trust Verification Code (Aegis):\n\nYour 6-digit verification code is: {code}\n\n",
+    ),
+    OTP_PURPOSE_REGISTER_KEY: (
+        "Confirm a new security key",
+        "Someone signed in to your account is registering a new security key for signing "
+        "purchase permissions.\n\nIf it was you, your confirmation code is: {code}\n\n"
+        "If it wasn't you, do NOT use this code: someone may have access to your session. "
+        "Sign out and sign back in.\n\n",
+    ),
+}
+
+
+def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int = 10,
+                     proposito: str = OTP_PURPOSE_LOGIN) -> dict:
     """
     Sends the 6-digit verification code (OTP) from the configured SMTP account.
 
     The code travels ONLY in the email body: never in the subject, logs, or the
     returned dict. Returns sent_via="smtp" only when delivery actually succeeded.
+    `proposito` selects what the email says the code authorizes (login vs. registering a key).
     """
     dest = (correo_destino or "").strip().lower()
     if not dest or "@" not in dest:
         return {"status": 400, "message": "Invalid email address.", "sent_via": "error"}
+    if proposito not in _OTP_EMAIL_TEXT:
+        raise ValueError(f"Propósito de OTP desconocido: {proposito!r}.")
 
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_PASS", "")
 
+    subject, intro = _OTP_EMAIL_TEXT[proposito]
     msg = MIMEText(
-        f"🛡️ Zero-Trust Verification Code (Aegis):\n\n"
-        f"Your 6-digit verification code is: {codigo_otp}\n\n"
-        f"This code expires in {minutos_validez} minutes and can be used only once. "
+        intro.format(code=codigo_otp)
+        + f"This code expires in {minutos_validez} minutes and can be used only once. "
         f"Do not share it with anyone.",
         "plain",
         "utf-8"
     )
-    msg["Subject"] = "Your Aegis verification code"
+    msg["Subject"] = subject
     msg["From"] = f"Saturday Agent <{smtp_user}>" if smtp_user else "Saturday Agent <saturday.agentbuyer@gmail.com>"
     msg["To"] = dest
 

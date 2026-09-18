@@ -303,6 +303,9 @@ EXPECTED_SECURITY = {
     # Registro de llaves públicas: el dueño sale del token (require_principal).
     ("POST", "/keys"): "bearer",
     ("GET", "/keys"): "bearer",
+    # Prueba de posesión: step-up OTP al email del token y challenge (sesión + OTP).
+    ("POST", "/keys/step-up/start"): "bearer",
+    ("POST", "/keys/challenge"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",
