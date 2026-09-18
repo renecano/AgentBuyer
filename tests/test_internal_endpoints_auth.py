@@ -300,6 +300,9 @@ EXPECTED_SECURITY = {
     ("POST", "/mandates/{mandate_id}/reset"): "bearer",
     ("POST", "/mandates/{mandate_id}/approve_escalation"): "bearer",
     ("GET", "/audit/{mandate_id}"): "bearer",
+    # Registro de llaves públicas: el dueño sale del token (require_principal).
+    ("POST", "/keys"): "bearer",
+    ("GET", "/keys"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",

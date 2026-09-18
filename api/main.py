@@ -460,6 +460,7 @@ from api.audit import router as audit_router
 from api.auth import router as auth_router
 from api.disputes import router as disputes_router
 from api.escalations import router as escalations_router
+from api.keys import router as keys_router
 from api.merchant import router as merchant_router
 
 app.include_router(agent_router)
@@ -467,6 +468,7 @@ app.include_router(audit_router)
 app.include_router(auth_router)
 app.include_router(disputes_router)
 app.include_router(escalations_router)
+app.include_router(keys_router)
 app.include_router(merchant_router)
 
 try:
