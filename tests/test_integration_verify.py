@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from audit.log import get_trail_events, reset_trail
 from api.main import app
 from core import mandate_store
+from mandate.sign import generate_keypair, sign_payload
 
 ENGINE_RULES = {"amount", "category", "merchant", "uses", "condition.price_below"}
 SECURITY_RULES = {"signature", "agent_identity", "status"}
@@ -45,7 +46,8 @@ def make_mandate(mandate_id: str = "mnd_test_001", **overrides) -> dict:
             "max_uses": 3,
             "conditions": [{"type": "price_below", "value": 150.00}],
         },
-        "signature": "firma-de-prueba",
+        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
+        # (antes: "firma-de-prueba", que solo pasaba por el fail-open de /verify).
     }
     mandate.update(overrides)
     return mandate
@@ -230,7 +232,7 @@ def test_server_signed_mandate_passes_real_ed25519_verification(client):
     Ese mandato debe pasar la verificación criptográfica REAL de /verify, y
     alterar las constraints firmadas debe romperla."""
     mandate = make_mandate(mandate_id="mnd_server_signed")
-    del mandate["signature"]
+    assert "signature" not in mandate  # el servidor firma
     create_mandate(client, mandate)
 
     approved = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_1")).json()
@@ -242,3 +244,87 @@ def test_server_signed_mandate_passes_real_ed25519_verification(client):
     tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_2")).json()
     assert tampered["verdict"] == "REJECT"
     assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False
+
+
+# ── Firma FAIL-CLOSED: el check pasa SOLO con Ed25519 verificada de verdad ──
+#
+# Antes /verify daba pass=True a una firma sin llave pública, o de menos de 64
+# caracteres ("Firma presente y estructurada."), y la rama except también
+# aprobaba. Estos casos congelan que eso ya no ocurre.
+
+def signature_result(client, mandate: dict) -> tuple[str, dict]:
+    create_mandate(client, mandate)
+    result = client.post("/verify", json=make_attempt(mandate_id=mandate["mandate_id"])).json()
+    return result["verdict"], next(check for check in result["checks"] if check["rule"] == "signature")
+
+
+def client_signed(mandate_id: str, signing_priv: str, declared_pub: str) -> dict:
+    """Mandato firmado por el CLIENTE: su pubkey y su firma Ed25519 sobre constraints."""
+    mandate = make_mandate(mandate_id=mandate_id)
+    mandate["human_pubkey"] = declared_pub
+    mandate["signature"] = sign_payload(signing_priv, mandate["constraints"])
+    return mandate
+
+
+@pytest.mark.parametrize(
+    "signature",
+    ["x", "firma-de-prueba", "test-signature-placeholder", "ab" * 64],
+    ids=["one-char", "placeholder", "seed-placeholder", "128-hex-garbage"],
+)
+def test_signature_without_public_key_is_rejected(client, signature):
+    """Sin llave con la que verificar, ninguna firma pasa: ni corta ni con forma de Ed25519."""
+    verdict, check = signature_result(client, make_mandate(mandate_id="mnd_nopub", signature=signature))
+
+    assert verdict == "REJECT"
+    assert check == {"rule": "signature", "pass": False, "detail": "Firma digital inválida."}
+
+
+def test_garbage_signature_with_a_real_public_key_is_rejected(client):
+    _, pub = generate_keypair()
+    mandate = make_mandate(mandate_id="mnd_garbage", human_pubkey=pub, signature="ab" * 64)
+
+    verdict, check = signature_result(client, mandate)
+    assert verdict == "REJECT" and check["pass"] is False
+
+
+def test_client_signature_with_its_own_key_is_approved(client):
+    """Una firma Ed25519 real hecha por el cliente, con su propia llave, verifica."""
+    priv, pub = generate_keypair()
+    verdict, check = signature_result(client, client_signed("mnd_client_ok", priv, pub))
+
+    assert verdict == "APPROVE"
+    assert check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+
+
+def test_public_key_of_one_key_and_signature_of_another_is_rejected(client):
+    _, pub = generate_keypair()
+    other_priv, _ = generate_keypair()
+    verdict, check = signature_result(client, client_signed("mnd_mismatch", other_priv, pub))
+
+    assert verdict == "REJECT" and check["pass"] is False
+
+
+@pytest.mark.parametrize("bad_pubkey", ["zz" * 32, "ab" * 10, 12345], ids=["non-hex", "short", "not-a-string"])
+def test_malformed_public_key_fails_closed(client, bad_pubkey):
+    """Una llave pública que ni siquiera se puede cargar no es 'firma presente': es REJECT."""
+    priv, _ = generate_keypair()
+    verdict, check = signature_result(client, client_signed("mnd_badpub", priv, bad_pubkey))
+
+    assert verdict == "REJECT" and check["pass"] is False
+
+
+def test_non_string_signature_is_rejected(client):
+    _, pub = generate_keypair()
+    verdict, check = signature_result(
+        client, make_mandate(mandate_id="mnd_sig_obj", human_pubkey=pub, signature={"sig": "x"})
+    )
+    assert verdict == "REJECT" and check["pass"] is False
+
+
+def test_no_signature_check_ever_passes_without_verifying(client):
+    """Ninguna respuesta de /verify vuelve a decir 'presente y estructurada/verificada'
+    (los textos de las ramas que aprobaban sin verificar)."""
+    for index, signature in enumerate(["x", "ab" * 64]):
+        _, check = signature_result(client, make_mandate(mandate_id=f"mnd_text_{index}", signature=signature))
+        assert check["detail"] not in {"Firma presente y estructurada.", "Firma presente y verificada."}
+

@@ -33,7 +33,8 @@ def make_mandate() -> dict:
             "max_uses": 3,
             "conditions": [{"type": "price_below", "value": 150.00}],
         },
-        "signature": "firma-de-prueba",
+        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
+        # (antes: "firma-de-prueba", que solo pasaba por el fail-open de /verify).
     }
 
 

@@ -59,6 +59,9 @@ def load_seed_mandates():
                 try:
                     # El seed es config del servidor (no input de un cliente): su dueño
                     # es el email de su human, igual que si ese humano lo hubiera creado.
+                    # No trae firma: al crearlo, el servidor lo SELLA con una llave
+                    # Ed25519 real (sello de sistema/legado, verificable en /verify).
+                    # Un placeholder de texto ya no pasaría: la verificación es fail-closed.
                     store_create_mandate(m, owner_email=(m.get("human") or {}).get("email"))
                 except Exception:
                     pass

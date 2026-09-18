@@ -152,7 +152,8 @@ def test_expiry_is_exposed_without_a_prior_strict_read(auth_headers):
         "agent": {"id": "agt_saturday"},
         "expires_at": "2020-01-01T00:00:00Z",
         "constraints": {"max_amount_per_purchase": 150.0},
-        "signature": "test-signature-placeholder",
+        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
+        # para que /verify llegue al check de status (con relleno cortaba antes, en la firma).
     }
     with TestClient(app) as client:
         assert client.post("/mandates", json=expired, headers=auth_headers).status_code == 201

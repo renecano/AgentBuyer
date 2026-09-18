@@ -86,14 +86,24 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     live_state = record["live_state"]
     security_checks: list[dict] = []
 
-    # 2a. Verificación Criptográfica Real (Ed25519 / HMAC / Token)
+    # 2a. Firma del mandato (Ed25519), FAIL-CLOSED. El check pasa SOLO si hay una
+    # firma que verifica de verdad contra la llave pública guardada en el mandato.
+    # Sin firma, sin llave con la que verificarla, firma malformada o que no
+    # coincide: REJECT. No hay ninguna rama que apruebe sin verificar (antes una
+    # firma sin pubkey, o de menos de 64 caracteres, pasaba como "estructurada").
     signature = mandate.get("signature") or mandate.get("human_signature")
     pubkey = mandate.get("human_pubkey") or mandate.get("pubkey")
 
-    if not signature or not str(signature).strip():
-        security_checks.append(
-            {"rule": "signature", "pass": False, "detail": "Firma ausente o vacía."}
-        )
+    if not isinstance(signature, str) or not signature.strip():
+        signature_check = {"rule": "signature", "pass": False, "detail": "Firma ausente o vacía."}
+    elif verify_signature(pubkey, mandate.get("scope", mandate.get("constraints", {})), signature):
+        signature_check = {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+    else:
+        # Incluye la firma sin llave pública: lo que no se puede verificar no es válido.
+        signature_check = {"rule": "signature", "pass": False, "detail": "Firma digital inválida."}
+
+    security_checks.append(signature_check)
+    if not signature_check["pass"]:
         return _finish(
             mandate_id,
             attempt_id,
@@ -101,18 +111,6 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
             security_checks,
             "Compra rechazada: la firma del mandato no es válida.",
         )
-    
-    # Si tenemos clave pública, verificamos criptográficamente el payload
-    if pubkey and isinstance(signature, str) and len(signature) >= 64:
-        try:
-            sig_valid = verify_signature(pubkey, mandate.get("scope", mandate.get("constraints", {})), signature)
-            security_checks.append({"rule": "signature", "pass": sig_valid, "detail": "Firma digital Ed25519 válida." if sig_valid else "Firma digital inválida."})
-            if not sig_valid:
-                return _finish(mandate_id, attempt_id, "REJECT", security_checks, "Compra rechazada: firma criptográfica inválida.")
-        except Exception:
-            security_checks.append({"rule": "signature", "pass": True, "detail": "Firma presente y verificada."})
-    else:
-        security_checks.append({"rule": "signature", "pass": True, "detail": "Firma presente y estructurada."})
 
     # 2b. El agente que presenta el intento debe ser el autorizado en el mandato
     expected_agent_id = mandate.get("agent", {}).get("id") or mandate.get("agent_id")

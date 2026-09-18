@@ -33,7 +33,8 @@ def react_payload(mandate_id: str, **extra) -> dict:
         "human": {"id": "hum_owner_test", "display_name": "Test User", "email": "human.in.body@example.com"},
         "agent": {"id": "agt_saturday"},
         "constraints": {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"]},
-        "signature": "test-signature-placeholder",
+        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
+        # (estos tests no llegan a /verify; se quita el relleno por coherencia).
     }
     payload.update(extra)
     return payload

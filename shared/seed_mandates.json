@@ -68,7 +68,6 @@
       "possession_verified": true,
       "sms_code": "000000",
       "enrolled_phone": "0000000000"
-    },
-    "signature": "test-signature-placeholder"
+    }
   }
 ]

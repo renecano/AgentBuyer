@@ -2,7 +2,7 @@ import time
 import uuid
 from typing import List, Optional, Union
 from shared.schemas import Mandate, MandateScope, MandateStatus, PaymentToken
-from mandate.sign import sign_payload
+from mandate.sign import sign_hmac_token, sign_payload
 
 
 def emitir_mandato(user_id: str, flight_offer_id: str, amount: float, currency: str, secret_key: bytes):
@@ -23,7 +23,8 @@ def emitir_mandato(user_id: str, flight_offer_id: str, amount: float, currency: 
         "exp": int(time.time()) + 300  # Expira en 5 minutos (privilegios temporales estrictos)
     }
     
-    signed_token = sign_payload(payload, secret_key)
+    # Token HS256 del flujo legado de consola (aegis_core.py): se pide explícito.
+    signed_token = sign_hmac_token(payload, secret_key)
     return signed_token, mandate_id
 
 
@@ -92,7 +93,7 @@ def create_mandate(
         "status": MandateStatus.ACTIVE.value,
     }
 
-    signature = sign_payload(unsigned_payload, human_privkey)
+    signature = sign_payload(human_privkey, unsigned_payload)
 
     return Mandate(
         mandate_id=mandate_id,

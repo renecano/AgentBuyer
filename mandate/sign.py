@@ -1,15 +1,33 @@
-import hmac
-import hashlib
-import base64
-import json
-import os
-from typing import Tuple, Union, Dict, Any
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives import serialization
+"""Firma de mandatos: Ed25519 sobre JSON canónico.
 
-# ADVERTENCIA: el valor por defecto es SOLO para desarrollo local. En producción
-# AEGIS_HMAC_SECRET debe venir del entorno (gestor de secretos), nunca del código.
-DEFAULT_HMAC_KEY = os.getenv("AEGIS_HMAC_SECRET", "dev-only-insecure-hmac-key").encode("utf-8")
+Un solo algoritmo por función, sin adivinar ni degradar:
+- sign_payload(private_key_hex, payload): SOLO Ed25519. Una llave malformada es
+  un SignatureError, nunca una firma de otro tipo.
+- verify_signature(...): fail-closed. True SOLO si la firma Ed25519 verifica
+  contra esa llave pública y ese payload; cualquier otra cosa es False.
+- sign_hmac_token(payload, secret_key): el token HS256 del flujo legado de consola
+  (aegis_core.py → core.verify.evaluar_intento_compra). Explícito y sin secreto
+  por defecto: se pide por su nombre, no se cae en él por accidente.
+
+Antes sign_payload decidía el algoritmo por el tipo y el largo de la llave: si no
+medía 64 hex, o si Ed25519 fallaba, devolvía EN SILENCIO un JWT HMAC firmado con
+un secreto de desarrollo. Eso ya no ocurre.
+"""
+import base64
+import hashlib
+import hmac
+import json
+from typing import Any, Dict, Tuple
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+ED25519_KEY_HEX_LENGTH = 64  # 32 bytes en hex (llave privada o pública)
+
+
+class SignatureError(ValueError):
+    """No se puede firmar con lo recibido (llave o payload inválidos)."""
 
 
 def encode_b64url(data: bytes) -> str:
@@ -17,37 +35,52 @@ def encode_b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
 
 
-def sign_payload(arg1: Any, arg2: Any = DEFAULT_HMAC_KEY) -> str:
-    """Sella criptográficamente el mandato para evitar manipulación (Tamper-proofing)."""
-    if isinstance(arg1, dict):
-        payload_dict = arg1
-        secret_key = arg2
-    else:
-        payload_dict = arg2 if isinstance(arg2, dict) else {}
-        secret_key = arg1
+def canonical_json(data: Any) -> bytes:
+    """Serializes data to canonical JSON (sorted keys, no whitespace) for signature stability."""
+    return json.dumps(data, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
-    if isinstance(secret_key, str):
-        # Si es una clave privada Ed25519 en hex (64 chars)
-        if len(secret_key) == 64:
-            try:
-                priv_bytes = bytes.fromhex(secret_key)
-                priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
-                canonical_bytes = canonical_json(payload_dict)
-                sig_bytes = priv_key.sign(canonical_bytes)
-                return sig_bytes.hex()
-            except Exception:
-                pass
-        key_bytes = secret_key.encode('utf-8')
-    elif isinstance(secret_key, bytes):
-        key_bytes = secret_key
-    else:
-        key_bytes = DEFAULT_HMAC_KEY
 
+def _ed25519_private_key(private_key_hex: Any) -> ed25519.Ed25519PrivateKey:
+    if not isinstance(private_key_hex, str) or len(private_key_hex) != ED25519_KEY_HEX_LENGTH:
+        raise SignatureError(
+            f"La llave privada Ed25519 debe ser un texto de {ED25519_KEY_HEX_LENGTH} caracteres hex."
+        )
+    try:
+        raw = bytes.fromhex(private_key_hex)
+    except ValueError:
+        raise SignatureError("La llave privada Ed25519 no es hexadecimal válido.") from None
+    return ed25519.Ed25519PrivateKey.from_private_bytes(raw)
+
+
+def sign_payload(private_key_hex: str, payload: Dict[str, Any]) -> str:
+    """Firma `payload` (JSON canónico) con Ed25519 y devuelve la firma en hex (128 chars).
+
+    Lanza SignatureError si la llave no es una privada Ed25519 en hex o si el
+    payload no es un dict serializable. No hay algoritmo de respaldo."""
+    if not isinstance(payload, dict):
+        raise SignatureError("El payload a firmar debe ser un dict.")
+    key = _ed25519_private_key(private_key_hex)
+    try:
+        message = canonical_json(payload)
+    except (TypeError, ValueError) as error:
+        raise SignatureError(f"El payload no es serializable a JSON canónico: {error}") from None
+    return key.sign(message).hex()
+
+
+def sign_hmac_token(payload: Dict[str, Any], secret_key: bytes) -> str:
+    """Token JWT HS256 del flujo legado de consola (aegis_core.py).
+
+    Es un mecanismo DISTINTO de la firma de mandatos (simétrico: quien verifica
+    puede firmar, así que no da no-repudio). Exige un secreto explícito."""
+    if not isinstance(payload, dict):
+        raise SignatureError("El payload del token debe ser un dict.")
+    if not isinstance(secret_key, bytes) or not secret_key:
+        raise SignatureError("El token HMAC exige un secreto explícito en bytes (no hay valor por defecto).")
     header = encode_b64url(b'{"alg":"HS256","typ":"JWT"}')
-    payload = encode_b64url(json.dumps(payload_dict, sort_keys=True).encode('utf-8'))
-    message = f"{header}.{payload}".encode('utf-8')
-    signature = encode_b64url(hmac.new(key_bytes, message, hashlib.sha256).digest())
-    return f"{header}.{payload}.{signature}"
+    body = encode_b64url(json.dumps(payload, sort_keys=True).encode('utf-8'))
+    message = f"{header}.{body}".encode('utf-8')
+    signature = encode_b64url(hmac.new(secret_key, message, hashlib.sha256).digest())
+    return f"{header}.{body}.{signature}"
 
 
 def generate_keypair() -> Tuple[str, str]:
@@ -66,19 +99,18 @@ def generate_keypair() -> Tuple[str, str]:
     return priv_bytes.hex(), pub_bytes.hex()
 
 
-def canonical_json(data: Any) -> bytes:
-    """Serializes data to canonical JSON (sorted keys, no whitespace) for signature stability."""
-    return json.dumps(data, sort_keys=True, separators=(',', ':')).encode('utf-8')
+def verify_signature(public_key_hex: Any, payload_dict: Any, signature_hex: Any) -> bool:
+    """Verifica una firma Ed25519 sobre el JSON canónico de `payload_dict`. FAIL-CLOSED.
 
-
-def verify_signature(public_key_hex: str, payload_dict: Dict[str, Any], signature_hex: str) -> bool:
-    """Verifies an Ed25519 digital signature over canonical payload JSON."""
-    try:
-        pub_bytes = bytes.fromhex(public_key_hex)
-        sig_bytes = bytes.fromhex(signature_hex)
-        public_key = ed25519.Ed25519PublicKey.from_public_bytes(pub_bytes)
-        canonical_bytes = canonical_json(payload_dict)
-        public_key.verify(sig_bytes, canonical_bytes)
-        return True
-    except Exception:
+    True SOLO si la firma es válida para esa llave pública y ese payload. Llave o
+    firma ausentes, de otro tipo, no hex, de largo incorrecto, o un payload no
+    serializable → False. Solo se capturan los errores esperables de datos
+    inválidos: un error inesperado se propaga (nunca se convierte en aprobación)."""
+    if not isinstance(public_key_hex, str) or not isinstance(signature_hex, str):
         return False
+    try:
+        public_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex))
+        public_key.verify(bytes.fromhex(signature_hex), canonical_json(payload_dict))
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+    return True
