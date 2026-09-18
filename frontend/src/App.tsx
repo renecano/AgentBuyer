@@ -5,6 +5,7 @@ import MandateCreator from "./components/MandateCreator";
 import AccountView from "./components/AccountView";
 import AuditView from "./components/AuditView";
 import { request, requestWithTimeout } from "./lib/api";
+import { useAuth } from "./lib/AuthProvider";
 import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayStateLabel, verdictLabel } from "./lib/presentation";
 
 type LiveState = {
@@ -846,11 +847,26 @@ function DemoTourOverlay({ stop, onNext }: { stop: DemoTourStop; onNext: () => v
 }
 
 function App() {
+  // La sesión manda: sin ella no hay vista que pueda cargar nada, porque los
+  // endpoints por-mandato exigen token y ser el dueño.
+  const { isAuthenticated } = useAuth();
   const [activeMandateId, setActiveMandateId] = useState<string | null>(null);
   const [view, setView] = useState<AppView>("mission");
   const [continueDemoAfterEmission, setContinueDemoAfterEmission] = useState(false);
   const [demoTourStop, setDemoTourStop] = useState<DemoTourStop | null>(null);
   const demoAutostartConsumed = useRef(false);
+
+  // Sesión caída (401 o expiración): se suelta el mandato abierto y se vuelve al
+  // login. Si la próxima sesión es de otra persona, ese mandato ya no es suyo
+  // (daría 403), así que no se hereda entre sesiones.
+  useEffect(() => {
+    if (isAuthenticated) return;
+    setActiveMandateId(null);
+    setView("mission");
+    setContinueDemoAfterEmission(false);
+    setDemoTourStop(null);
+    demoAutostartConsumed.current = false;
+  }, [isAuthenticated]);
 
   const advanceDemoTour = useCallback(() => {
     if (demoTourStop === "purchases") {
@@ -862,7 +878,10 @@ function App() {
     setView("mission");
   }, [demoTourStop]);
 
-  if (!activeMandateId) {
+  // El corte va en el render, no solo en el efecto de arriba: si esperáramos al
+  // efecto, el frame en que se cae la sesión aún montaría Mission Control y este
+  // dispararía sus llamadas (ahora 401) antes de desmontarse.
+  if (!isAuthenticated || !activeMandateId) {
     return <MandateCreator
       onCreated={(mandateId) => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(false); setDemoTourStop(null); setActiveMandateId(mandateId); setView("mission"); }}
       onDemoCreated={(mandateId) => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(true); setDemoTourStop(null); setActiveMandateId(mandateId); setView("mission"); }}
