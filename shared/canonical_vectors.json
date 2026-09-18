@@ -1,0 +1,161 @@
+{
+  "description": "Vectores de la canonicalización compartida JS/Python para firmas (RFC 8785/JCS con rango numérico ±(2^53−1)). input_json es el JSON TAL COMO VIAJA: cada lado lo parsea con su propio parser y debe producir exactamente canonical_utf8_hex. Escritos a mano; ver mandate/canonical.py.",
+  "vectors": [
+    {
+      "name": "claves_desordenadas",
+      "tests": "Claves ordenadas en todos los niveles.",
+      "input_json": "{\"b\":2,\"a\":1,\"c\":{\"z\":true,\"y\":null}}",
+      "canonical": "{\"a\":1,\"b\":2,\"c\":{\"y\":null,\"z\":true}}",
+      "canonical_utf8_hex": "7b2261223a312c2262223a322c2263223a7b2279223a6e756c6c2c227a223a747275657d7d"
+    },
+    {
+      "name": "entero_y_decimal_equivalentes",
+      "tests": "150.0 (float en Python) y 150 se canonicalizan igual.",
+      "input_json": "{\"uses\":3,\"amount\":150.0}",
+      "canonical": "{\"amount\":150,\"uses\":3}",
+      "canonical_utf8_hex": "7b22616d6f756e74223a3135302c2275736573223a337d"
+    },
+    {
+      "name": "decimales",
+      "tests": "Decimales con el formato mínimo de ECMAScript.",
+      "input_json": "{\"d\":-0.75,\"c\":123.456,\"b\":0.1,\"a\":150.5}",
+      "canonical": "{\"a\":150.5,\"b\":0.1,\"c\":123.456,\"d\":-0.75}",
+      "canonical_utf8_hex": "7b2261223a3135302e352c2262223a302e312c2263223a3132332e3435362c2264223a2d302e37357d"
+    },
+    {
+      "name": "flotantes_binarios_y_pequenos",
+      "tests": "Dígitos mínimos de ida y vuelta; exponente solo por debajo de 1e-6.",
+      "input_json": "[0.30000000000000004,1e-7,0.000001,1.5e-7,0.00001234,5e-324]",
+      "canonical": "[0.30000000000000004,1e-7,0.000001,1.5e-7,0.00001234,5e-324]",
+      "canonical_utf8_hex": "5b302e33303030303030303030303030303030342c31652d372c302e3030303030312c312e35652d372c302e30303030313233342c35652d3332345d"
+    },
+    {
+      "name": "cero_negativo",
+      "tests": "-0 y -0.0 se escriben 0.",
+      "input_json": "[-0,-0.0,0.0,0]",
+      "canonical": "[0,0,0,0]",
+      "canonical_utf8_hex": "5b302c302c302c305d"
+    },
+    {
+      "name": "notacion_exponencial_en_la_entrada",
+      "tests": "1e2 (float en Python) llega como 100.",
+      "input_json": "[1e2,1E3,2.5e1,9007199254740991,-9007199254740991]",
+      "canonical": "[100,1000,25,9007199254740991,-9007199254740991]",
+      "canonical_utf8_hex": "5b3130302c313030302c32352c393030373139393235343734303939312c2d393030373139393235343734303939315d"
+    },
+    {
+      "name": "acentos_sin_escapar",
+      "tests": "No-ASCII en UTF-8 crudo; clave con ñ ordenada tras la n.",
+      "input_json": "{\"ñandú\":\"sí\",\"name\":\"Peña\",\"destination\":\"Córdoba\"}",
+      "canonical": "{\"destination\":\"Córdoba\",\"name\":\"Peña\",\"ñandú\":\"sí\"}",
+      "canonical_utf8_hex": "7b2264657374696e6174696f6e223a2243c3b372646f6261222c226e616d65223a225065c3b161222c22c3b1616e64c3ba223a2273c3ad227d"
+    },
+    {
+      "name": "acentos_escapados_en_la_entrada",
+      "tests": "Si el JSON de entrada escapa (\\u00f3), la salida igual es UTF-8 crudo.",
+      "input_json": "{\"city\":\"C\\u00f3rdoba\",\"person\":\"Pe\\u00f1a\"}",
+      "canonical": "{\"city\":\"Córdoba\",\"person\":\"Peña\"}",
+      "canonical_utf8_hex": "7b2263697479223a2243c3b372646f6261222c22706572736f6e223a225065c3b161227d"
+    },
+    {
+      "name": "nfc_y_nfd_no_se_normalizan",
+      "tests": "ó precompuesta (NFC) y o+acento combinante (NFD) se firman distinto.",
+      "input_json": "[\"C\\u00f3rdoba\",\"Co\\u0301rdoba\"]",
+      "canonical": "[\"Córdoba\",\"Córdoba\"]",
+      "canonical_utf8_hex": "5b2243c3b372646f6261222c22436fcc8172646f6261225d"
+    },
+    {
+      "name": "strings_vacios_y_escapes",
+      "tests": "Solo se escapan comillas, barra invertida y controles; '/' y DEL no.",
+      "input_json": "{\"slash\":\"a/b\",\"quote\":\"a\\\"b\",\"nul\":\"\\u0000\",\"empty\":\"\",\"del\":\"\\u007f\",\"controls\":\"\\n\\t\\r\\b\\f\",\"backslash\":\"a\\\\b\",\"unit_sep\":\"\\u001f\"}",
+      "canonical": "{\"backslash\":\"a\\\\b\",\"controls\":\"\\n\\t\\r\\b\\f\",\"del\":\"\",\"empty\":\"\",\"nul\":\"\\u0000\",\"quote\":\"a\\\"b\",\"slash\":\"a/b\",\"unit_sep\":\"\\u001f\"}",
+      "canonical_utf8_hex": "7b226261636b736c617368223a22615c5c62222c22636f6e74726f6c73223a225c6e5c745c725c625c66222c2264656c223a227f222c22656d707479223a22222c226e756c223a225c7530303030222c2271756f7465223a22615c2262222c22736c617368223a22612f62222c22756e69745f736570223a225c7530303166227d"
+    },
+    {
+      "name": "fuera_del_bmp",
+      "tests": "Emoji literal y como par de surrogates escapado: mismo carácter.",
+      "input_json": "{\"k\":\"\\ud83d\\ude00\",\"emoji\":\"😀\"}",
+      "canonical": "{\"emoji\":\"😀\",\"k\":\"😀\"}",
+      "canonical_utf8_hex": "7b22656d6f6a69223a22f09f9880222c226b223a22f09f9880227d"
+    },
+    {
+      "name": "orden_utf16_de_claves",
+      "tests": "😀 (U+1F600) va ANTES que ﬁ (U+FB01) en UTF-16 (sort_keys de Python daría lo contrario).",
+      "input_json": "{\"ﬁ\":2,\"a\":0,\"😀\":1}",
+      "canonical": "{\"a\":0,\"😀\":1,\"ﬁ\":2}",
+      "canonical_utf8_hex": "7b2261223a302c22f09f9880223a312c22efac81223a327d"
+    },
+    {
+      "name": "claves_numericas_son_texto",
+      "tests": "'10' va antes que '2': orden de texto, no numérico.",
+      "input_json": "{\"10\":\"x\",\"2\":\"y\",\"1\":\"z\"}",
+      "canonical": "{\"1\":\"z\",\"10\":\"x\",\"2\":\"y\"}",
+      "canonical_utf8_hex": "7b2231223a227a222c223130223a2278222c2232223a2279227d"
+    },
+    {
+      "name": "anidamiento_y_listas",
+      "tests": "Las listas conservan su orden; los objetos dentro se ordenan.",
+      "input_json": "{\"nested\":{\"deep\":{\"deeper\":[null,true,false]}},\"list\":[3,1,2,{\"b\":[],\"a\":{}}]}",
+      "canonical": "{\"list\":[3,1,2,{\"a\":{},\"b\":[]}],\"nested\":{\"deep\":{\"deeper\":[null,true,false]}}}",
+      "canonical_utf8_hex": "7b226c697374223a5b332c312c322c7b2261223a7b7d2c2262223a5b5d7d5d2c226e6573746564223a7b2264656570223a7b22646565706572223a5b6e756c6c2c747275652c66616c73655d7d7d7d"
+    },
+    {
+      "name": "espacios_en_la_entrada",
+      "tests": "El formato de la entrada no importa; los espacios dentro de strings sí.",
+      "input_json": "{ \"b\" : \"x  y\" ,\n  \"a\" : [ 1 , 2 ] }",
+      "canonical": "{\"a\":[1,2],\"b\":\"x  y\"}",
+      "canonical_utf8_hex": "7b2261223a5b312c325d2c2262223a2278202079227d"
+    },
+    {
+      "name": "escalares_en_la_raiz",
+      "tests": "Un valor que no es objeto también tiene forma canónica.",
+      "input_json": "[150.0,\"texto\",null,true]",
+      "canonical": "[150,\"texto\",null,true]",
+      "canonical_utf8_hex": "5b3135302c22746578746f222c6e756c6c2c747275655d"
+    },
+    {
+      "name": "mandato_realista",
+      "tests": "Forma de un mandato del wizard (constraints + search_fields con acento).",
+      "input_json": "{\"mandate_id\":\"mnd_marta_x1\",\"constraints\":{\"max_uses\":3,\"max_amount_per_purchase\":150.0,\"currency\":\"USD\",\"allowed_merchants\":[\"mch_vuelaya\"],\"allowed_categories\":[\"travel.flights\"],\"conditions\":[{\"value\":149.99,\"type\":\"price_below\"}],\"off_session_consent\":true},\"search_fields\":{\"origin\":\"BUE\",\"destination\":\"Córdoba\",\"departure_date\":\"2026-10-01\"},\"valid_until\":\"2026-12-31\"}",
+      "canonical": "{\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_vuelaya\"],\"conditions\":[{\"type\":\"price_below\",\"value\":149.99}],\"currency\":\"USD\",\"max_amount_per_purchase\":150,\"max_uses\":3,\"off_session_consent\":true},\"mandate_id\":\"mnd_marta_x1\",\"search_fields\":{\"departure_date\":\"2026-10-01\",\"destination\":\"Córdoba\",\"origin\":\"BUE\"},\"valid_until\":\"2026-12-31\"}",
+      "canonical_utf8_hex": "7b22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f7675656c617961225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c7565223a3134392e39397d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f7075726368617365223a3135302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c226d616e646174655f6964223a226d6e645f6d617274615f7831222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31302d3031222c2264657374696e6174696f6e223a2243c3b372646f6261222c226f726967696e223a22425545227d2c2276616c69645f756e74696c223a22323032362d31322d3331227d"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "entero_2_a_la_53",
+      "reason": "2^53: JS ya no distingue 2^53 de 2^53+1.",
+      "input_json": "9007199254740992"
+    },
+    {
+      "name": "entero_negativo_fuera_de_rango",
+      "reason": "-(2^53).",
+      "input_json": "-9007199254740992"
+    },
+    {
+      "name": "entero_enorme_en_objeto",
+      "reason": "JS lo recibe redondeado: se firmaría otro número.",
+      "input_json": "{\"amount\":12345678901234567890}"
+    },
+    {
+      "name": "float_enorme",
+      "reason": "1e21: fuera del rango seguro.",
+      "input_json": "1e21"
+    },
+    {
+      "name": "float_fuera_de_rango",
+      "reason": "9007199254740993.5 se parsea como 9007199254740994.",
+      "input_json": "[9007199254740993.5]"
+    },
+    {
+      "name": "surrogate_huerfano_en_valor",
+      "reason": "No es Unicode válido: no hay bytes UTF-8 que firmar.",
+      "input_json": "\"\\ud800\""
+    },
+    {
+      "name": "surrogate_huerfano_en_clave",
+      "reason": "Ídem, en una clave.",
+      "input_json": "{\"\\udc00\":1}"
+    }
+  ]
+}
