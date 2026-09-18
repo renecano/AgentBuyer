@@ -128,6 +128,16 @@ def get_active_keys(owner_email: str) -> List[str]:
     return [record["public_key"] for record in list_active_key_records(owner_email)]
 
 
+def find_key(key_id: str) -> Optional[tuple[str, dict]]:
+    """(owner_email, copia del registro) de `key_id`, activa o revocada; None si no existe."""
+    with _lock:
+        for owner, records in OWNER_KEYS.items():
+            for record in records:
+                if record["key_id"] == key_id:
+                    return owner, deepcopy(record)
+    return None
+
+
 def revoke_key(owner_email: str, key_id: str) -> bool:
     """Marca revoked_at en la llave `key_id` DEL DUEÑO. True si quedó revocada ahora;
     False si no existe para ese dueño o ya estaba revocada (no toca llaves ajenas)."""

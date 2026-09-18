@@ -105,3 +105,100 @@ def service_headers(auth_config, monkeypatch) -> dict[str, str]:
     por require_service por el camino normal (comparación en tiempo constante)."""
     monkeypatch.setenv("SERVICE_API_KEY", TEST_SERVICE_KEY)
     return {"X-Service-Key": TEST_SERVICE_KEY}
+
+
+# ── Registro de llaves con PRUEBA DE POSESIÓN (flujo real completo) ──────────
+
+class FakeClock:
+    """Reloj controlable para servicios con TTL (OTP, challenges)."""
+
+    def __init__(self, start: float = 1_000_000.0):
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class KeyRegistrar:
+    """Hace el flujo REAL de registro de una llave por HTTP, sin atajos:
+
+        POST /keys/step-up/start → (código del correo) → POST /keys/challenge
+        → firmar registration_message con la privada → POST /keys
+
+    Usa servicios de step-up y challenge con reloj propio (sin esperas reales) y un
+    buzón falso en lugar de SMTP. Nada se desactiva: la verificación del servidor
+    es la de producción."""
+
+    def __init__(self, client, monkeypatch):
+        import api.keys as keys_api
+        from core.email_otp import EmailOtpService
+        from core.key_challenges import KeyChallengeService
+
+        self.client = client
+        self.otp_clock = FakeClock()
+        self.challenge_clock = FakeClock()
+        self.outbox: list[dict] = []
+        self.otp_service = EmailOtpService(clock=self.otp_clock)
+        self.challenge_service = KeyChallengeService(clock=self.challenge_clock)
+        monkeypatch.setattr(keys_api, "step_up_otp_service", self.otp_service)
+        monkeypatch.setattr(keys_api, "challenge_service", self.challenge_service)
+        monkeypatch.setattr(
+            keys_api, "send_step_up_email",
+            lambda email, code, ttl: self.outbox.append({"email": email, "code": code}) or True,
+        )
+
+    @staticmethod
+    def bearer(email: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {create_access_token(email)}"}
+
+    @staticmethod
+    def new_private_key():
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        return ed25519.Ed25519PrivateKey.generate()
+
+    @staticmethod
+    def public_hex(private_key) -> str:
+        from cryptography.hazmat.primitives import serialization
+        return private_key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+    def challenge(self, headers: dict[str, str]) -> dict:
+        """Step-up OTP + challenge para el dueño de `headers`."""
+        started = self.client.post("/keys/step-up/start", headers=headers)
+        assert started.status_code == 200, started.text
+        code = self.outbox[-1]["code"]
+        issued = self.client.post("/keys/challenge", json={"code": code}, headers=headers)
+        assert issued.status_code == 201, issued.text
+        # Ya canjeado: deja pasar el cooldown y la ventana del rate limit del OTP para
+        # el próximo registro (el reloj de los challenges es otro y no se mueve).
+        self.otp_clock.advance(self.otp_service.send_window_seconds)
+        return issued.json()
+
+    @staticmethod
+    def sign(private_key, challenge: dict, owner_email: str, public_key_hex: str) -> str:
+        from core.key_challenges import registration_message
+        message = registration_message(challenge["challenge_id"], challenge["nonce"], owner_email, public_key_hex)
+        return private_key.sign(message).hex()
+
+    def register(self, email: str, private_key=None, *, headers=None, public_key_hex=None, extra=None):
+        """Registro completo con prueba válida. Devuelve (respuesta, privada, pubkey_hex)."""
+        headers = headers or self.bearer(email)
+        private_key = private_key or self.new_private_key()
+        public_key_hex = public_key_hex or self.public_hex(private_key)
+        challenge = self.challenge(headers)
+        body = {
+            "public_key": public_key_hex,
+            "challenge_id": challenge["challenge_id"],
+            "signature": self.sign(private_key, challenge, email, public_key_hex),
+            **(extra or {}),
+        }
+        return self.client.post("/keys", json=body, headers=headers), private_key, public_key_hex
+
+
+@pytest.fixture()
+def key_registrar(client, monkeypatch) -> KeyRegistrar:
+    """Registrador de llaves por el flujo real (usa el fixture `client` del módulo)."""
+    return KeyRegistrar(client, monkeypatch)

@@ -99,18 +99,36 @@ def generate_keypair() -> Tuple[str, str]:
     return priv_bytes.hex(), pub_bytes.hex()
 
 
-def verify_signature(public_key_hex: Any, payload_dict: Any, signature_hex: Any) -> bool:
-    """Verifica una firma Ed25519 sobre el JSON canónico de `payload_dict`. FAIL-CLOSED.
+def verify_ed25519_bytes(public_key_hex: Any, message: Any, signature_hex: Any) -> bool:
+    """Verifica una firma Ed25519 sobre BYTES exactos. FAIL-CLOSED.
 
-    True SOLO si la firma es válida para esa llave pública y ese payload. Llave o
-    firma ausentes, de otro tipo, no hex, de largo incorrecto, o un payload no
-    serializable → False. Solo se capturan los errores esperables de datos
-    inválidos: un error inesperado se propaga (nunca se convierte en aprobación)."""
+    Es la primitiva para firmas hechas fuera del servidor (navegador): el llamador
+    reconstruye los bytes canónicos que el cliente firmó (mandate/canonical.py) y
+    se verifica sobre ellos, sin re-serializar nada aquí.
+
+    True SOLO si la firma es válida para esa llave pública y esos bytes. Llave o
+    firma ausentes, de otro tipo, no hex o de largo incorrecto, o un mensaje que no
+    son bytes → False. Solo se capturan los errores esperables de datos inválidos:
+    un error inesperado se propaga (nunca se convierte en aprobación)."""
     if not isinstance(public_key_hex, str) or not isinstance(signature_hex, str):
+        return False
+    if not isinstance(message, (bytes, bytearray)):
         return False
     try:
         public_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex))
-        public_key.verify(bytes.fromhex(signature_hex), canonical_json(payload_dict))
+        public_key.verify(bytes.fromhex(signature_hex), bytes(message))
     except (InvalidSignature, ValueError, TypeError):
         return False
     return True
+
+
+def verify_signature(public_key_hex: Any, payload_dict: Any, signature_hex: Any) -> bool:
+    """Verifica una firma Ed25519 sobre el JSON canónico (legado) de `payload_dict`. FAIL-CLOSED.
+
+    Es la firma que produce el SERVIDOR (sign_payload). Un payload no serializable
+    → False. La verificación en sí es verify_ed25519_bytes."""
+    try:
+        message = canonical_json(payload_dict)
+    except (TypeError, ValueError):
+        return False
+    return verify_ed25519_bytes(public_key_hex, message, signature_hex)

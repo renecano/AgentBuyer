@@ -26,6 +26,7 @@ from typing import Callable, Dict
 
 from core.owner_keys import normalize_owner_email, validate_public_key
 from mandate.canonical import canonicalize
+from mandate.sign import verify_ed25519_bytes
 
 CHALLENGE_TTL_SECONDS = 120
 NONCE_BYTES = 32  # 256 bits
@@ -142,3 +143,40 @@ def registration_message(challenge_id: str, nonce: str, owner_email: str, public
     mandate/canonical.py) de registration_payload(). El frontend debe reproducirlos
     byte por byte; shared/key_registration_vectors.json fija ejemplos exactos."""
     return canonicalize(registration_payload(challenge_id, nonce, owner_email, public_key))
+
+
+class InvalidProofSignature(Exception):
+    """La firma no prueba posesión de la privada de ESA pubkey para ESTE challenge."""
+
+
+def verify_proof_of_possession(
+    service: KeyChallengeService,
+    owner_email: str,
+    public_key: str,
+    challenge_id: str,
+    signature_hex: str,
+) -> str:
+    """Prueba de posesión de un registro de llave (sub-paso 2.4). Devuelve la pubkey
+    canónica (hex en minúsculas) si la prueba es válida; si no, lanza.
+
+    Orden, y por qué:
+    1. validate_public_key → InvalidPublicKey. Un formato roto es un error del cliente,
+       no un intento de firma: NO consume el challenge (se puede reintentar).
+    2. service.consume(challenge_id, owner) → ChallengeRejected. Deja el challenge
+       USADO antes de mirar la firma: cada challenge admite UN solo intento de firma,
+       así que no sirve para probar firmas a ciegas.
+    3. Reconstruye registration_message con el owner DEL TOKEN, la pubkey PRESENTADA y
+       el challenge_id/nonce DEL SERVIDOR (el cliente no aporta nonce: no puede elegir
+       qué se firma), y verifica la firma Ed25519 sobre esos bytes exactos contra esa
+       misma pubkey → InvalidProofSignature.
+
+    Como la pubkey va DENTRO del mensaje y además es la llave que verifica, la firma
+    prueba posesión de la privada de exactamente la pubkey que se va a registrar.
+    """
+    owner = normalize_owner_email(owner_email)
+    key = validate_public_key(public_key)
+    challenge = service.consume(challenge_id, owner)
+    message = registration_message(challenge.challenge_id, challenge.nonce, owner, key)
+    if not verify_ed25519_bytes(key, message, signature_hex):
+        raise InvalidProofSignature("The signature does not prove possession of this key for this challenge.")
+    return key

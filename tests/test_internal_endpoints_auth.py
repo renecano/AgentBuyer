@@ -306,6 +306,7 @@ EXPECTED_SECURITY = {
     # Prueba de posesión: step-up OTP al email del token y challenge (sesión + OTP).
     ("POST", "/keys/step-up/start"): "bearer",
     ("POST", "/keys/challenge"): "bearer",
+    ("DELETE", "/keys/{key_id}"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",

@@ -1,10 +1,21 @@
-"""Llaves públicas del dueño autenticado: registrar (POST /keys) y listar (GET /keys),
-más el step-up y el challenge de la prueba de posesión (core/key_challenges.py).
+"""Llaves públicas del dueño autenticado: registrar con PRUEBA DE POSESIÓN (POST /keys),
+listar (GET /keys) y revocar (DELETE /keys/{key_id}), más el step-up OTP y el
+challenge que la prueba consume (core/key_challenges.py).
 
 El dueño es SIEMPRE el subject del token (owner_email_for), nunca el cuerpo: un
 campo owner/owner_email en el body se ignora, igual que al crear un mandato.
-Aditivo: registrar una llave todavía no cambia la verificación de mandatos, y
-POST /keys todavía no exige la prueba de posesión (eso es el sub-paso 2.4).
+Registrar una llave todavía no cambia la verificación de mandatos (paso 3).
+
+Códigos de POST /keys (el criterio: quién tiene que hacer qué para arreglarlo):
+    401  sin sesión                                  → iniciar sesión
+    422  cuerpo mal formado (falta un campo, pubkey no es Ed25519 hex)
+                                                     → bug del cliente; NO consume el challenge
+    403  la prueba de posesión no vale: challenge desconocido/ajeno/vencido/usado, o la
+         firma no verifica para ESA pubkey y ESE challenge
+                                                     → repetir step-up + challenge + firma
+    409  la prueba vale pero el registro choca: llave de otra cuenta, llave revocada
+         o tope de llaves activas                    → revocar/usar otra llave
+Nunca 401 por un fallo de la prueba: el frontend cierra la sesión ante un 401.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -12,13 +23,22 @@ from pydantic import BaseModel
 from api.security import Principal, owner_email_for, require_principal
 from core.auth_config import auth_dev_mode_enabled
 from core.email_otp import EmailOtpService, OtpCheck, OtpRateLimited
-from core.key_challenges import REGISTER_KEY_PURPOSE, KeyChallengeService
+from core.key_challenges import (
+    REGISTER_KEY_PURPOSE,
+    ChallengeRejected,
+    ChallengeRejection,
+    InvalidProofSignature,
+    KeyChallengeService,
+    verify_proof_of_possession,
+)
 from core.notifications import OTP_PURPOSE_REGISTER_KEY, enviar_token_otp
 from core.owner_keys import (
     InvalidPublicKey,
     KeyConflict,
+    find_key,
     list_active_key_records,
     register_key,
+    revoke_key,
 )
 
 router = APIRouter()
@@ -38,6 +58,19 @@ _PUBLIC_FIELDS = ("key_id", "public_key", "alg", "created_at")
 class RegisterKeyRequest(BaseModel):
     # Campos extra (p. ej. owner_email) se IGNORAN: Pydantic los descarta por defecto.
     public_key: str
+    # Prueba de posesión: el challenge de POST /keys/challenge y la firma Ed25519 (hex)
+    # de registration_message(challenge_id, nonce, owner, public_key).
+    challenge_id: str
+    signature: str
+
+
+# Desconocido y ajeno comparten mensaje: no se revela si un challenge_id existe.
+_CHALLENGE_REJECTION_DETAIL = {
+    ChallengeRejection.UNKNOWN: "Unknown challenge. Request a new one.",
+    ChallengeRejection.WRONG_OWNER: "Unknown challenge. Request a new one.",
+    ChallengeRejection.EXPIRED: "The challenge expired. Request a new one.",
+    ChallengeRejection.USED: "The challenge was already used. Request a new one.",
+}
 
 
 def _owner(principal: Principal) -> str:
@@ -53,12 +86,28 @@ def _public_view(record: dict) -> dict:
 
 @router.post("/keys", status_code=status.HTTP_201_CREATED)
 def register_public_key(payload: RegisterKeyRequest, principal: Principal = Depends(require_principal)):
-    """Registra una llave pública Ed25519 (64 hex) bajo el email del token."""
+    """Registra una llave pública Ed25519 bajo el email del token, SOLO si el cliente
+    prueba que tiene su privada: firma el mensaje canónico del challenge (que a su vez
+    exigió un OTP fresco). Sin la privada no se puede registrar una pubkey ajena."""
     owner = _owner(principal)
     try:
-        key_id = register_key(owner, payload.public_key)
+        public_key = verify_proof_of_possession(
+            challenge_service, owner, payload.public_key, payload.challenge_id, payload.signature,
+        )
     except InvalidPublicKey as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from None
+    except ChallengeRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=_CHALLENGE_REJECTION_DETAIL[rejected.reason],
+        ) from None
+    except InvalidProofSignature:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The signature does not prove possession of this key. Request a new challenge.",
+        ) from None
+
+    try:
+        key_id = register_key(owner, public_key)
     except KeyConflict as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from None
     record = next(record for record in list_active_key_records(owner) if record["key_id"] == key_id)
@@ -155,3 +204,24 @@ def issue_key_challenge(payload: ChallengeRequest, principal: Principal = Depend
         # ver core/key_challenges.registration_message.
         "purpose": REGISTER_KEY_PURPOSE,
     }
+
+
+# ── Revocación (sub-paso 2.4) ───────────────────────────────────────────────
+
+@router.delete("/keys/{key_id}")
+def revoke_public_key(key_id: str, principal: Principal = Depends(require_principal)):
+    """Revoca una llave PROPIA (p. ej. la de un navegador cuyos datos se borraron).
+    Libera cupo del tope de llaves activas y la llave no puede volver a registrarse.
+
+    404 si no existe o ya estaba revocada; 403 si es de otra cuenta."""
+    owner = _owner(principal)
+    found = find_key(key_id)
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Key not found.")
+    holder, _ = found
+    if holder != owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This key belongs to another account.")
+    if not revoke_key(owner, key_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Key not found or already revoked.")
+    _, record = find_key(key_id)
+    return {"key_id": key_id, "revoked_at": record["revoked_at"]}

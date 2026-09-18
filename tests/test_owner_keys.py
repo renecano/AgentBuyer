@@ -1,7 +1,8 @@
 """Registro de llaves públicas por dueño (core/owner_keys.py + api/keys.py).
 
-Paso 1 de la firma del humano: el registro existe y es consultable, pero /verify
-todavía NO lo usa (eso es el paso 3). Los tests de "aditivo" al final lo congelan
+Paso 1 de la firma del humano (registrar exige prueba de posesión desde el 2.4,
+ver tests/test_key_registration.py): el registro existe y es consultable, pero
+/verify todavía NO lo usa (eso es el paso 3). Los tests de "aditivo" al final lo congelan
 a propósito: cuando el paso 3 invierta la verificación, deben cambiar ahí.
 """
 import pytest
@@ -53,18 +54,19 @@ def bearer(email: str) -> dict:
 
 
 # ── POST /keys: autenticado, el dueño sale del token ────────────────────────
+# Desde el sub-paso 2.4 registrar exige PRUEBA DE POSESIÓN: estos tests pasan por el
+# flujo real (step-up OTP → challenge → firma) con el helper key_registrar (conftest).
 
 def test_register_key_without_token_is_401(client):
-    response = client.post("/keys", json={"public_key": pubkey()})
+    response = client.post("/keys", json={"public_key": pubkey(), "challenge_id": "chl_x", "signature": "00" * 64})
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
     assert owner_keys.OWNER_KEYS == {}
 
 
-def test_register_key_with_token_records_it_under_the_token_email(client, auth_headers):
-    key = pubkey()
-    response = client.post("/keys", json={"public_key": key}, headers=auth_headers)
+def test_register_key_with_token_records_it_under_the_token_email(key_registrar):
+    response, _, key = key_registrar.register(TEST_USER_EMAIL)
 
     assert response.status_code == 201
     body = response.json()
@@ -73,13 +75,10 @@ def test_register_key_with_token_records_it_under_the_token_email(client, auth_h
     assert get_active_keys(TEST_USER_EMAIL) == [key]
 
 
-def test_body_cannot_choose_the_owner(client, auth_headers):
+def test_body_cannot_choose_the_owner(key_registrar):
     """Mismo principio que los mandatos: la identidad sale del token, no del cuerpo."""
-    key = pubkey()
-    response = client.post(
-        "/keys",
-        json={"public_key": key, "owner_email": "attacker@example.com", "owner": "attacker@example.com"},
-        headers=auth_headers,
+    response, _, key = key_registrar.register(
+        TEST_USER_EMAIL, extra={"owner_email": "attacker@example.com", "owner": "attacker@example.com"},
     )
 
     assert response.status_code == 201
@@ -92,53 +91,64 @@ def test_body_cannot_choose_the_owner(client, auth_headers):
     ["", "ab" * 10, "zz" * 32, "ab" * 33, "ab" * 31 + "g1", 12345, None],
     ids=["empty", "short", "64-non-hex", "too-long", "one-non-hex-char", "number", "null"],
 )
-def test_malformed_public_key_is_rejected(client, auth_headers, bad_key):
-    response = client.post("/keys", json={"public_key": bad_key}, headers=auth_headers)
+def test_malformed_public_key_is_rejected(key_registrar, auth_headers, bad_key):
+    """Con un challenge VÁLIDO y el resto del cuerpo completo: el 422 lo causa la
+    pubkey, no la falta de campos. Y un formato roto no gasta el challenge."""
+    challenge = key_registrar.challenge(auth_headers)
+    response = key_registrar.client.post(
+        "/keys", json={"public_key": bad_key, "challenge_id": challenge["challenge_id"], "signature": "00" * 64},
+        headers=auth_headers,
+    )
 
     assert response.status_code == 422
     assert get_active_keys(TEST_USER_EMAIL) == []
+    key_registrar.challenge_service.consume(challenge["challenge_id"], TEST_USER_EMAIL)  # sigue sin usar
 
 
 def test_missing_public_key_field_is_422(client, auth_headers):
-    assert client.post("/keys", json={}, headers=auth_headers).status_code == 422
+    body = {"challenge_id": "chl_x", "signature": "00" * 64}
+    assert client.post("/keys", json=body, headers=auth_headers).status_code == 422
 
 
-def test_admin_is_a_person_and_can_register_keys(client, admin_headers):
-    key = pubkey()
-    assert client.post("/keys", json={"public_key": key}, headers=admin_headers).status_code == 201
+def test_admin_is_a_person_and_can_register_keys(key_registrar, admin_headers):
+    response, _, key = key_registrar.register(TEST_ADMIN_EMAIL, headers=admin_headers)
+    assert response.status_code == 201
     assert get_active_keys(TEST_ADMIN_EMAIL) == [key]
 
 
 def test_service_key_cannot_register_keys(client, service_headers):
     """Una máquina no es dueña de llaves de humano: sin JWT de persona → 401."""
-    response = client.post("/keys", json={"public_key": pubkey()}, headers=service_headers)
+    body = {"public_key": pubkey(), "challenge_id": "chl_x", "signature": "00" * 64}
+    response = client.post("/keys", json=body, headers=service_headers)
     assert response.status_code == 401
     assert owner_keys.OWNER_KEYS == {}
 
 
-def test_same_key_twice_for_the_same_owner_is_idempotent(client, auth_headers):
-    key = pubkey()
-    first = client.post("/keys", json={"public_key": key}, headers=auth_headers).json()
-    second = client.post("/keys", json={"public_key": key.upper()}, headers=auth_headers).json()
+def test_same_key_twice_for_the_same_owner_is_idempotent(key_registrar):
+    first, private_key, key = key_registrar.register(TEST_USER_EMAIL)
+    second, _, _ = key_registrar.register(TEST_USER_EMAIL, private_key, public_key_hex=key.upper())
 
-    assert first["key_id"] == second["key_id"]
+    assert first.status_code == second.status_code == 201
+    assert first.json()["key_id"] == second.json()["key_id"]
     assert get_active_keys(TEST_USER_EMAIL) == [key]  # hex canónico en minúsculas
 
 
-def test_a_key_already_registered_by_another_account_is_409(client, auth_headers):
-    key = pubkey()
-    assert client.post("/keys", json={"public_key": key}, headers=bearer(OTHER_EMAIL)).status_code == 201
+def test_a_key_already_registered_by_another_account_is_409(key_registrar):
+    """Aun CON prueba de posesión válida (esta cuenta tiene la privada), una pubkey
+    pertenece a una sola cuenta."""
+    first, private_key, key = key_registrar.register(OTHER_EMAIL)
+    assert first.status_code == 201
 
-    response = client.post("/keys", json={"public_key": key}, headers=auth_headers)
+    response, _, _ = key_registrar.register(TEST_USER_EMAIL, private_key)
     assert response.status_code == 409
     assert get_active_keys(TEST_USER_EMAIL) == []
 
 
-def test_token_email_is_normalized_like_mandate_owners(client):
+def test_token_email_is_normalized_like_mandate_owners(key_registrar):
     """La llave debe atar con MANDATE_OWNERS y con owner_email_for: misma normalización."""
     messy = "  Mixed.Case@Example.COM  "
-    key = pubkey()
-    assert client.post("/keys", json={"public_key": key}, headers=bearer(messy)).status_code == 201
+    response, _, key = key_registrar.register(messy)
+    assert response.status_code == 201
 
     assert "mixed.case@example.com" in owner_keys.OWNER_KEYS
     assert normalize_owner_email(messy) == owner_email_for(Principal(subject=messy, role="user"))
