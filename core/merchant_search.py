@@ -26,6 +26,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from core.money import MoneyError, to_cents
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -186,15 +188,20 @@ def _parse_offers(raw: str, max_results: int) -> list[dict]:
         if not isinstance(item, dict) or not OFFER_KEYS.issubset(item):
             logger.warning("merchant_search: oferta descartada por shape inválido: %r", item)
             continue
+        # Borde (5.1, P-09): el precio que devuelve la web pasa a CENTAVOS exactos. Un
+        # precio negativo, con más de 2 decimales o no numérico se descarta: no se redondea.
         try:
-            price = float(item["price"])
-        except (TypeError, ValueError):
-            logger.warning("merchant_search: precio no numérico descartado: %r", item.get("price"))
+            price_cents = to_cents(item["price"], "price")
+        except MoneyError:
+            logger.warning("merchant_search: precio no representable en centavos descartado: %r", item.get("price"))
+            continue
+        if price_cents <= 0:
+            logger.warning("merchant_search: precio no positivo descartado: %r", item.get("price"))
             continue
         offers.append(
             {
                 "merchant": str(item["merchant"]),
-                "price": price,
+                "price_cents": price_cents,
                 "currency": str(item["currency"]).upper(),
                 "details": str(item["details"]),
                 "url": str(item["url"]),
@@ -206,7 +213,7 @@ def _parse_offers(raw: str, max_results: int) -> list[dict]:
 def search_merchant_offers(category: str, fields: dict, max_results: int = 3) -> list[dict]:
     """Busca ofertas reales para la categoría usando OpenAI web search.
 
-    Devuelve [{"merchant": str, "price": float, "currency": str,
+    Devuelve [{"merchant": str, "price_cents": int, "currency": str,
     "details": str, "url": str}, ...] — siempre una lista, nunca lanza.
     """
     try:
@@ -246,9 +253,9 @@ def offer_to_attempt(
         "purchase": {
             "merchant_id": _merchant_slug(offer["merchant"]),
             "category": CATEGORY_TAXONOMY.get(category, category),
-            "amount": offer["price"],
+            "amount_cents": offer["price_cents"],
             "currency": offer["currency"],
             "description": offer["details"],
-            "metadata": {"price": offer["price"], "url": offer["url"]},
+            "metadata": {"price_cents": offer["price_cents"], "url": offer["url"]},
         },
     }

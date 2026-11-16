@@ -127,7 +127,7 @@ class MandateStore:
                 "live_state": {
                     "status": m_obj.status.value.lower(),
                     "uses_count": 0,
-                    "amount_spent": 0.0,
+                    "amount_spent_cents": 0,
                     "revoked_at": m_obj.revoked_at,
                 },
             }
@@ -246,6 +246,9 @@ def seal_seed_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
         raise ValueError("El seed no puede traer firma: el servidor lo sella al cargarlo.")
 
     m_copy = deepcopy(mandate)
+    if isinstance(m_copy.get("constraints"), dict):
+        # El seed es un archivo de config en UNIDADES: su borde a centavos es aquí (5.1).
+        m_copy["constraints"] = _seed_constraints_to_cents(m_copy["constraints"])
     sealed = m_copy.get("constraints", m_copy.get("scope", {}))
     sealed_bytes = canonical_json(sealed)
     h_priv, h_pub = generate_keypair()
@@ -259,11 +262,31 @@ def seal_seed_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
             raise ValueError("El mandate_id ya existe")
         MANDATES[mandate_id] = {
             "mandate": m_copy,
-            "live_state": {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None},
+            "live_state": {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None},
         }
         MANDATE_OWNERS[mandate_id] = _normalize_owner(owner_email)
         MANDATE_SIGNERS[mandate_id] = signer
         return get_mandate(mandate_id)
+
+
+def _seed_constraints_to_cents(constraints: dict) -> dict:
+    """Constraints del seed (unidades) → la forma del engine (centavos enteros).
+    max_amount_per_tx era un duplicado de max_amount_per_purchase: se descarta."""
+    from core.money import to_cents
+
+    converted = {key: value for key, value in constraints.items()
+                 if key not in ("max_amount_per_purchase", "max_amount_per_tx", "monthly_budget", "conditions")}
+    cap = constraints.get("max_amount_per_purchase", constraints.get("max_amount_per_tx"))
+    if cap is not None:
+        converted["max_amount_per_purchase_cents"] = to_cents(cap, "max_amount_per_purchase")
+    if constraints.get("monthly_budget") is not None:
+        converted["monthly_budget_cents"] = to_cents(constraints["monthly_budget"], "monthly_budget")
+    converted["conditions"] = [
+        {"type": condition["type"], "value_cents": to_cents(condition["value"], f"conditions.{condition['type']}")}
+        if isinstance(condition, dict) and "value" in condition else condition
+        for condition in constraints.get("conditions", [])
+    ]
+    return converted
 
 
 def count_mandates_signed_with(owner_email: str, key_id: str) -> int:
@@ -298,7 +321,7 @@ def create_human_signed_mandate(mandate: dict, signer: dict, owner_email: str, n
             raise ValueError("Este nonce ya se usó para crear otro mandato (replay).")
         MANDATES[mandate_id] = {
             "mandate": deepcopy(mandate),
-            "live_state": {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None},
+            "live_state": {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None},
         }
         MANDATE_OWNERS[mandate_id] = owner
         MANDATE_SIGNERS[mandate_id] = deepcopy(signer)
@@ -334,20 +357,27 @@ def reset_mandate(mandate_id: str) -> dict | None:
     record["live_state"] = {
         "status": "active",
         "uses_count": 0,
-        "amount_spent": 0,
+        "amount_spent_cents": 0,
         "revoked_at": None,
     }
     return get_mandate(mandate_id)
 
 
-def apply_approved_purchase(mandate_id: str, amount: int | float) -> dict | None:
+def apply_approved_purchase(mandate_id: str, amount_cents: int) -> dict | None:
     """ÚNICO punto que consume un uso y suma gasto, sea cual sea la línea que
-    aprobó la compra (api/verify, api/escalations o core/verify)."""
+    aprobó la compra (api/verify, api/escalations o core/verify).
+
+    5.1 (P-09): el gasto es un entero de centavos. Un monto que no lo sea (float,
+    negativo, cero, bool) es un error del llamador: se rechaza, no se redondea."""
+    from core.money import is_cents
+
+    if not is_cents(amount_cents) or amount_cents <= 0:
+        raise ValueError(f"apply_approved_purchase exige centavos enteros > 0 (recibido {amount_cents!r}).")
     with mandate_store._lock:
         record = MANDATES.get(mandate_id)
         if record is None:
             return None
         live_state = record["live_state"]
         live_state["uses_count"] += 1
-        live_state["amount_spent"] += amount
+        live_state["amount_spent_cents"] += amount_cents
         return get_mandate(mandate_id)

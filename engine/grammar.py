@@ -38,6 +38,25 @@ class SecurityException(Exception):
     pass
 
 
+# Límites contra DoS (5.1): una condición la escribe una persona en un mandato; no
+# tiene por qué ser larga ni anidada, y no puede fabricar cadenas o listas enormes.
+MAX_EXPRESSION_LENGTH = 1000
+MAX_AST_DEPTH = 32
+MAX_SEQUENCE_LENGTH = 10_000
+
+
+def _depth(node: ast.AST, limit: int) -> int:
+    """Profundidad del árbol, cortando en cuanto supera `limit` (sin recursión de Python)."""
+    deepest, stack = 0, [(node, 1)]
+    while stack:
+        current, level = stack.pop()
+        deepest = max(deepest, level)
+        if deepest > limit:
+            return deepest
+        stack.extend((child, level + 1) for child in ast.iter_child_nodes(current))
+    return deepest
+
+
 class SafeConditionEvaluator(ast.NodeVisitor):
     """
     Safely parses and evaluates boolean condition expressions against a context dictionary.
@@ -93,6 +112,11 @@ class SafeConditionEvaluator(ast.NodeVisitor):
         elif isinstance(node.op, ast.Sub):
             return left - right
         elif isinstance(node.op, ast.Mult):
+            # 'a' * 999999999 o [0] * 10**9: se acota el tamaño ANTES de construirlo.
+            for sequence, times in ((left, right), (right, left)):
+                if isinstance(sequence, (str, list, tuple)) and isinstance(times, int):
+                    if len(sequence) * max(times, 0) > MAX_SEQUENCE_LENGTH:
+                        raise SecurityException("Sequence repetition exceeds the allowed size.")
             return left * right
         elif isinstance(node.op, ast.Div):
             return left / right
@@ -123,12 +147,9 @@ class SafeConditionEvaluator(ast.NodeVisitor):
         return True
 
     def _eval_comparison(self, left: Any, op: ast.cmpop, right: Any) -> bool:
-        # Type-lenient comparisons for strings / numbers
+        # Un campo AUSENTE no cumple ninguna condición, tampoco `!=` (5.1). Antes
+        # `merchant != 'mch_x'` era True si el intento no traía comercio: fail-open.
         if left is None or right is None:
-            if isinstance(op, ast.Eq):
-                return left == right
-            if isinstance(op, ast.NotEq):
-                return left != right
             return False
 
         if isinstance(op, ast.Eq):
@@ -174,12 +195,16 @@ def parse_and_evaluate(expr_str: str, context: Dict[str, Any]) -> bool:
     """
     if not expr_str or not expr_str.strip():
         return True
+    if len(expr_str) > MAX_EXPRESSION_LENGTH:
+        return False
 
     # Normalize common keywords (e.g., AND -> and, OR -> or, NOT -> not)
     normalized = expr_str.replace(" AND ", " and ").replace(" OR ", " or ").replace(" NOT ", " not ")
-    
+
     try:
         parsed_tree = ast.parse(normalized, mode="eval")
+        if _depth(parsed_tree, MAX_AST_DEPTH) > MAX_AST_DEPTH:
+            return False
         evaluator = SafeConditionEvaluator(context)
         result = evaluator.visit(parsed_tree)
         return bool(result)

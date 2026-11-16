@@ -5,13 +5,15 @@ from engine.evaluator import evaluate
 @pytest.fixture
 def base_mandate():
     return {
+        # 5.1 (P-09): dinero en centavos enteros con moneda explícita.
         "constraints": {
-            "max_amount_per_purchase": 150.00,
+            "currency": "USD",
+            "max_amount_per_purchase_cents": 15000,
             "allowed_categories": ["travel.flights"],
             "allowed_merchants": ["mch_vuelaya"],
             "max_uses": 3,
             "conditions": [
-                {"type": "price_below", "value": 150.00}
+                {"type": "price_below", "value_cents": 15000}
             ]
         }
     }
@@ -19,12 +21,13 @@ def base_mandate():
 
 def test_case_a_approve(base_mandate):
     """A. amount 130, flight, vuelaya, price 130, usos 0 -> APPROVE"""
-    live_state = {"uses_count": 0, "amount_spent": 0.00}
+    live_state = {"uses_count": 0, "amount_spent_cents": 0}
     attempt = {
         "category": "travel.flights",
         "merchant_id": "mch_vuelaya",
-        "amount": 130.00,
-        "metadata": {"price": 130.00}
+        "amount_cents": 13000,
+        "currency": "USD",
+        "metadata": {"price_cents": 13000}
     }
 
     result = evaluate(base_mandate, live_state, attempt)
@@ -37,12 +40,13 @@ def test_case_a_approve(base_mandate):
 
 def test_case_b_escalate_amount(base_mandate):
     """B. amount 300, flight, vuelaya, price 300, usos 0 -> ESCALATE (monto)"""
-    live_state = {"uses_count": 0, "amount_spent": 0.00}
+    live_state = {"uses_count": 0, "amount_spent_cents": 0}
     attempt = {
         "category": "travel.flights",
         "merchant_id": "mch_vuelaya",
-        "amount": 300.00,
-        "metadata": {"price": 300.00}
+        "amount_cents": 30000,
+        "currency": "USD",
+        "metadata": {"price_cents": 30000}
     }
 
     result = evaluate(base_mandate, live_state, attempt)
@@ -54,12 +58,13 @@ def test_case_b_escalate_amount(base_mandate):
 
 def test_case_c_escalate_category(base_mandate):
     """C. amount 130, hotel, vuelaya, usos 0 -> ESCALATE (categoria)"""
-    live_state = {"uses_count": 0, "amount_spent": 0.00}
+    live_state = {"uses_count": 0, "amount_spent_cents": 0}
     attempt = {
         "category": "travel.hotel",
         "merchant_id": "mch_vuelaya",
-        "amount": 130.00,
-        "metadata": {"price": 130.00}
+        "amount_cents": 13000,
+        "currency": "USD",
+        "metadata": {"price_cents": 13000}
     }
 
     result = evaluate(base_mandate, live_state, attempt)
@@ -71,12 +76,13 @@ def test_case_c_escalate_category(base_mandate):
 
 def test_case_d_escalate_uses_exhausted(base_mandate):
     """D. amount 130, flight, vuelaya, usos 3 -> ESCALATE (usos agotados)"""
-    live_state = {"uses_count": 3, "amount_spent": 390.00}
+    live_state = {"uses_count": 3, "amount_spent_cents": 39000}
     attempt = {
         "category": "travel.flights",
         "merchant_id": "mch_vuelaya",
-        "amount": 130.00,
-        "metadata": {"price": 130.00}
+        "amount_cents": 13000,
+        "currency": "USD",
+        "metadata": {"price_cents": 13000}
     }
 
     result = evaluate(base_mandate, live_state, attempt)
@@ -88,12 +94,13 @@ def test_case_d_escalate_uses_exhausted(base_mandate):
 
 def test_case_e_escalate_merchant_disallowed(base_mandate):
     """E. amount 130, flight, otro_comercio, usos 0 -> ESCALATE (comercio)"""
-    live_state = {"uses_count": 0, "amount_spent": 0.00}
+    live_state = {"uses_count": 0, "amount_spent_cents": 0}
     attempt = {
         "category": "travel.flights",
         "merchant_id": "mch_otro_comercio",
-        "amount": 130.00,
-        "metadata": {"price": 130.00}
+        "amount_cents": 13000,
+        "currency": "USD",
+        "metadata": {"price_cents": 13000}
     }
 
     result = evaluate(base_mandate, live_state, attempt)

@@ -2,7 +2,6 @@ import uuid
 import secrets
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
-from numbers import Real
 
 from shared.schemas import (
     Mandate,
@@ -13,6 +12,7 @@ from shared.schemas import (
 from mandate.sign import sign_payload
 from core.merchant import vuelaya_merchant, VuelaYaMerchant
 from core.mandate_store import get_mandate, get_mandate_signer
+from core.money import format_money, is_cents
 from audit.log import append_entry
 from core.merchant_search import _merchant_slug, search_merchant_offers
 
@@ -141,7 +141,8 @@ def _discover_offers(category_key: str, search_fields: dict | None) -> tuple[lis
                     # "route" es la etiqueta visible (ruta de vuelo o destino de hotel);
                     # el nombre se conserva por contrato con el frontend.
                     "route": label,
-                    "price": offer["price"],
+                    # Borde (5.1): el precio de la oferta web pasa a centavos exactos.
+                    "price_cents": offer["price_cents"],
                     "category": taxon,
                     "merchant_id": _merchant_slug(offer["merchant"]),
                     "merchant": offer["merchant"],
@@ -155,27 +156,22 @@ def _discover_offers(category_key: str, search_fields: dict | None) -> tuple[lis
     return [], "web"
 
 
-def _price_limit(mandate: dict) -> int | float | None:
-    """Lee price_below o max_amount con compatibilidad de contratos."""
-    constraints = mandate.get("constraints", {}) or mandate.get("scope", {})
-    conditions = constraints.get("conditions", []) if isinstance(constraints, dict) else []
-    for condition in conditions:
-        if isinstance(condition, dict) and condition.get("type") == "price_below":
-            candidate = condition.get("value")
-            if isinstance(candidate, Real) and not isinstance(candidate, bool):
-                return candidate
+def _limits(mandate: dict) -> tuple[int | None, int | None]:
+    """(tope por compra, price_below) del mandato, en centavos (5.1)."""
+    constraints = mandate.get("constraints") or {}
+    cap = constraints.get("max_amount_per_purchase_cents")
+    below = next((condition.get("value_cents") for condition in constraints.get("conditions", [])
+                  if isinstance(condition, dict) and condition.get("type") == "price_below"), None)
+    return (cap if is_cents(cap) else None), (below if is_cents(below) else None)
 
-    candidates = [
-        mandate.get("price_below"),
-        mandate.get("max_amount_per_purchase"),
-        constraints.get("price_below") if isinstance(constraints, dict) else None,
-        constraints.get("max_amount_per_purchase") if isinstance(constraints, dict) else None,
-        constraints.get("max_amount_per_tx") if isinstance(constraints, dict) else None,
-    ]
-    for candidate in candidates:
-        if isinstance(candidate, Real) and not isinstance(candidate, bool):
-            return candidate
-    return None
+
+def _fits(offer: dict, cap: int | None, below: int | None) -> bool:
+    """La MISMA regla que el engine (5.1: antes el agente usaba <= y el engine <):
+    precio <= tope por compra Y precio < price_below. Sin tope conocido no cabe."""
+    price = offer.get("price_cents")
+    if not is_cents(price) or price <= 0 or cap is None:
+        return False
+    return price <= cap and (below is None or price < below)
 
 
 class SignedSearchFieldsMismatch(ValueError):
@@ -197,14 +193,14 @@ class ScenarioNotApplicable(ValueError):
     """El escenario no aplica al estado del mandato (p. ej. "after_revocation" sin revocar)."""
 
 
-def _scenario_offer(scenario: str, mandate: dict, live_status: str, category_key: str, limit) -> dict:
+def _scenario_offer(scenario: str, mandate: dict, live_status: str, category_key: str) -> dict:
     constraints = mandate.get("constraints", {}) or {}
     merchant_id = (constraints.get("allowed_merchants") or ["mch_vuelaya"])[0]
     category = (constraints.get("allowed_categories") or ["travel.flights"])[0]
-    cap = constraints.get("max_amount_per_purchase")
-    ceiling = min(value for value in (limit, cap) if isinstance(value, Real) and not isinstance(value, bool)) if any(
-        isinstance(value, Real) and not isinstance(value, bool) for value in (limit, cap)) else 100
-    price = max(1, int(ceiling) - 30)
+    cap, below = _limits(mandate)
+    # Un precio que CABE en el mandato: así lo único que decide es lo que el escenario muestra.
+    ceiling = min(value for value in (cap, (below - 1) if below else None, 10_000) if value is not None)
+    price_cents = max(100, ceiling - 3_000)
     fields = mandate.get("search_fields") or {}
     route = (f"{fields.get('origin', '?')}->{fields.get('destination', '?')}" if category_key != "hotels"
              else str(fields.get("destination", "?")))
@@ -219,7 +215,7 @@ def _scenario_offer(scenario: str, mandate: dict, live_status: str, category_key
     return {
         "id": f"scenario_{scenario}",
         "route": route,
-        "price": price,
+        "price_cents": price_cents,
         "category": category,
         "merchant_id": merchant_id,
         "merchant": merchant_id.removeprefix("mch_").replace("_", " ").title(),
@@ -272,11 +268,11 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
             search_fields = stored_fields
 
     category_key = _category_key(mandate)
-    limit = _price_limit(mandate)
+    cap, below = _limits(mandate)
     if scenario:
         # Sin búsqueda web (no gasta OpenAI): la oferta del escenario es sintética.
         live_status = record["live_state"]["status"] if record is not None else "missing"
-        flights_seen, discovery_source = [_scenario_offer(scenario, mandate, live_status, category_key, limit)], "scenario"
+        flights_seen, discovery_source = [_scenario_offer(scenario, mandate, live_status, category_key)], "scenario"
     else:
         flights_seen, discovery_source = _discover_offers(category_key, search_fields)
 
@@ -303,8 +299,29 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
             "human_readable": message,
         }
 
-    eligible = [flight for flight in flights_seen if limit is not None and flight["price"] <= limit]
-    selected_flight = min(eligible or flights_seen, key=lambda flight: flight["price"])
+    eligible = [flight for flight in flights_seen if _fits(flight, cap, below)]
+    if not eligible:
+        # 5.1: si ninguna oferta cabe en el mandato, NO se intenta la más barata (antes
+        # se intentaba igual y el guardián tenía que pararla). No hay compra que proponer.
+        message = (
+            f"Saturday encontró {len(flights_seen)} ofertas, pero ninguna cabe en el mandato "
+            f"(tope {format_money(cap) if cap is not None else '—'} USD"
+            + (f", price_below {format_money(below)} USD" if below is not None else "")
+            + "). No se intentó ninguna compra."
+        )
+        append_entry({"type": "agent_run", "mandate_id": mandate_id, "summary": message})
+        return {
+            "mandate_id": mandate_id,
+            "attempt_id": None,
+            "discovery_source": discovery_source,
+            "flights_seen": flights_seen,
+            "selected_flight": None,
+            "no_offers": False,
+            "no_fit": True,
+            "purchase_completed": False,
+            "human_readable": message,
+        }
+    selected_flight = min(eligible, key=lambda flight: flight["price_cents"])
     attempt_id = f"att_agent_{uuid.uuid4().hex[:12]}"
     agent_id = mandate.get("agent", {}).get("id", "agent_marta")
     
@@ -317,12 +334,12 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         "purchase": {
             "merchant_id": selected_flight["merchant_id"],
             "category": selected_flight["category"],
-            "amount": selected_flight["price"],
-            "currency": "USD",
+            "amount_cents": selected_flight["price_cents"],
+            "currency": (mandate.get("constraints") or {}).get("currency", "USD"),
             "description": (f"Hotel stay: {selected_flight['route']}" if category_key == "hotels" else f"Flight {selected_flight['route']}") + (f" — {selected_flight['details']}" if selected_flight.get("details") else ""),
             "metadata": {
                 "flight_id": selected_flight["id"],
-                "price": selected_flight["price"],
+                "price_cents": selected_flight["price_cents"],
                 "source": selected_flight["source"],
                 **({"url": selected_flight["url"]} if selected_flight.get("url") else {}),
             },
@@ -341,12 +358,12 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
     story = (
         # R12: un escenario no es una búsqueda real ni una compra; se dice tal cual.
         f"Escenario de demostración '{scenario}': oferta sintética (no salió de una búsqueda real) "
-        f"de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {selected_flight['price']} USD. "
+        f"de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
         f"Verify devolvió {verdict}; en un escenario nunca se compra. {verification.get('human_readable', '')}"
     ) if scenario else (
         f"Encontró {len(flights_seen)} {'hoteles' if category_key == 'hotels' else 'vuelos'} en la web (búsqueda real). "
-        + (f"Aplicó el límite price_below de {limit} USD y " if limit is not None else "No encontró un límite price_below utilizable y ")
-        + f"eligió {selected_flight['route']} de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {selected_flight['price']} USD. "
+        + (f"Aplicó el límite price_below de {format_money(below)} USD y " if below is not None else f"Aplicó el tope de {format_money(cap)} USD y ")
+        + f"eligió {selected_flight['route']} de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
         + ("La compra fue completada tras recibir APPROVE." if completed else f"La compra no procedió: verify devolvió {verdict}. {verification.get('human_readable', '')}")
     )
     
@@ -366,7 +383,7 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
                 "mandate_id": mandate_id,
                 "attempt_id": attempt_id,
                 "verdict": "APPROVE",
-                "summary": f"Compra completada por Saturday: {selected_flight['route']} por {selected_flight['price']} USD.",
+                "summary": f"Compra completada por Saturday: {selected_flight['route']} por {format_money(selected_flight['price_cents'])} USD.",
             }
         )
         try:
@@ -380,7 +397,8 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
                     "destino": selected_flight.get("route", "Buenos Aires ➔ Córdoba"),
                     "proveedor": selected_flight.get("merchant", "VuelaYa Travel"),
                     "pnr": f"PNR-VYA-{attempt_id[-6:].upper()}",
-                    "precio_total": selected_flight.get("price", 130),
+                    # Borde con el correo: el recibo muestra unidades.
+                    "precio_total": selected_flight["price_cents"] / 100,
                     "moneda": "USD",
                     "pasajero": mandate.get("human", {}).get("display_name", "Marta"),
                     "candidate_id": mandate_id,
@@ -394,7 +412,7 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         "discovery_source": discovery_source,
         "flights_seen": flights_seen,
         "selected_flight": selected_flight,
-        "selection_reason": "Vuelo más barato dentro de price_below." if eligible else "No hubo vuelo dentro de price_below; se intentó el más barato disponible.",
+        "selection_reason": "La oferta más barata que cabe en el mandato.",
         "attempt": attempt,
         "verification": verification,
         "purchase_completed": completed,

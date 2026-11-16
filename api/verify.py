@@ -12,13 +12,13 @@ import functools
 import threading
 import time
 from datetime import datetime, timezone
-from numbers import Real
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.security import Principal, require_service
 from core.agent_keys import AGENT_SIGNATURE_FIELD, verify_attempt_signature
+from core.money import is_cents
 
 from audit.log import append_entry
 from core.mandate_store import (
@@ -87,7 +87,7 @@ def _finish(
     verdict: str,
     checks: list[dict],
     human_readable: str,
-    amount: int | float | None = None,
+    amount_cents: int | None = None,
     scenario: Optional[str] = None,
 ) -> dict:
     """Registra toda decisión antes de devolverla al comercio.
@@ -103,7 +103,7 @@ def _finish(
             "verdict": verdict,
             "summary": human_readable,
             # Datos para la revisión humana de escalaciones (api/escalations.py):
-            "amount": amount,
+            "amount_cents": amount_cents,
             "failed_rules": [c["rule"] for c in checks if not c.get("pass")],
             **({"scenario": scenario} if scenario else {}),
         }
@@ -280,28 +280,18 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
             "Compra rechazada: el intento ya fue presentado o no trae un nonce válido.",
         )
 
-    # 2c. Kill Switch en Vivo (Lectura fresca en memoria)
-    if live_state["status"] == "revoked":
-        security_checks.append(
-            {"rule": "status", "pass": False, "detail": "mandato revocado"}
-        )
+    # 2c. Kill Switch en Vivo (Lectura fresca en memoria). Solo un mandato ACTIVO
+    # compra (5.1: antes un mandato PAUSADO pasaba este check y aprobaba).
+    status_detail = {"revoked": "mandato revocado", "expired": "mandato expirado", "paused": "mandato pausado"}
+    if live_state["status"] != "active":
+        detail = status_detail.get(live_state["status"], f"mandato {live_state['status']}")
+        security_checks.append({"rule": "status", "pass": False, "detail": detail})
         return finish(
             mandate_id,
             attempt_id,
             "REJECT",
             security_checks,
-            "Compra rechazada: el mandato está revocado.",
-        )
-    if live_state["status"] == "expired":
-        security_checks.append(
-            {"rule": "status", "pass": False, "detail": "mandato expirado"}
-        )
-        return finish(
-            mandate_id,
-            attempt_id,
-            "REJECT",
-            security_checks,
-            "Compra rechazada: el mandato está expirado.",
+            f"Compra rechazada: el {detail.replace('mandato ', 'mandato está ')}.",
         )
     security_checks.append({"rule": "status", "pass": True, "detail": "Mandato activo."})
 
@@ -357,16 +347,19 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
     # 4. Auditoría Cognitiva (Detección de Costos Ocultos y Trampas de Letra Chica)
     purchase = attempt_purchase.get("purchase", attempt_purchase)
     item_desc = str(purchase.get("description", purchase.get("item_title", "")))
-    amount = purchase.get("amount", 0.0)
-    
+    amount_cents = purchase.get("amount_cents")
+
     if verdict == "APPROVE" and item_desc:
         constraints = mandate.get("constraints") or mandate.get("scope", {})
         if any(w in item_desc.lower() for w in ["por fuera", "upgrade automático", "48 horas", "gift card", "crypto"]):
+            # Borde con el firewall/LLM: el prompt habla en UNIDADES (texto para una
+            # persona o un modelo); la decisión del engine ya se tomó en centavos.
+            units_view = {**constraints, "max_amount_per_purchase": constraints.get("max_amount_per_purchase_cents", 0) / 100}
             audit_res = auditoria_cognitiva_firewall(
-                mandato_constraints=constraints,
+                mandato_constraints=units_view,
                 item_titulo=item_desc,
                 item_descripcion=item_desc,
-                precio_declarado=float(amount) if isinstance(amount, Real) else 0.0,
+                precio_declarado=amount_cents / 100 if is_cents(amount_cents) else 0.0,
                 categoria=str(purchase.get("category", "travel")),
                 metadata=purchase.get("metadata", {}),
             )
@@ -384,25 +377,21 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
                     f"Purchase vetoed by Semantic Firewall: {audit_res.get('resumen_para_humano', 'Hidden fine-print risk detected.')}"
                 )
 
-    amount = engine_attempt.get("amount")
-    if not isinstance(amount, Real) or isinstance(amount, bool):
-        amount = None
+    amount_cents = engine_attempt.get("amount_cents")
+    if not is_cents(amount_cents):
+        amount_cents = None
 
-    # 5. La actualización se aplica sobre el estado vivo, únicamente al aprobar.
+    # 5. La actualización se aplica sobre el estado vivo, únicamente al aprobar. El
+    # engine ya rechazó (REJECT) cualquier monto que no sea centavos enteros > 0.
     if verdict == "APPROVE":
-        if amount is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="purchase.amount debe ser un número.",
-            )
         if scenario:
             # Un escenario de demostración nunca compra (4.2).
             human_readable = "Escenario de demostración: el mandato lo aprobaría, pero no se realizó ninguna compra."
         else:
-            apply_approved_purchase(mandate_id, amount)
+            apply_approved_purchase(mandate_id, amount_cents)
             human_readable = "Compra aprobada por el mandato."
     else:
         human_readable = "La compra requiere aprobación humana."
 
     # 4 y 6. El veredicto final es el del engine y combina todos los checks.
-    return finish(mandate_id, attempt_id, verdict, checks, human_readable, amount=amount)
+    return finish(mandate_id, attempt_id, verdict, checks, human_readable, amount_cents=amount_cents)

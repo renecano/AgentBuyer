@@ -65,8 +65,8 @@ def bearer(email: str) -> dict:
 def attempt(mandate_id: str, attempt_id: str = "att_1", currency: str = "USD", **extra) -> dict:
     return {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
-        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0,
-                     "currency": currency, "metadata": {"price": 100.0}},
+        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000,
+                     "currency": currency, "metadata": {"price_cents": 10000}},
         **extra,
     }
 

@@ -28,6 +28,7 @@ from core.mandate_store import (
     get_mandate_signer,
     apply_approved_purchase,
 )
+from core.money import to_cents
 from core.signed_mandates import (
     KIND_HUMAN,
     KIND_SYSTEM_SEAL,
@@ -336,7 +337,8 @@ def resolve_escalation(
         dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
 
         # Consume el uso en live_state (única fuente de verdad, la que ve React).
-        if apply_approved_purchase(mandate.mandate_id, attempt.amount) is None:
+        # Borde de la línea estricta (legado): su intento está en unidades (5.1).
+        if apply_approved_purchase(mandate.mandate_id, to_cents(attempt.amount, "amount")) is None:
             return None
         state_manager.record_attempt(mandate.mandate_id, attempt.nonce)
         result = _decide(
@@ -528,7 +530,9 @@ def _verify_agent_and_constraints(attempt: PurchaseAttempt, mandate: Mandate, ch
     # React) y luego se registra la decisión y la liquidación.
     settlement_id = f"stl_{uuid.uuid4().hex[:10]}"
     dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
-    if apply_approved_purchase(mandate.mandate_id, attempt.amount) is None:
+    # Borde de la línea estricta (legado): su intento está en unidades (5.1). El
+    # engine ya rechazó cualquier monto que no se pueda expresar exacto en centavos.
+    if apply_approved_purchase(mandate.mandate_id, to_cents(attempt.amount, "amount")) is None:
         return reject(mandate.mandate_id, "Mandate not found in live registry at settlement time.")
     state_manager.record_attempt(mandate.mandate_id, attempt.nonce)
     result = _decide(

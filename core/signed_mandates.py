@@ -38,10 +38,10 @@ from decimal import Decimal
 from typing import Any, Dict, Optional, Tuple
 
 from core.owner_keys import find_key, normalize_owner_email
+from core.money import MoneyError, cents_to_text
 from mandate.mandate_message import (
     MandateMessageError,
     mandate_signing_message,
-    to_cents,
 )
 from mandate.sign import verify_ed25519_bytes
 
@@ -145,16 +145,6 @@ def parse_signed_body(raw: bytes) -> Any:
     return json.loads(raw, parse_float=Decimal)
 
 
-def _engine_amount(cents: int, field: str) -> int | float:
-    """Monto en unidades para el engine actual (que aún compara en dólares; la migración
-    a centavos es la Fase 5). Solo se acepta si vuelve EXACTO a los mismos centavos:
-    si no, /verify no podría reconstruir el mensaje firmado (fail-closed)."""
-    amount: int | float = cents // 100 if cents % 100 == 0 else cents / 100
-    if to_cents(amount, field) != cents:
-        raise _unprocessable(f"{field}: the amount is too precise for the current engine.")
-    return amount
-
-
 def _parse_timestamp(text: str) -> datetime:
     return datetime.strptime(text, _TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
 
@@ -172,6 +162,26 @@ def _active_key_of(owner: str, key_id: Any) -> dict:
     return record
 
 
+def _stored_constraints_as_inputs(constraints: Any) -> Any:
+    """Las constraints se GUARDAN como se firmaron (centavos, 5.1). Para reconstruir el
+    mensaje se vuelven a la forma de entrada de la spec con texto decimal EXACTO
+    (15010 → "150.10"), que la spec convierte otra vez a los mismos centavos. Algo que
+    no tenga esa forma se devuelve tal cual y la spec lo rechaza (fail-closed)."""
+    if not isinstance(constraints, dict):
+        return constraints
+    try:
+        converted = {key: value for key, value in constraints.items()
+                     if key not in ("max_amount_per_purchase_cents", "conditions")}
+        converted["max_amount_per_purchase"] = cents_to_text(constraints["max_amount_per_purchase_cents"])
+        converted["conditions"] = [
+            {"type": condition["type"], "value": cents_to_text(condition["value_cents"])}
+            for condition in constraints.get("conditions", [])
+        ]
+        return converted
+    except (KeyError, TypeError, MoneyError):
+        return constraints
+
+
 def signing_inputs(mandate: dict, owner: Optional[str], public_key: Optional[str]) -> dict:
     """Entradas de mandate_signing_message a partir de un mandato GUARDADO."""
     agent = mandate.get("agent")
@@ -181,7 +191,7 @@ def signing_inputs(mandate: dict, owner: Optional[str], public_key: Optional[str
         "key_id": mandate.get("key_id"),
         "public_key": public_key,
         "agent_id": agent.get("id") if isinstance(agent, dict) else None,
-        "constraints": mandate.get("constraints"),
+        "constraints": _stored_constraints_as_inputs(mandate.get("constraints")),
         "search_fields": mandate.get("search_fields"),
         "expires_at": mandate.get("expires_at"),
         "created_at": mandate.get("created_at"),
@@ -248,19 +258,9 @@ def build_signed_mandate(body: Any, owner_email: str) -> Tuple[dict, dict, str]:
     if now - created_at > MAX_AGE:
         raise _unprocessable("The signed mandate is too old. Sign it again.")
 
-    signed = payload["constraints"]
-    constraints = {
-        "currency": signed["currency"],
-        "max_amount_per_purchase": _engine_amount(signed["max_amount_per_purchase_cents"], "constraints.max_amount_per_purchase"),
-        "allowed_categories": signed["allowed_categories"],
-        "allowed_merchants": signed["allowed_merchants"],
-        "max_uses": signed["max_uses"],
-        "conditions": [
-            {"type": condition["type"], "value": _engine_amount(condition["value_cents"], f"constraints.conditions.{condition['type']}")}
-            for condition in signed["conditions"]
-        ],
-        "off_session_consent": signed["off_session_consent"],
-    }
+    # 5.1 (P-09): se guarda LO FIRMADO, en centavos enteros: es exactamente lo que
+    # compara el engine (sin conversión a dólares ni flotantes de por medio).
+    constraints = dict(payload["constraints"])
     digest = message_hash(message)
     mandate_id = payload["mandate_id"]
     mandate = {

@@ -37,9 +37,20 @@ def test_valid_category_returns_offer_dicts_with_right_keys(monkeypatch):
 
     assert isinstance(offers, list) and len(offers) == 3
     for offer in offers:
-        assert set(offer) == OFFER_KEYS
-        assert isinstance(offer["price"], float)  # "145.25" (str) fue coercionado
+        # 5.1 (P-09): el precio sale en centavos ENTEROS exactos (borde con la web).
+        assert set(offer) == (OFFER_KEYS - {"price"}) | {"price_cents"}
+        assert isinstance(offer["price_cents"], int)
         assert offer["currency"] == "USD"  # "usd" fue normalizado
+    assert [offer["price_cents"] for offer in offers] == [12050, 13300, 14525]  # "145.25" (texto) exacto
+
+
+@pytest.mark.parametrize("price", [120.555, -5, 0, "abc", None, 1e-7])
+def test_offer_price_that_is_not_exact_cents_is_dropped(monkeypatch, price):
+    """Un precio con más de 2 decimales, negativo, cero o no numérico NO se redondea:
+    la oferta se descarta (5.1)."""
+    patch_search(monkeypatch, json.dumps([VALID_OFFERS[0] | {"price": price}, VALID_OFFERS[1]]))
+    offers = search_merchant_offers("flights", FLIGHT_FIELDS)
+    assert [offer["merchant"] for offer in offers] == ["Kayak"]
 
 
 def test_malformed_api_response_returns_empty_list(monkeypatch):
@@ -83,7 +94,7 @@ def test_unknown_category_and_missing_fields_return_empty():
 
 def test_offer_to_attempt_matches_verify_pipeline_shape():
     attempt = offer_to_attempt(
-        VALID_OFFERS[0] | {"price": 120.5},
+        {key: value for key, value in VALID_OFFERS[0].items() if key != "price"} | {"price_cents": 12050},
         category="flights",
         mandate_id="mnd_x",
         agent_id="agt_x",
@@ -93,5 +104,5 @@ def test_offer_to_attempt_matches_verify_pipeline_shape():
     purchase = attempt["purchase"]
     assert purchase["merchant_id"] == "mch_despegar"
     assert purchase["category"] == "travel.flights"
-    assert purchase["amount"] == 120.5
-    assert purchase["metadata"]["price"] == 120.5
+    assert purchase["amount_cents"] == 12050
+    assert purchase["metadata"]["price_cents"] == 12050

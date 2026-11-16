@@ -41,7 +41,7 @@ def make_mandate() -> dict:
     }
 
 
-def escalate_attempt(client: TestClient, attempt_id: str = "att_esc_1", amount: float = 300.0) -> dict:
+def escalate_attempt(client: TestClient, attempt_id: str = "att_esc_1", amount_cents: int = 30000) -> dict:
     """Crea un intento que escala (monto sobre el límite) y devuelve el resultado."""
     result = verify_as_service(client, {
         "attempt_id": attempt_id,
@@ -50,9 +50,9 @@ def escalate_attempt(client: TestClient, attempt_id: str = "att_esc_1", amount: 
         "purchase": {
             "merchant_id": "mch_vuelaya",
             "category": "travel.flights",
-            "amount": amount,
+            "amount_cents": amount_cents,
             "currency": "USD",
-            "metadata": {"price": amount},
+            "metadata": {"price_cents": amount_cents},
         },
     }).json()
     assert result["verdict"] == "ESCALATE", result
@@ -72,7 +72,7 @@ def live_state(client: TestClient) -> dict:
 
 def test_human_approves_escalation_updates_state_and_audit(client, signed_poster):
     signed_poster.create(make_mandate())
-    escalate_attempt(client, amount=300.0)
+    escalate_attempt(client, amount_cents=30000)
     assert live_state(client)["uses_count"] == 0  # la escalación no tocó nada
 
     response = review(client, "approve")
@@ -84,7 +84,7 @@ def test_human_approves_escalation_updates_state_and_audit(client, signed_poster
     # Estado actualizado exactamente como un APPROVE normal.
     state = live_state(client)
     assert state["uses_count"] == 1
-    assert state["amount_spent"] == 300.0
+    assert state["amount_spent_cents"] == 30000
 
     # El trail cuenta la historia completa: escalada -> aprobada por humano.
     types = [e["type"] for e in get_trail_events()]
@@ -105,7 +105,7 @@ def test_human_declines_no_state_change(client, signed_poster):
 
     state = live_state(client)
     assert state["uses_count"] == 0
-    assert state["amount_spent"] == 0
+    assert state["amount_spent_cents"] == 0
 
     override = next(e for e in get_trail_events() if e["type"] == "human_override_declined")
     assert "RECHAZADA" in override["summary"]
@@ -151,7 +151,7 @@ def test_cannot_review_an_approved_attempt(client, signed_poster):
         "presented_by_agent": "agt_test",
         "purchase": {
             "merchant_id": "mch_vuelaya", "category": "travel.flights",
-            "amount": 100.0, "currency": "USD", "metadata": {"price": 100.0},
+            "amount_cents": 10000, "currency": "USD", "metadata": {"price_cents": 10000},
         },
     }).json()
     assert result["verdict"] == "APPROVE"
