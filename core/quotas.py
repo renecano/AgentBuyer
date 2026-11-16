@@ -39,7 +39,7 @@ class QuotaExceeded(Exception):
 class PerSubjectQuota:
     def __init__(self, limit: int, window_seconds: int, clock: Callable[[], float] = time.time, bucket: str = "agent_run"):
         if limit <= 0 or window_seconds <= 0:
-            raise ValueError("La cuota y su ventana deben ser positivas.")
+            raise ValueError("The quota and its window must be positive.")
         self.limit = limit
         self.window_seconds = window_seconds
         self.bucket = bucket

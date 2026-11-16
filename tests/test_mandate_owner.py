@@ -12,7 +12,6 @@ from api.main import app
 from api.security import Principal, assert_can_access_mandate, owner_email_for
 from core import mandate_store
 from core.mandate_store import get_mandate_owner
-from core.auth_tokens import create_access_token
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_SERVICE_KEY, TEST_USER_EMAIL
 from tests.storage import all_mandate_ids, insert_mandate_without_signer, mandate_exists
 

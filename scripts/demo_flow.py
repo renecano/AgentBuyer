@@ -68,7 +68,7 @@ class InProcessTransport:
 
 def _expect(step: str, status: int, body: Any, *expected: int) -> Any:
     if status not in expected:
-        raise DemoFlowError(f"{step}: HTTP {status} (esperado {', '.join(map(str, expected))}): {body}")
+        raise DemoFlowError(f"{step}: HTTP {status} (expected {', '.join(map(str, expected))}): {body}")
     return body
 
 
@@ -90,12 +90,12 @@ class Person:
 
 
 def login(api, email: str) -> str:
-    started = _expect("Login (enviar código)", *api.request("POST", "/auth/email/start", {"email": email}), 200)
+    started = _expect("Login (send code)", *api.request("POST", "/auth/email/start", {"email": email}), 200)
     code = (started or {}).get("code_demo")
     if not code:
-        raise DemoFlowError("La API no está en AUTH_DEV_MODE=true: el código no viene en la respuesta. "
-                            "Este flujo es solo para desarrollo.")
-    checked = _expect("Login (verificar código)", *api.request("POST", "/auth/email/check", {"email": email, "code": code}), 200)
+        raise DemoFlowError("The API is not in AUTH_DEV_MODE=true: the code is not in the response. "
+                            "This flow is for development only.")
+    checked = _expect("Login (verify code)", *api.request("POST", "/auth/email/check", {"email": email, "code": code}), 200)
     return checked["access_token"]
 
 
@@ -105,10 +105,10 @@ def enroll(api, email: str) -> Person:
     headers = {"Authorization": f"Bearer {token}"}
     private_key = ed25519.Ed25519PrivateKey.generate()
     public_key = private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
-    step_up = _expect("Step-up (código de confirmación)", *api.request("POST", "/keys/step-up/start", None, headers), 200)
+    step_up = _expect("Step-up (confirmation code)", *api.request("POST", "/keys/step-up/start", None, headers), 200)
     challenge = _expect("Challenge", *api.request("POST", "/keys/challenge", {"code": step_up["code_demo"]}, headers), 201)
     signature = private_key.sign(registration_message(challenge["challenge_id"], challenge["nonce"], email, public_key)).hex()
-    registered = _expect("Registrar la llave", *api.request(
+    registered = _expect("Register the key", *api.request(
         "POST", "/keys", {"public_key": public_key, "challenge_id": challenge["challenge_id"], "signature": signature}, headers), 201)
     return Person(email=email.strip().lower(), token=token, private_key=private_key, public_key=public_key,
                   key_id=registered["key_id"])
@@ -149,7 +149,7 @@ def sign_mandate(api, person: Person, *, mandate_id: Optional[str] = None, const
         "expires_at": inputs["expires_at"], "created_at": inputs["created_at"], "nonce": inputs["nonce"],
         "key_id": inputs["key_id"], "signature": person.private_key.sign(message).hex(),
     }
-    return _expect("Crear el mandato firmado", *api.request("POST", "/mandates", body, person.headers), 201)
+    return _expect("Create the signed mandate", *api.request("POST", "/mandates", body, person.headers), 201)
 
 
 def merchant_verifies(api, service_key: str, mandate_id: str, amount_cents: int,
@@ -161,4 +161,4 @@ def merchant_verifies(api, service_key: str, mandate_id: str, amount_cents: int,
         "purchase": {"merchant_id": merchant_id, "category": "travel.flights", "amount_cents": amount_cents,
                      "currency": "USD", "description": description, "metadata": {"price_cents": amount_cents}},
     }
-    return _expect("Verificación del comercio", *api.request("POST", "/verify", attempt, {"X-Service-Key": service_key}), 200)
+    return _expect("Merchant verification", *api.request("POST", "/verify", attempt, {"X-Service-Key": service_key}), 200)

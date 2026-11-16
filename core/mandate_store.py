@@ -24,6 +24,7 @@ Expiración: se DERIVA al leer (un mandato activo cuyo expires_at pasó se ve
 resultado es el mismo que cuando se guardaba en memoria.
 """
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -35,6 +36,8 @@ from core.db_schema import mandate_creation_nonces as NONCES
 from core.db_schema import mandate_periods as PERIODS
 from core.db_schema import mandate_signers as SIGNERS
 from core.db_schema import mandates as MANDATES_TABLE
+
+logger = logging.getLogger(__name__)
 
 # Por qué UTC en los periodos: un mandato firmado no declara zona horaria y el servidor
 # no debe adivinarla; el corte es el mismo para todos y es verificable.
@@ -199,8 +202,17 @@ def list_mandates(owner_email: Optional[str]) -> list:
     query = select(MANDATES_TABLE).order_by(MANDATES_TABLE.c.created_at, MANDATES_TABLE.c.mandate_id)
     if owner_email is not None:
         query = query.where(MANDATES_TABLE.c.owner_email == _normalize_owner(owner_email))
+    records = []
     with read_tx() as connection:
-        return [_record(row) for row in connection.execute(query)]
+        rows = connection.execute(query).all()
+    for row in rows:
+        try:
+            records.append(_record(row))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            # 7.3: un registro ilegible (documento corrupto en la base) no tumba la lista
+            # entera. Se omite y queda en el log con su id (nada personal).
+            logger.warning("mandate %s skipped from the listing: stored document is unreadable", row.mandate_id)
+    return records
 
 
 def count_mandates_signed_with(owner_email: str, key_id: str) -> int:
@@ -231,13 +243,13 @@ def create_human_signed_mandate(mandate: dict, signer: dict, owner_email: str, n
     now = signed_clock()
     with write_tx() as connection:
         if _load(connection, mandate_id) is not None:
-            raise ValueError("El mandate_id ya existe")
+            raise ValueError("The mandate_id already exists.")
         connection.execute(delete(NONCES).where(NONCES.c.expires_at < _stamp(now)))
         used = connection.execute(
             select(NONCES.c.nonce).where(and_(NONCES.c.owner_email == owner, NONCES.c.nonce == nonce))
         ).first()
         if used is not None:
-            raise ValueError("Este nonce ya se usó para crear otro mandato (replay).")
+            raise ValueError("This nonce was already used to create another mandate (replay).")
         connection.execute(insert(NONCES).values(
             owner_email=owner, nonce=nonce, created_at=_stamp(created_at),
             expires_at=_stamp(created_at + MAX_AGE + MAX_CLOCK_SKEW),

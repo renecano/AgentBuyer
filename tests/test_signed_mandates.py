@@ -26,7 +26,6 @@ from api.main import app
 from core import mandate_store, owner_keys
 from core.auth_tokens import create_access_token
 from core.mandate_store import get_mandate_signer
-from mandate.mandate_message import mandate_signing_message
 from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner, verify_as_service
 from sqlalchemy.exc import IntegrityError
 from tests.storage import (all_mandate_ids, insert_mandate_without_signer, live_state, mandate_exists, move_keys_of_owner,
@@ -167,7 +166,7 @@ def test_firma_valida_crea_kind_human_y_aprueba(signer, client):
     result = verify(client, mandate_id)
     assert result["verdict"] == "APPROVE"
     assert check(result, "signature") == {
-        "rule": "signature", "pass": True, "detail": "Firma humana Ed25519 válida (llave registrada del titular).",
+        "rule": "signature", "pass": True, "detail": "Valid Ed25519 cardholder signature (registered key).",
     }
     assert check(result, "payment_token_binding")["pass"] is True
     assert check(result, "off_session_consent")["pass"] is True
@@ -372,7 +371,7 @@ def test_sin_firma_del_titular_el_mandato_no_se_crea(client, auth_headers):
 def test_firma_propia_del_cliente_ya_no_crea_el_mandato(client, auth_headers):
     """3.5: una firma Ed25519 real con una llave propia NO registrada (el antiguo
     legacy_client) no prueba quién firmó: 422, ni se crea."""
-    from mandate.sign import generate_keypair, sign_payload
+    from tests.legacy_signing import generate_keypair, sign_payload
     priv, pub = generate_keypair()
     payload = unsigned_payload("mnd_legacy")
     payload.update(human_pubkey=pub, signature=sign_payload(priv, payload["constraints"]))
@@ -460,7 +459,7 @@ def test_si_la_llave_ya_no_esta_en_el_registro_da_reject(signer):
     signer_record = {**get_mandate_signer(body["mandate_id"]), "key_id": unknown}
     valid, detail = verify_signed_mandate(mandate, signer.email, signer_record)
     assert valid is False
-    assert detail == "Firma humana inválida: la llave ya no pertenece al titular."
+    assert detail == "Invalid cardholder signature: the key no longer belongs to the cardholder."
 
 
 def test_si_la_llave_pasa_a_otra_cuenta_da_reject(signer, client):
@@ -471,7 +470,7 @@ def test_si_la_llave_pasa_a_otra_cuenta_da_reject(signer, client):
 
     result = verify(client, body["mandate_id"])
     assert result["verdict"] == "REJECT"
-    assert check(result, "signature")["detail"] == "Firma humana inválida: la llave ya no pertenece al titular."
+    assert check(result, "signature")["detail"] == "Invalid cardholder signature: the key no longer belongs to the cardholder."
 
 
 def test_cambiar_lo_guardado_por_otra_version_firmada_da_reject(signer, client):
@@ -489,7 +488,7 @@ def test_cambiar_lo_guardado_por_otra_version_firmada_da_reject(signer, client):
 
     result = verify(client, accepted["mandate_id"])
     assert result["verdict"] == "REJECT"
-    assert check(result, "signature")["detail"] == "Firma humana inválida: el mandato cambió después de firmarse."
+    assert check(result, "signature")["detail"] == "Invalid cardholder signature: the mandate changed after it was signed."
 
 
 def test_llave_revocada_despues_de_crear_deja_sin_efecto_el_mandato(signer, client):
@@ -530,7 +529,7 @@ def test_expires_at_vencido_da_reject(signer, client, clock):
     clock.advance(hours=1, seconds=1)
     result = verify_as_service(client, attempt(body["mandate_id"], attempt_id="att_2")).json()
     assert result["verdict"] == "REJECT"
-    assert check(result, "status")["detail"] == "mandato expirado"
+    assert check(result, "status")["detail"] == "mandate expired"
 
 
 def test_payment_token_de_otro_mandato_da_reject(signer, client):
@@ -647,7 +646,7 @@ def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verif
     """Un mandato que llegue al registro sin firmante (ni titular ni sello del seed) se
     rechaza: aunque traiga una firma Ed25519 legada que SÍ verificaría con su propia
     llave (el antiguo legacy_client), esa firma no prueba quién la hizo."""
-    from mandate.sign import generate_keypair, sign_payload
+    from tests.legacy_signing import generate_keypair, sign_payload
     priv, pub = generate_keypair()
     constraints = {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
                    "allowed_merchants": ["mch_vuelaya"], "max_uses": 3}
@@ -659,4 +658,4 @@ def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verif
     )
     result = verify(client, "mnd_no_signer")
     assert result["verdict"] == "REJECT"
-    assert check(result, "signature") == {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
+    assert check(result, "signature") == {"rule": "signature", "pass": False, "detail": "The mandate has no registered signature."}

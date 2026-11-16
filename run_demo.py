@@ -60,47 +60,47 @@ def main() -> int:
         results.append((name, ok, detail))
         print(f"  {'OK  ' if ok else 'FAIL'}  {name}: {detail}")
 
-    print("AgentBuyer — recorrido de punta a punta (API real, base temporal, modo desarrollo)\n")
+    print("AgentBuyer — end-to-end walkthrough (real API, temporary database, development mode)\n")
     try:
         with TestClient(app) as client:
             api = InProcessTransport(client)
             person = enroll(api, "demo.user@example.com")
-            step("Llave del dispositivo registrada", bool(person.key_id), person.key_id)
+            step("Device key registered", bool(person.key_id), person.key_id)
 
             record = sign_mandate(api, person, mandate_id="mnd_demo_run")
             mandate_id = record["mandate"]["mandate_id"]
             limit = record["mandate"]["constraints"]["max_amount_per_purchase_cents"] / 100
-            step("Mandato firmado por su titular", record["live_state"]["status"] == "active",
-                 f"{mandate_id}, tope ${limit:.2f}, estado {record['live_state']['status']}")
+            step("Mandate signed by its cardholder", record["live_state"]["status"] == "active",
+                 f"{mandate_id}, limit ${limit:.2f}, status {record['live_state']['status']}")
 
-            for name, cents, expected in (("Compra de $120 dentro del mandato", 12000, "APPROVE"),
-                                          ("Compra de $400 sobre el tope", 40000, "ESCALATE")):
+            for name, cents, expected in (("A $120 purchase within the mandate", 12000, "APPROVE"),
+                                          ("A $400 purchase over the limit", 40000, "ESCALATE")):
                 result = merchant_verifies(api, service_key, mandate_id, cents)
                 failed = [check["rule"] for check in result["checks"] if not check["pass"]]
                 step(name, result["verdict"] == expected,
-                     f"veredicto {result['verdict']} (esperado {expected})" + (f"; checks que no pasaron: {failed}" if failed else ""))
+                     f"verdict {result['verdict']} (expected {expected})" + (f"; checks that did not pass: {failed}" if failed else ""))
 
             status, revoked = api.request("POST", f"/mandates/{mandate_id}/revoke", None, person.headers)
-            step("La persona revoca el mandato", status == 200 and revoked["live_state"]["status"] == "revoked",
-                 f"HTTP {status}, estado {revoked['live_state']['status'] if status == 200 else revoked}")
+            step("The person revokes the mandate", status == 200 and revoked["live_state"]["status"] == "revoked",
+                 f"HTTP {status}, status {revoked['live_state']['status'] if status == 200 else revoked}")
 
             result = merchant_verifies(api, service_key, mandate_id, 12000)
-            step("Compra después de revocar", result["verdict"] == "REJECT", f"veredicto {result['verdict']} (esperado REJECT)")
+            step("A purchase after revoking", result["verdict"] == "REJECT", f"verdict {result['verdict']} (expected REJECT)")
 
-            status, chain = api.request("GET", "/audit/verify")
-            step("Cadena del ledger de auditoría", status == 200 and chain["valid"] is True,
-                 f"{chain['message']} ({chain['total_blocks']} bloques)" if status == 200 else f"HTTP {status}")
+            status, chain = api.request("GET", "/ledger/verify", None, person.headers)
+            step("Audit ledger chain", status == 200 and chain["valid"] is True,
+                 f"{chain['message']} ({chain['total_blocks']} blocks)" if status == 200 else f"HTTP {status}")
     except DemoFlowError as error:
-        step("Flujo", False, str(error))
+        step("Flow", False, str(error))
     finally:
         db.dispose()
 
     failures = [name for name, ok, _ in results if not ok]
     print()
     if failures:
-        print(f"RESULTADO: FALLÓ ({len(failures)} de {len(results)} pasos no dieron lo esperado: {', '.join(failures)})")
+        print(f"RESULT: FAILED ({len(failures)} of {len(results)} steps did not give the expected result: {', '.join(failures)})")
         return 1
-    print(f"RESULTADO: OK ({len(results)} de {len(results)} pasos dieron lo esperado)")
+    print(f"RESULT: OK ({len(results)} of {len(results)} steps gave the expected result)")
     return 0
 
 

@@ -21,7 +21,7 @@ from core.owner_keys import (
     register_key,
     revoke_key,
 )
-from mandate.sign import generate_keypair, sign_payload
+from tests.legacy_signing import generate_keypair, sign_payload
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_USER_EMAIL
 from tests.storage import key_records
 

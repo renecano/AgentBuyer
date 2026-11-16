@@ -6,10 +6,10 @@ import AccountView from "./components/AccountView";
 import AuditView from "./components/AuditView";
 import { request, requestWithTimeout } from "./lib/api";
 import { useAuth } from "./lib/AuthProvider";
-import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayStateLabel, verdictLabel } from "./lib/presentation";
+import { checkDetailLabel, checkRuleLabel, displayName, localizedText, mandateStatusLabel, saturdayStateLabel, verdictLabel, type MandateStatus } from "./lib/presentation";
 
 type LiveState = {
-  status: "active" | "revoked" | "expired";
+  status: MandateStatus;
   uses_count: number;
   amount_spent_cents: number;
   revoked_at: string | null;
@@ -296,7 +296,7 @@ function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, aut
       setEscalatedAttemptId(null);
       setPhase("idle");
       setSaturdayState("reject");
-      setToast({ id: Date.now(), tone: "reject", message: "🔒 Mandato revocado — Saturday ya no puede comprar" });
+      setToast({ id: Date.now(), tone: "reject", message: "🔒 Mandate revoked — Saturday can no longer buy" });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No connection to the system.");
     } finally {
@@ -320,7 +320,7 @@ function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, aut
       setToast({
         id: Date.now(),
         tone: decision === "approve" ? "approve" : "reject",
-        message: decision === "approve" ? "✅ Aprobaste la compra — registrada" : "🚫 Rechazaste la compra",
+        message: decision === "approve" ? "✅ You approved the purchase — recorded" : "🚫 You declined the purchase",
       });
       const mandateData = await request<MandateRecord>(`/mandates/${mandateId}`);
       setMandate(mandateData);
@@ -515,17 +515,22 @@ function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, aut
     void startDemo(autoStartDemoAt);
   }, [autoStartDemoAt, mandate, busy, onDemoAutostarted]);
 
+  // 7.3: el listener llama SIEMPRE a la versión más reciente del handler (ref). Antes
+  // capturaba la de su último registro y, si cambiaba demoViewAct sin que cambiara
+  // demoAct, la barra espaciadora usaba un estado viejo.
+  const advanceDemoRef = useRef(advanceDemoPresentation);
+  advanceDemoRef.current = advanceDemoPresentation;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!demoRunning || demoExecuting) return;
       if (event.key === " " || event.key === "ArrowRight") {
         event.preventDefault();
-        advanceDemoPresentation();
+        advanceDemoRef.current();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [demoRunning, demoExecuting, demoAct]);
+  }, [demoRunning, demoExecuting]);
 
   useEffect(() => {
     // Al desmontar de verdad: corta los timers de la demo y cualquier petición
@@ -538,7 +543,7 @@ function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, aut
   }, []);
 
   const status = mandate?.live_state.status ?? "loading";
-  const statusLabel = status === "active" ? "ACTIVE" : status === "revoked" ? "REVOKED" : status === "expired" ? "EXPIRED" : "LOADING";
+  const statusLabel = mandateStatusLabel(status);
   const displayedVerification = verification ?? pendingVerification;
   const displayedChecks = verification
     ? verification.checks
@@ -551,7 +556,7 @@ function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, aut
         <header className="mission-header">
           <div>
             <p className="mission-kicker">AGENTBUYER / MISSION CONTROL</p>
-            <h1>Centro de confianza para agentes</h1>
+            <h1>Agent trust center</h1>
           </div>
           <div className="mission-header-actions">
             <button className="new-mandate-button" onClick={() => { if (window.confirm("Leave and create a new permission? The current view will be cleared.")) onCreateNew(); }} disabled={busy !== null || demoRunning} type="button">+ START OVER</button>

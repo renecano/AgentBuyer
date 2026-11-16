@@ -21,6 +21,7 @@ Configuración (variables de entorno, ver .env.example):
 """
 from __future__ import annotations
 
+import logging
 import os
 import smtplib
 from dataclasses import dataclass
@@ -33,6 +34,9 @@ from urllib.parse import urlparse
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from core.email_otp import env_positive_int
+from core.logging_config import mask_email
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_PATH = Path(__file__).resolve().parents[1] / "templates" / "emails"
 DEFAULT_SMTP_HOST = "smtp.gmail.com"
@@ -119,7 +123,7 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int 
     if not dest or "@" not in dest:
         return {"status": 400, "message": "Invalid email address.", "sent_via": "error"}
     if proposito not in _OTP_EMAIL_TEXT:
-        raise ValueError(f"Propósito de OTP desconocido: {proposito!r}.")
+        raise ValueError(f"Unknown OTP purpose: {proposito!r}.")
 
     config = SmtpConfig.from_env()
     subject, intro = _OTP_EMAIL_TEXT[proposito]
@@ -137,11 +141,11 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int 
     if config.configured:
         try:
             _deliver(config, msg, dest)
-            print(f"[Gmail SMTP OTP] Verification code sent to {dest}")
-            return {"status": 200, "message": f"Verification code sent to {dest}", "sent_via": "smtp"}
+            logger.info("verification code emailed to %s", mask_email(dest))
+            return {"status": 200, "message": "Verification code sent.", "sent_via": "smtp"}
         except Exception as err:
             # Solo el tipo de error: el detalle del servidor SMTP podría reflejar el mensaje.
-            print(f"[Gmail SMTP ERROR] Failed to send verification code to {dest}: {type(err).__name__}")
+            logger.warning("verification code email to %s failed: %s", mask_email(dest), type(err).__name__)
             return {"status": 500, "message": "Email delivery failed.", "sent_via": "error"}
 
     return {"status": 200, "message": "SMTP not configured; email not sent.", "sent_via": "memory"}

@@ -1,104 +1,11 @@
-"""mandate/sign.py: un algoritmo por función, sin degradación silenciosa.
+"""mandate/sign.py: verificación Ed25519 fail-closed de firmas hechas fuera del servidor.
 
-Antes, sign_payload con una llave que no medía 64 hex (o si Ed25519 fallaba)
-devolvía EN SILENCIO un JWT HMAC firmado con un secreto de desarrollo. Ahora es
-un SignatureError explícito, y verify_signature es fail-closed."""
+(7.3: los tests de sign_payload/verify_signature se retiraron con esas funciones,
+que el producto ya no usaba.)"""
 
 import pytest
 
-from mandate.sign import (
-    SignatureError,
-    generate_keypair,
-    sign_payload,
-    verify_ed25519_bytes,
-    verify_signature,
-)
-
-PAYLOAD = {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"]}
-
-
-@pytest.fixture()
-def keys() -> tuple[str, str]:
-    return generate_keypair()
-
-
-# ── sign_payload: SOLO Ed25519 ──────────────────────────────────────────────
-
-def test_sign_and_verify_roundtrip(keys):
-    priv, pub = keys
-    signature = sign_payload(priv, PAYLOAD)
-
-    assert len(signature) == 128 and int(signature, 16) >= 0  # 64 bytes en hex
-    assert verify_signature(pub, PAYLOAD, signature) is True
-
-
-@pytest.mark.parametrize(
-    "bad_key",
-    ["short-key", "zz" * 32, "ab" * 33, b"\x00" * 32, None, 12345],
-    ids=["short", "64-non-hex", "too-long", "bytes", "none", "int"],
-)
-def test_malformed_private_key_is_an_explicit_error_not_a_jwt(bad_key):
-    with pytest.raises(SignatureError):
-        sign_payload(bad_key, PAYLOAD)
-
-
-def test_swapped_arguments_are_an_error_not_a_guess(keys):
-    """Antes aceptaba (payload, llave) o (llave, payload) adivinando por tipo."""
-    priv, _ = keys
-    with pytest.raises(SignatureError):
-        sign_payload(PAYLOAD, priv)  # type: ignore[arg-type]
-
-
-def test_non_serializable_payload_is_an_error(keys):
-    priv, _ = keys
-    with pytest.raises(SignatureError):
-        sign_payload(priv, {"when": object()})
-
-
-def test_signature_never_looks_like_a_jwt(keys):
-    priv, _ = keys
-    assert "." not in sign_payload(priv, PAYLOAD)
-
-
-# ── verify_signature: fail-closed ───────────────────────────────────────────
-
-def test_tampered_payload_does_not_verify(keys):
-    priv, pub = keys
-    signature = sign_payload(priv, PAYLOAD)
-
-    assert verify_signature(pub, {**PAYLOAD, "max_amount_per_purchase": 99999}, signature) is False
-
-
-def test_signature_from_another_key_does_not_verify(keys):
-    _, pub = keys
-    other_priv, _ = generate_keypair()
-
-    assert verify_signature(pub, PAYLOAD, sign_payload(other_priv, PAYLOAD)) is False
-
-
-@pytest.mark.parametrize(
-    "pubkey, signature",
-    [
-        (None, "ab" * 64),
-        ("ab" * 32, None),
-        ("", ""),
-        ("zz" * 32, "ab" * 64),
-        ("ab" * 10, "ab" * 64),
-        ("ab" * 32, "x"),
-        ("ab" * 32, "ab" * 64),
-        (123, 456),
-    ],
-    ids=["no-pubkey", "no-signature", "empty", "pubkey-non-hex", "pubkey-short",
-         "signature-short", "garbage", "non-strings"],
-)
-def test_malformed_inputs_never_verify(pubkey, signature):
-    assert verify_signature(pubkey, PAYLOAD, signature) is False
-
-
-def test_non_serializable_payload_never_verifies(keys):
-    _, pub = keys
-    assert verify_signature(pub, {"when": object()}, "ab" * 64) is False
-
+from mandate.sign import generate_keypair, verify_ed25519_bytes
 
 # ── verify_ed25519_bytes: la primitiva para firmas hechas fuera del servidor ──
 

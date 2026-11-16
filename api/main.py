@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.db import DatabaseConfigError, get_engine, validate_database_config
+from core.logging_config import configure_logging, new_request_id, request_id_var
 from core.mandate_store import (
     mandate_store,
     create_human_signed_mandate,
@@ -45,19 +46,20 @@ startup_logger = logging.getLogger("agentbuyer.startup")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Reemplaza el @app.on_event("startup") deprecado.
+    configure_logging()  # 7.3: logging estructurado con request id (core/logging_config.py)
     # Fail-fast: un despliegue sin JWT_SECRET válido (fuera de AUTH_DEV_MODE) no
     # arranca, en vez de fallar en el primer login o firmar con una clave pública.
     try:
         validate_token_config()
     except TokenConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: configuración de tokens inválida. %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: invalid token configuration. %s", error)
         raise
     # SERVICE_API_KEY ausente es válido (endpoints de servicio cerrados); configurada
     # pero débil es un error de configuración y se reporta al arrancar.
     try:
         validate_service_key_config()
     except ServiceKeyConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: %s", error)
         raise
     # 6.2: la base es obligatoria fuera de desarrollo y se migra a la última versión
     # ANTES de servir (un esquema viejo no debe recibir tráfico).
@@ -65,14 +67,14 @@ async def lifespan(_app: FastAPI):
         validate_database_config()
         get_engine()
     except DatabaseConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: %s", error)
         raise
     # 6.3: la evidencia se verifica COMPLETA antes de servir. Con la cadena rota la API
     # no arranca (no hay modo solo lectura: docs/design/persistence.md §6). Para
     # investigar sin la API: python -m scripts.verify_ledger
     chain_ok, chain_detail = audit_ledger.verify_chain_integrity()
     if not chain_ok:
-        startup_logger.critical("AgentBuyer API no puede arrancar: el ledger de auditoría no verifica. %s", chain_detail)
+        startup_logger.critical("AgentBuyer API cannot start: the audit ledger does not verify. %s", chain_detail)
         raise LedgerIntegrityError(chain_detail)
     yield
 
@@ -104,8 +106,21 @@ app.add_middleware(
     allow_headers=["*"],
     # Retry-After no es un header "safelisted": sin exponerlo, el navegador no deja
     # que el frontend lea el cooldown del 429 (login por email).
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """7.3: cada petición tiene un id que va en cada línea de log y en la respuesta."""
+    request_id = new_request_id(request.headers.get("X-Request-ID"))
+    token = request_id_var.set(request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 # Llaves del AGENTE: viven en core/agent_keys.py (servidor, P-02); las de las
 # personas nunca están en el servidor (cada titular firma en su dispositivo).
@@ -171,7 +186,7 @@ async def create_mandate_endpoint(
         {
             "type": "mandate_created",
             "mandate_id": mandate["mandate_id"],
-            "summary": f"Mandato firmado por el titular creado para {mandate.get('human', {}).get('display_name', 'la persona autorizante')}.",
+            "summary": f"Mandate signed by the cardholder, created for {mandate.get('human', {}).get('display_name', 'the authorizing person')}.",
         }
     )
     return record
@@ -209,7 +224,7 @@ def api_revoke_mandate(
             {
                 "type": "revocation",
                 "mandate_id": mandate_id,
-                "summary": "Mandato revocado por la persona autorizante.",
+                "summary": "Mandate revoked by the authorizing person.",
             }
         )
     return record
@@ -247,7 +262,7 @@ def api_resume_mandate(mandate_id: str, principal: Principal = Depends(require_m
 def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
     record = store_get_mandate(mandate_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Mandato no encontrado")
+        raise HTTPException(status_code=404, detail="Mandate not found.")
     trail = get_trail_for(role="human", mandate_id=mandate_id)
     return {
         "mandate_id": mandate_id,
@@ -269,8 +284,11 @@ def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(req
 # una ruta registrada dos veces, y ahora es una utilidad de desarrollo, P-05.)
 
 
-@app.get("/audit/verify")
-def api_verify_audit_integrity():
+@app.get("/ledger/verify")
+def api_verify_audit_integrity(principal: Principal = Depends(require_principal)):
+    """Integridad de la cadena del ledger. 7.3: antes era GET /audit/verify, que (a)
+    chocaba con GET /audit/{mandate_id} (un mandato llamado "verify" no podía ver su
+    historial) y (b) era anónimo, exponiendo el volumen de actividad a cualquiera."""
     is_valid, msg = audit_ledger.verify_chain_integrity()
     return {"valid": is_valid, "message": msg, "total_blocks": audit_ledger.count()}
 

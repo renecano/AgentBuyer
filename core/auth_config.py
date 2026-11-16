@@ -46,8 +46,8 @@ def service_api_keys() -> list[bytes]:
     if short:
         positions = ", ".join(f"#{index}" for index in short)
         raise ServiceKeyConfigError(
-            f"SERVICE_API_KEY inválida: la(s) key(s) {positions} tienen menos de "
-            f"{MIN_SERVICE_KEY_BYTES} bytes. Genera una segura con: {_GENERATE_KEY_HINT}"
+            f"Invalid SERVICE_API_KEY: key(s) {positions} have fewer than "
+            f"{MIN_SERVICE_KEY_BYTES} bytes. Generate a safe one with: {_GENERATE_KEY_HINT}"
         )
     return keys
 

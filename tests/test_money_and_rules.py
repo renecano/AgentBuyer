@@ -96,7 +96,7 @@ def test_paused_mandate_is_rejected_on_the_react_line(client, mine):
     assert client.post(f"/mandates/{mine}/pause", headers=headers()).status_code == 200
     result = verify_as_service(client, attempt(mine, "att_paused", 10000)).json()
     assert result["verdict"] == "REJECT"
-    assert next(check for check in result["checks"] if check["rule"] == "status")["detail"] == "mandato pausado"
+    assert next(check for check in result["checks"] if check["rule"] == "status")["detail"] == "mandate paused"
     assert live_state(mine)["uses_count"] == 0
 
     assert client.post(f"/mandates/{mine}/resume", headers=headers()).status_code == 200

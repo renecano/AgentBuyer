@@ -90,10 +90,10 @@ def _service_key_matches(provided_key: str) -> bool:
     except ServiceKeyConfigError as error:
         # Config inválida (p. ej. cambiada en caliente tras arrancar): nunca se
         # acepta una key débil; se cierra como si no hubiera keys.
-        logger.error("%s Se rechaza toda llamada de servicio.", error)
+        logger.error("%s Every service call is rejected.", error)
         valid_keys = []
     if not valid_keys:
-        logger.warning("SERVICE_API_KEY no está configurada: se rechaza toda llamada de servicio.")
+        logger.warning("SERVICE_API_KEY is not configured: every service call is rejected.")
 
     candidate = provided_key.encode("utf-8")
     matched = False

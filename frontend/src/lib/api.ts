@@ -12,7 +12,6 @@
  *   Las llamadas de login van con skipAuth → sin token → no avisan: ahí un 401
  *   es "código incorrecto", no "sesión expirada".
  */
-import { translateBackendText } from "./presentation";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 
@@ -79,15 +78,14 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
 
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!response.ok) {
-    // El backend explica sus 404/409/422 en `detail`; se traduce en la capa de
-    // presentación (clave para los errores de la revisión humana).
+    // El backend explica sus 404/409/422 en `detail` (en inglés desde el 7.3, P-12).
     let message = `The system responded ${response.status}.`;
     let detail: string | null = null;
     try {
       const body = (await response.json()) as { detail?: unknown };
       if (typeof body.detail === "string" && body.detail) {
         detail = body.detail;
-        message = translateBackendText(body.detail);
+        message = body.detail;
       }
     } catch { /* cuerpo no-JSON: se conserva el mensaje genérico */ }
 

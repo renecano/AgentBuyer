@@ -20,6 +20,7 @@ disputas muestra a cada uno las suyas; un admin, todas (misma regla que P-04).
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,7 @@ from core.db_schema import disputes as DISPUTES
 from core.mandate_store import get_mandate, mandate_ids_owned_by
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # 6.3: las disputas resueltas se guardan en la base (tabla disputes) con el JSON exacto
 # que se devolvió; antes vivían en un dict y se perdían al reiniciar.
@@ -44,7 +46,7 @@ class FileDisputeBody(BaseModel):
     attempt_id: str
     mandate_id: str
     claimant_id: str = "hum_cardholder"
-    reason: str = "El titular niega haber autorizado este cargo."
+    reason: str = "The cardholder denies authorizing this charge."
 
 
 def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
@@ -53,7 +55,7 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
     if record is None:
         return {
             "verdict": "MERCHANT_LIABLE_NO_MANDATE", "liable_party": "MERCHANT", "refund_issued": True,
-            "explanation": "El comercio procesó un pago contra un mandato que no existe en el registro. El titular queda protegido.",
+            "explanation": "The merchant processed a payment against a mandate that does not exist in the registry. The cardholder is protected.",
         }
 
     live = record["live_state"]
@@ -72,10 +74,12 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
             if tx_t > rev_t:
                 return {
                     "verdict": "MERCHANT_LIABLE_POST_REVOCATION", "liable_party": "MERCHANT", "refund_issued": True,
-                    "explanation": f"El comercio aceptó la compra ({approvals[0]['timestamp']}) DESPUÉS de que el mandato fue revocado ({revoked_at}). El titular queda protegido.",
+                    "explanation": f"The merchant accepted the purchase ({approvals[0]['timestamp']}) AFTER the mandate was revoked ({revoked_at}). The cardholder is protected.",
                 }
         except (ValueError, KeyError):
-            pass
+            # Fechas ilegibles (solo con datos corruptos): no se puede ordenar compra y
+            # revocación; se sigue con las demás reglas y queda constancia en el log.
+            logger.warning("dispute on %s: unreadable timestamps, revocation order not evaluated", attempt_id)
 
     # No hay APROBACIÓN registrada para este intento. 7.2: antes bastaba un evento de
     # verificación, así que un intento RECHAZADO (o escalado y nunca aprobado) se
@@ -83,13 +87,13 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
     if not approvals:
         return {
             "verdict": "MERCHANT_LIABLE_UNVERIFIED", "liable_party": "MERCHANT", "refund_issued": True,
-            "explanation": "No existe una aprobación registrada para esta compra en el trail auditable (no se verificó, o se rechazó, o quedó escalada sin aprobar). El titular queda protegido.",
+            "explanation": "There is no approval for this purchase in the auditable trail (it was never verified, was rejected, or was escalated and never approved). The cardholder is protected.",
         }
 
     # Compra válida, verificada y aprobada dentro del mandato.
     return {
         "verdict": "HUMAN_LIABLE_VALID_MANDATE", "liable_party": "HUMAN", "refund_issued": False,
-        "explanation": "La evidencia criptográfica del registro confirma que la compra fue verificada y aprobada dentro de un mandato activo y firmado por el titular. La disputa se desestima.",
+        "explanation": "The ledger's cryptographic evidence confirms the purchase was verified and approved under an active mandate signed by the cardholder. The dispute is dismissed.",
     }
 
 
@@ -108,7 +112,7 @@ def file_dispute(body: FileDisputeBody, principal: Principal = Depends(require_p
 
     append_entry({
         "type": "DISPUTE_FILED", "mandate_id": body.mandate_id, "attempt_id": body.attempt_id,
-        "summary": f"Disputa {dispute_id} abierta por el titular: {body.reason}",
+        "summary": f"Dispute {dispute_id} filed by the cardholder: {body.reason}",
     })
 
     # Evidencia: SOLO los eventos de este mandato (antes: el trail entero, con
@@ -131,8 +135,8 @@ def file_dispute(body: FileDisputeBody, principal: Principal = Depends(require_p
             "type": "DISPUTE_RESOLVED", "mandate_id": body.mandate_id, "attempt_id": body.attempt_id,
             "verdict": None,
             "summary": (
-                f"Disputa {dispute_id} resuelta: {resolution['liable_party']} responsable"
-                + (" — reembolso emitido al titular." if resolution["refund_issued"] else " — cargo válido, sin reembolso.")
+                f"Dispute {dispute_id} resolved: {resolution['liable_party']} liable"
+                + (" — refund issued to the cardholder." if resolution["refund_issued"] else " — valid charge, no refund.")
             ),
         }, connection=connection)
     return claim

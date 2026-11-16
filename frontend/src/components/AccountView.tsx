@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, request } from "../lib/api";
-import { auditTypeLabel, localizedText, verdictLabel } from "../lib/presentation";
+import { auditTypeLabel, localizedText, mandateStatusLabel, verdictLabel, type MandateStatus } from "../lib/presentation";
 
 type AuditEvent = {
   event_id: string; timestamp: string; type: string; mandate_id: string;
   attempt_id?: string; verdict?: "APPROVE" | "ESCALATE" | "REJECT"; summary: string;
 };
 type MandateRecord = {
-  live_state: { status: string; uses_count: number; amount_spent_cents: number };
+  live_state: { status: MandateStatus; uses_count: number; amount_spent_cents: number };
   mandate: { human?: { id?: string; display_name?: string }; constraints?: { max_uses?: number; currency?: string } };
 };
 type DisputeClaim = {
@@ -102,7 +102,7 @@ export default function AccountView({ mandateId }: { mandateId: string }) {
     }
   }
 
-  const status = mandate?.live_state.status === "active" ? "ACTIVE" : mandate?.live_state.status === "revoked" ? "REVOKED" : "LOADING";
+  const status = mandateStatusLabel(mandate?.live_state.status ?? "loading");
   const verdictCounts = events.reduce((counts, event) => {
     if (event.verdict === "APPROVE") counts.approve += 1;
     if (event.verdict === "ESCALATE") counts.escalate += 1;

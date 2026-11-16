@@ -73,7 +73,7 @@ def _write(value: Any, out: List[str]) -> None:
         out.append("false")
     elif isinstance(value, int):
         if abs(value) > MAX_SAFE_INTEGER:
-            raise CanonicalizationError(f"Entero fuera del rango seguro (±2^53−1): {value}.")
+            raise CanonicalizationError(f"Integer outside the safe range (±2^53−1): {value}.")
         out.append(str(value))
     elif isinstance(value, float):
         out.append(_number(value))
@@ -89,7 +89,7 @@ def _write(value: Any, out: List[str]) -> None:
     elif isinstance(value, dict):
         for key in value:
             if not isinstance(key, str):
-                raise CanonicalizationError(f"Las claves deben ser texto, no {type(key).__name__}.")
+                raise CanonicalizationError(f"Keys must be text, not {type(key).__name__}.")
         out.append("{")
         for index, key in enumerate(sorted(value, key=_utf16_sort_key)):
             if index:
@@ -99,7 +99,7 @@ def _write(value: Any, out: List[str]) -> None:
             _write(value[key], out)
         out.append("}")
     else:
-        raise CanonicalizationError(f"Tipo no JSON: {type(value).__name__}.")
+        raise CanonicalizationError(f"Not a JSON type: {type(value).__name__}.")
 
 
 def _utf16_sort_key(key: str) -> bytes:
@@ -112,7 +112,7 @@ def _ensure_well_formed(text: str) -> None:
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
-        raise CanonicalizationError("Texto con un surrogate UTF-16 huérfano: no es Unicode válido.") from None
+        raise CanonicalizationError("Text with a lone UTF-16 surrogate: not valid Unicode.") from None
 
 
 def _string(text: str) -> str:
@@ -133,9 +133,9 @@ def _string(text: str) -> str:
 def _number(value: float) -> str:
     """ECMAScript Number::toString para floats (el formato de JSON.stringify)."""
     if not math.isfinite(value):
-        raise CanonicalizationError(f"Número no finito: {value!r}.")
+        raise CanonicalizationError(f"Non-finite number: {value!r}.")
     if abs(value) > MAX_SAFE_INTEGER:
-        raise CanonicalizationError(f"Número fuera del rango seguro (±2^53−1): {value!r}.")
+        raise CanonicalizationError(f"Number outside the safe range (±2^53−1): {value!r}.")
     if value == 0:
         return "0"  # incluye -0.0
     if value.is_integer():

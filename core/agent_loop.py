@@ -1,11 +1,14 @@
-import uuid
+import logging
 import secrets
+import uuid
 
 from core.mandate_store import get_mandate, get_mandate_signer
 from core.money import format_money, is_cents
 from audit.log import append_entry
 from core.merchant_identity import merchant_id_from_url
 from core.merchant_search import search_merchant_offers
+
+logger = logging.getLogger(__name__)
 
 # 7.2 (P-08): la clase PurchasingAgent (agente de consola de la línea estricta, que
 # compraba en el catálogo inventado de VuelaYa) se retiró con esa línea. El agente del
@@ -185,14 +188,14 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
 
     if not flights_seen:
         message = (
-            "Saturday no encontró ofertas en este momento. "
-            "No se realizó ningún intento de compra; intenta de nuevo."
+            "Saturday couldn't find offers right now. "
+            "No purchase attempt was made; try again."
         )
         append_entry(
             {
                 "type": "agent_run",
                 "mandate_id": mandate_id,
-                "summary": "La búsqueda web no devolvió ofertas; el agente no intentó ninguna compra.",
+                "summary": "The web search returned no offers; the agent did not attempt any purchase.",
             }
         )
         return {
@@ -211,10 +214,10 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         # 5.1: si ninguna oferta cabe en el mandato, NO se intenta la más barata (antes
         # se intentaba igual y el guardián tenía que pararla). No hay compra que proponer.
         message = (
-            f"Saturday encontró {len(flights_seen)} ofertas, pero ninguna cabe en el mandato "
-            f"(tope {format_money(cap) if cap is not None else '—'} USD"
+            f"Saturday found {len(flights_seen)} offers, but none fits the mandate "
+            f"(limit {format_money(cap) if cap is not None else '—'} USD"
             + (f", price_below {format_money(below)} USD" if below is not None else "")
-            + "). No se intentó ninguna compra."
+            + "). No purchase was attempted."
         )
         append_entry({"type": "agent_run", "mandate_id": mandate_id, "summary": message})
         return {
@@ -268,14 +271,14 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
 
     story = (
         # R12: un escenario no es una búsqueda real ni una compra; se dice tal cual.
-        f"Escenario de demostración '{scenario}': oferta sintética (no salió de una búsqueda real) "
-        f"de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
-        f"Verify devolvió {verdict}; en un escenario nunca se compra. {verification.get('human_readable', '')}"
+        f"Demo scenario '{scenario}': a synthetic offer (not from a real search) "
+        f"from {selected_flight.get('merchant', selected_flight['merchant_id'])} for {format_money(selected_flight['price_cents'])} USD. "
+        f"Verify returned {verdict}; a scenario never buys anything. {verification.get('human_readable', '')}"
     ) if scenario else (
-        f"Encontró {len(flights_seen)} {'hoteles' if category_key == 'hotels' else 'vuelos'} en la web (búsqueda real). "
-        + (f"Aplicó el límite price_below de {format_money(below)} USD y " if below is not None else f"Aplicó el tope de {format_money(cap)} USD y ")
-        + f"eligió {selected_flight['route']} de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
-        + ("La compra fue completada tras recibir APPROVE." if completed else f"La compra no procedió: verify devolvió {verdict}. {verification.get('human_readable', '')}")
+        f"Found {len(flights_seen)} {'hotels' if category_key == 'hotels' else 'flights'} on the web (real search). "
+        + (f"Applied the price_below limit of {format_money(below)} USD and " if below is not None else f"Applied the limit of {format_money(cap)} USD and ")
+        + f"chose {selected_flight['route']} from {selected_flight.get('merchant', selected_flight['merchant_id'])} for {format_money(selected_flight['price_cents'])} USD. "
+        + ("The purchase was completed after APPROVE." if completed else f"The purchase did not proceed: verify returned {verdict}. {verification.get('human_readable', '')}")
     )
     
     append_entry(
@@ -294,7 +297,7 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
                 "mandate_id": mandate_id,
                 "attempt_id": attempt_id,
                 "verdict": "APPROVE",
-                "summary": f"Compra completada por Saturday: {selected_flight['route']} por {format_money(selected_flight['price_cents'])} USD.",
+                "summary": f"Purchase completed by Saturday: {selected_flight['route']} for {format_money(selected_flight['price_cents'])} USD.",
             }
         )
         # 7.1 (P-07): el recibo es un servicio interno que dispara la compra, con los
@@ -322,14 +325,14 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         except Exception as error:  # el recibo nunca deshace ni rompe una compra aprobada
             receipt_result = {"status": "failed", "reason": type(error).__name__}
         if receipt_result["status"] != "sent":
-            print(f"[Receipt] Not sent for {attempt_id}: {receipt_result['status']} ({receipt_result.get('reason', '')})")
+            logger.info("receipt for %s not sent: %s (%s)", attempt_id, receipt_result["status"], receipt_result.get("reason", ""))
     return {
         "mandate_id": mandate_id,
         "attempt_id": attempt_id,
         "discovery_source": discovery_source,
         "flights_seen": flights_seen,
         "selected_flight": selected_flight,
-        "selection_reason": "La oferta más barata que cabe en el mandato.",
+        "selection_reason": "The cheapest offer that fits the mandate.",
         "attempt": attempt,
         "verification": verification,
         "purchase_completed": completed,

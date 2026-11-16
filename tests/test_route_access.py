@@ -15,7 +15,7 @@ from audit.log import append_entry, get_trail_events, get_trail_for
 from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.quotas import PerSubjectQuota
-from tests.conftest import FakeClock, TEST_ADMIN_EMAIL, TEST_USER_EMAIL, verify_as_service
+from tests.conftest import FakeClock, TEST_USER_EMAIL, verify_as_service
 from tests.storage import live_state, stored_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -242,7 +242,7 @@ def test_cannot_approve_escalation_when_the_signing_key_was_revoked(client, sign
 
     response = approve(client, "mnd_mine", attempt, headers)
     assert response.status_code == 409
-    assert "revocada" in response.json()["detail"]
+    assert "revoked" in response.json()["detail"]
     assert live_state("mnd_mine")["uses_count"] == 0
 
 

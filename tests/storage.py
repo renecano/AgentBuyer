@@ -13,7 +13,7 @@ from sqlalchemy import insert, select, update
 
 from core.db import write_tx
 from core.db_schema import mandates, owner_keys
-from core.mandate_store import get_mandate, mandate_exists  # noqa: F401  (re-export para los tests)
+from core.mandate_store import get_mandate, mandate_exists
 
 
 def live_state(mandate_id: str) -> dict:
@@ -98,3 +98,9 @@ def tamper_ledger_row(idx: int, change: Callable[[dict], None]) -> None:
         connection.exec_driver_sql(
             "CREATE TRIGGER audit_ledger_no_update BEFORE UPDATE ON audit_ledger "
             "BEGIN SELECT RAISE(ABORT, 'audit_ledger is append-only'); END")
+
+
+__all__ = [
+    "live_state", "stored_document", "tamper_document", "insert_mandate_without_signer", "move_key_to_owner",
+    "set_owner", "all_mandate_ids", "key_records", "move_keys_of_owner", "tamper_ledger_row", "mandate_exists",
+]

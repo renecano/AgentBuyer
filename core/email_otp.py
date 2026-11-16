@@ -51,9 +51,9 @@ def env_positive_int(name: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise ValueError(f"{name} debe ser un entero positivo (recibido {raw!r}).") from None
+        raise ValueError(f"{name} must be a positive integer (got {raw!r}).") from None
     if value <= 0:
-        raise ValueError(f"{name} debe ser un entero positivo (recibido {raw!r}).")
+        raise ValueError(f"{name} must be a positive integer (got {raw!r}).")
     return value
 
 

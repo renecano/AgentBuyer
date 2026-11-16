@@ -22,7 +22,7 @@ def run_demo(extra_env=None) -> subprocess.CompletedProcess:
 def test_run_demo_walks_the_real_flow_and_ends_green():
     result = run_demo()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "RESULTADO: OK (7 de 7" in result.stdout
+    assert "RESULT: OK (7 of 7" in result.stdout
     assert "FAIL" not in result.stdout
 
 
@@ -41,9 +41,9 @@ def test_run_demo_ends_red_when_a_guarantee_breaks(tmp_path):
         encoding="utf-8")
     result = run_demo({"PYTHONPATH": str(tmp_path)})
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "OK    La persona revoca el mandato" in result.stdout  # la respuesta "miente"…
-    assert "FAIL  Compra después de revocar" in result.stdout     # …y el paso real lo detecta
-    assert "RESULTADO: FALLÓ" in result.stdout
+    assert "OK    The person revokes the mandate" in result.stdout  # la respuesta "miente"…
+    assert "FAIL  A purchase after revoking" in result.stdout     # …y el paso real lo detecta
+    assert "RESULT: FAILED" in result.stdout
 
 
 def test_bootstrap_demo_refuses_outside_dev_mode(monkeypatch, capsys):

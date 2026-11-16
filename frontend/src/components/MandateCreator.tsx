@@ -699,11 +699,14 @@ export default function MandateCreator({ onCreated, onDemoCreated, autoStartDemo
     // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al montar con la señal
   }, [autoStartDemo]);
 
+  // 7.3: el listener usa la versión más reciente del handler (ref), no la de su registro.
+  const advanceWizardDemoRef = useRef(advanceWizardDemo);
+  advanceWizardDemoRef.current = advanceWizardDemo;
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (wizardDemoStage === "paused" && (event.key === " " || event.key === "ArrowRight")) {
         event.preventDefault();
-        advanceWizardDemo();
+        advanceWizardDemoRef.current();
       }
     }
     window.addEventListener("keydown", onKeyDown);

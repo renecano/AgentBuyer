@@ -90,7 +90,7 @@ def test_human_approves_escalation_updates_state_and_audit(client, signed_poster
     override = next(e for e in get_trail_events() if e["type"] == "human_override_approved")
     assert override["attempt_id"] == "att_esc_1"
     assert "amount" in override["escalation_reason"]["failed_rules"]
-    assert "APROBADA" in override["summary"]
+    assert "APPROVED" in override["summary"]
 
 
 def test_human_declines_no_state_change(client, signed_poster):
@@ -106,7 +106,7 @@ def test_human_declines_no_state_change(client, signed_poster):
     assert state["amount_spent_cents"] == 0
 
     override = next(e for e in get_trail_events() if e["type"] == "human_override_declined")
-    assert "RECHAZADA" in override["summary"]
+    assert "DECLINED" in override["summary"]
 
 
 def test_cannot_approve_on_revoked_mandate(client, signed_poster):
@@ -128,7 +128,7 @@ def test_unknown_attempt_id_is_clean_404(client, signed_poster):
     signed_poster.create(make_mandate())
     response = review(client, "approve", attempt_id="att_no_existe")
     assert response.status_code == 404
-    assert "intento" in response.json()["detail"]
+    assert "attempt" in response.json()["detail"]
 
 
 def test_cannot_review_twice(client, signed_poster):

@@ -172,7 +172,7 @@ describe("step-up y challenge", () => {
   it("422 en POST /keys es un bug del cliente: error claro, nada marcado", async () => {
     await beginEnrollment(MARTA);
     server.override = (method, path) => method === "POST" && path === "/keys"
-      ? new Response(JSON.stringify({ detail: "La llave pública Ed25519 debe tener 64 caracteres hex." }), { status: 422 })
+      ? new Response(JSON.stringify({ detail: "The Ed25519 public key must have 64 hex characters." }), { status: 422 })
       : null;
 
     const failure = await completeEnrollment(MARTA, server.currentCode()).catch((caught: unknown) => caught);

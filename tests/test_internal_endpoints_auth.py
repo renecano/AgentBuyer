@@ -309,6 +309,8 @@ EXPECTED_SECURITY = {
     ("POST", "/disputes/file"): "bearer",
     # 4.2 (P-03): la verificación es del comercio/agente.
     ("POST", "/verify"): "service_key",
+    # 7.3: la integridad del ledger exige sesión (antes GET /audit/verify, anónimo).
+    ("GET", "/ledger/verify"): "bearer",
 }
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):

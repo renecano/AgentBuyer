@@ -23,13 +23,13 @@ from scripts.demo_flow import DemoFlowError, HttpTransport, enroll, sign_mandate
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Crea un usuario de demo con un mandato firmado (solo desarrollo).")
+    parser = argparse.ArgumentParser(description="Creates a demo user with a signed mandate (development only).")
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument("--email", default="demo.user@example.com")
     args = parser.parse_args(argv)
 
     if os.getenv("AUTH_DEV_MODE", "").strip().lower() != "true":
-        print("ERROR: bootstrap_demo solo corre con AUTH_DEV_MODE=true (es una utilidad de desarrollo).")
+        print("ERROR: bootstrap_demo only runs with AUTH_DEV_MODE=true (it is a development utility).")
         return 2
     api = HttpTransport(args.api)
     try:
@@ -38,7 +38,7 @@ def main(argv=None) -> int:
     except (DemoFlowError, OSError) as error:
         print(f"ERROR: {error}")
         return 1
-    print(f"Mandato firmado: {record['mandate']['mandate_id']} (titular {person.email}, llave {person.key_id})")
+    print(f"Signed mandate: {record['mandate']['mandate_id']} (cardholder {person.email}, key {person.key_id})")
     print(f"Access token (Authorization: Bearer ...): {person.token}")
     return 0
 

@@ -16,7 +16,7 @@ from tests.conftest import verify_as_service
 from audit.log import get_trail_events
 from api.main import app
 from core import mandate_store
-from mandate.sign import generate_keypair, sign_payload
+from tests.legacy_signing import generate_keypair, sign_payload
 from tests.storage import mandate_exists, tamper_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -237,7 +237,7 @@ def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, sign
     signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
     assert approved["verdict"] == "APPROVE"
     assert signature_check == {"rule": "signature", "pass": True,
-                               "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
+                               "detail": "Valid Ed25519 cardholder signature (registered key)."}
 
     tamper_document("mnd_signed", lambda document: document["constraints"].__setitem__("max_amount_per_purchase_cents", 9999900))
     tampered = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
