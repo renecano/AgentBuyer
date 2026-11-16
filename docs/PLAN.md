@@ -17,6 +17,29 @@ Cada paso sigue el mismo ciclo:
 
 Un paso no se considera hecho hasta que cumple su **Definición de terminado** y el CI está verde.
 
+### 0b. Modo autónomo (vigente desde el 16 nov 2026, paso 3.4 en adelante)
+
+René pidió que Claude Code ejecute el plan completo por su cuenta: hacer los chequeos que antes hacía René, hacer push y seguir con el siguiente paso. Mientras este modo esté vigente, **sustituye** el ciclo de arriba:
+
+1. **Ejecuta los pasos en el orden de la sección 5**, empezando por el primero que no aparezca como hecho en la bitácora (sección 18).
+2. **Decisiones:** donde un prompt diga `DECISIÓN: <...>`, usa la resolución de la sección 4 ("Resoluciones vigentes"). Si una situación no la cubre ninguna decisión ni regla, **alto** (ver 0c).
+3. **Verificación del navegador:** la casilla "Verificación de René" la ejecuta Claude Code con un navegador real sin interfaz (Playwright + Chromium; instálalo si falta). Levanta backend (`AUTH_DEV_MODE=true`, base temporal) y frontend, recorre los pasos de la casilla y reporta qué hizo y qué vio. Estos guiones de verificación viven fuera del repo (scratchpad) hasta la Fase 11, que formaliza la suite E2E en CI. Lo que exige a una persona (abrir un correo real, el teléfono) se marca como "no verificable sin René".
+4. **Commit y push:** al terminar cada paso, con suite y build en verde, commit y `git push` de la rama. Después confirma el estado del CI de ese commit en GitHub (API pública `https://api.github.com/repos/renecano/AgentBuyer/actions/runs?branch=<rama>` o `gh` si existe). CI rojo → arréglalo antes de seguir; si no puedes reproducir el fallo, replica el CI en un entorno limpio (venv Python 3.13 + `pip install -r requirements-dev.txt` + `npm ci`).
+5. **Cierre de fase:** replica el CI en entorno limpio, `git merge --no-ff` de la rama a `main` con un mensaje que resuma la fase, push de `main`, confirma CI verde en `main`, y borra la rama local y remota. La siguiente fase sale de `main` actualizado con la rama que indica el plan.
+6. **Bitácora:** al terminar cada paso añade una entrada a la sección 18 (fecha, paso, commit, conteos de tests, verificación del navegador, decisiones propias, pendientes) dentro del mismo commit. Es lo que permite retomar en otra sesión.
+7. **Reporte a René:** al final de cada fase, y siempre que te detengas, deja un resumen en el formato R10.
+
+### 0c. Condiciones de ALTO (te detienes y esperas a René)
+
+- Hace falta una cuenta, credencial, pago o acción fuera del repo: crear servicios de despliegue, dominios, SMTP real, llaves de OpenAI con gasto, secretos de producción (P-13, P-16 en la parte de cuentas).
+- Licencia del código coescrito (P-14): no apliques licencia hasta que René confirme con el equipo original.
+- El CI sigue rojo después de dos intentos de arreglo razonados.
+- Una decisión de producto que el plan no cubre, o que contradice una D-xx.
+- La auditoría de cierre (13.1) encuentra algo crítico o alto abierto.
+- Cualquier acción irreversible fuera de lo descrito.
+
+**Prohibido siempre:** `git push --force`, reescribir historia publicada, borrar `main`, cambiar configuración del repo en GitHub, commitear secretos o `.env`.
+
 ---
 
 ## 1. Dónde estamos
@@ -62,7 +85,7 @@ Un paso no se considera hecho hasta que cumple su **Definición de terminado** y
 - **R6 — Contrato de React.** `tests/test_frontend_contract.py` en verde, salvo cambio de contrato deliberado y declarado en el prompt.
 - **R7 — Suite completa al final.** Backend `python -m pytest -q`; frontend `npm run build` y `npm test` (en `frontend/`). Reporta conteos antes y después.
 - **R8 — Dependencias.** Solo las necesarias; Python fijado con `==` en `requirements*.txt`; npm con `package-lock.json` commiteado. Justifica cada dependencia nueva. Instalar lo que el proyecto necesita está permitido.
-- **R9 — Commit sí, push no.** Al terminar, un commit con el mensaje que da el prompt. Nunca `git push`.
+- **R9 — Commit y push.** Al terminar, un commit con el mensaje que da el prompt. En modo autónomo (0b) también `git push` de la rama y comprobación del CI; fuera de ese modo, sin push.
 - **R10 — Formato del reporte.** (1) qué cambió, por archivo; (2) conteos de tests antes/después; (3) decisiones que tomaste por tu cuenta y por qué; (4) lo que NO pudiste verificar; (5) pendientes que descubriste; (6) qué debe verificar René en el navegador.
 - **R11 — Pruebas pesadas al final.** Playwright, benchmarks y cargas largas solo en las Fases 10–11.
 - **R12 — Honestidad del producto.** Nada en la UI, correos, logs o docs puede prometer una garantía que el código no da. Lo falso se va.
@@ -94,6 +117,8 @@ Un paso no se considera hecho hasta que cumple su **Definición de terminado** y
 | D-16 | `off_session_consent` va firmado **y se aplica**: en `false`, toda compra de un mandato firmado escala a aprobación humana | Es autorización para cobrar sin la persona presente; firmarlo sin aplicarlo sería teatro |
 | D-17 | Una clave desconocida en `constraints` se **rechaza** (422), no se ignora | Nada que autorice puede viajar junto al mandato sin estar firmado (`monthly_budget`, `conditions_expression`… no existen en v1) |
 | D-18 | `expires_at` es obligatorio y posterior a `created_at` (ISO 8601 UTC con `Z`, segundos) | Un mandato firmado sin vencimiento sería una autorización eterna |
+| D-19 | La vigencia elegida como fecha vence al **final de ese día en la zona horaria local del navegador**, convertida a UTC; la confirmación muestra fecha, hora y zona | Es lo que una persona entiende por "válido hasta el 30" |
+| D-20 | Modo autónomo: Claude Code verifica, hace push, mergea fases y sigue el plan (sección 0b) | Pedido de René, 16 nov 2026 |
 
 ### Límites conocidos (se documentan, no se esconden)
 
@@ -104,6 +129,29 @@ Un paso no se considera hecho hasta que cumple su **Definición de terminado** y
 ## 4. Decisiones pendientes (René decide antes del paso que las requiere)
 
 Cada una trae la recomendación de Claude. Responde en el chat o escribe la respuesta en el prompt (`DECISIÓN: ...`).
+
+### Resoluciones vigentes (16 nov 2026)
+
+René adoptó las recomendaciones al pedir que el plan se ejecute completo. Puede cambiar cualquiera editando esta tabla; Claude Code usa lo que diga aquí.
+
+| P | Resolución |
+|---|---|
+| P-01 | (a) Revocar la llave deja sin efecto los mandatos firmados con ella (`signing_key_active`); se re-firma con la llave nueva |
+| P-02 | Retirar `POST /mandates/create` y las llaves humanas del servidor; las llaves del agente se quedan, documentado |
+| P-03 | `/verify` exige credencial `service`; los actos 4 y 5 de la demo pasan por `/agent/run` con escenario |
+| P-04 | `GET /audit`: cada usuario ve lo suyo; `admin` ve todo |
+| P-05 | `POST /audit/reset` sale del producto; utilidad solo con `AUTH_DEV_MODE=true` + `admin`; sin ruta duplicada |
+| P-06 | Retirar webhooks y `approve-exception`; documentar pagos reales como siguiente paso |
+| P-07 | Retirar el inbox; recibos como servicio interno disparado por la compra |
+| P-08 | Retirar `aegis_core.py` e `intelligent_issuer.py`; `run_demo.py` reescrito como recorrido real |
+| P-09 | Todo el dinero del backend en enteros de unidad mínima + moneda |
+| P-10 | SQLite con SQLAlchemy 2 + Alembic; OTP/challenges/rate limits en memoria con punto de enganche a Redis |
+| P-11 | Opción B: fixtures firmadas en tests + `scripts/bootstrap_demo.py` solo en dev; fuera el seed y `system_seal` |
+| P-12 | UI, API y README en inglés (README con resumen en español); comentarios existentes sin reescritura masiva |
+| P-13 | **Pendiente de René** (cuentas y costos). Claude Code prepara todo lo que no requiera cuentas y se detiene |
+| P-14 | **Pendiente de René** (confirmar con Ana Paola Oviedo y dglvanp). Hasta entonces: sección de créditos sí, licencia no |
+| P-15 | Un solo cliente LLM configurable; modelo verificado al implementar; fail-closed |
+| P-16 | Cuota configurable por usuario (por defecto 20 corridas/día) y tope global diario configurable; al agotarse, error claro. El límite de gasto en la cuenta de OpenAI lo configura René |
 
 **P-01 — ¿Qué pasa con un mandato si se revoca la llave que lo firmó?** *(antes de 3.5)*
 - (a) **Recomendado:** el mandato deja de verificar (`/verify` → REJECT con check `signing_key_active`), sin mutar su estado. El humano re-firma con su llave nueva. Coherente con el kill switch: revocar una llave comprometida corta todo lo firmado con ella.
@@ -354,64 +402,85 @@ Commit: "feat: backend verifica mandatos firmados por el humano (doble via, adit
 
 ### 3.4 — El wizard firma el mandato
 
-**Objetivo:** React firma cada mandato con la llave del dispositivo. Enrolar pasa a ser parte del flujo.
+**Objetivo:** React firma cada mandato con la llave del dispositivo. Enrolar pasa a ser requisito para autorizar.
 
-**Verificación de René:** crear un mandato con la llave enrolada → Mission Control lo muestra y `/agent/run` compra. Cerrar sesión, entrar con otro email en el mismo navegador → pide enrolar otra llave (no usa la del primero).
+**Verificación (René o Claude Code en modo autónomo):** iniciar sesión → registrar el dispositivo → crear un mandato → aparece "Signed on this device" → en Mission Control una compra muestra el check de firma como **firma del titular** (ya no "system seal"). Cerrar sesión y entrar con otro email en el mismo navegador → pide registrar otra llave. La vigencia se muestra con fecha, hora y zona.
 
 ```
-Lee docs/PLAN.md (secciones 1 a 3) y aplica todas las reglas. Rama fase-3-firma-cliente.
-Paso 3.4: submitMandate firma el mandato con la llave del dispositivo (formato 3.2) y lo
-envía con {signature, key_id, created_at, nonce}. Frontend.
+Lee docs/PLAN.md (secciones 0b, 1 a 4) y aplica todas las reglas. Rama fase-3-firma-cliente.
+Paso 3.4: el wizard firma el mandato con la llave del dispositivo usando la spec del 3.2
+(lib/mandateMessage.ts) y lo envía en el formato firmado que el backend acepta desde el 3.3.
 
-- El paso "Verify it's you" exige sesión Y llave en estado registered antes de avanzar.
-  Si la llave está en missing_on_server, guía a re-enrolar.
-- Convierte los montos a centavos en el borde con la función de 3.2; muestra al humano los
-  montos en su formato normal.
-- Envía expires_at (no valid_until).
-- La demo automática del wizard enrola y firma sola con AUTH_DEV_MODE=true; sin modo dev,
-  espera los códigos manualmente como hoy.
-- Texto honesto en la confirmación: "Signed on this device" con el key_id corto. Nada de
-  promesas de hardware o biometría.
-- Actualiza tests/test_frontend_contract.py: el payload que congela es el NUEVO payload
-  firmado (contrato cambiado a propósito; explica la diferencia).
+1. Requisito para autorizar: sesión activa Y llave en estado "registered" (DeviceKeyCard del
+   3.1). En none, local_unregistered o missing_on_server el wizard guía a enrolar antes de
+   avanzar; el botón de autorizar explica qué falta. La tarjeta deja de decir que la llave
+   "todavía no firma tus permisos".
+2. submitMandate construye el payload firmado:
+   - montos en el formato de la spec (centavos en el mensaje; el humano los ve y escribe en
+     su formato normal), currency "USD", off_session_consent como lo eligió la persona,
+     search_fields, agent_id, mandate_id generado por el cliente;
+   - created_at y nonce con toSignedTimestamp y newMandateNonce;
+   - expires_at según D-19: final del día elegido (23:59:59) en la zona LOCAL del navegador,
+     convertido a UTC con Z; la confirmación muestra fecha, hora y zona. Fecha pasada o no
+     posterior a created_at → error del formulario.
+   - firma con signCanonical sobre mandate_signing_message y envía {campos de la spec,
+     signature, key_id, created_at, nonce}. Nada fuera de la spec.
+   - Errores: 403 de firma/llave → mensaje claro y recargar el estado de la llave; 409 de
+     nonce → regenerar y reintentar una vez; 422 → error del formulario con el campo.
+3. Cambiar un límite después de firmar obliga a firmar de nuevo (la firma se calcula al
+   autorizar, nunca se reutiliza).
+4. Mission Control y la confirmación muestran la verdad: "Signed on this device" con el
+   key_id corto; el check de firma de /verify se presenta como firma del titular. Nada de
+   promesas de hardware o biometría (R12).
+5. Demo automática: con AUTH_DEV_MODE=true enrola (code_demo del step-up) y firma sola; sin
+   modo dev espera los códigos.
+6. Contrato de React (cambio deliberado, R4): tests/test_frontend_contract.py congela el
+   payload FIRMADO del wizard (generado con el helper que firma como el cliente) y que crea
+   un mandato kind=human. Explica la diferencia con el contrato anterior.
 
-TESTS (Vitest): el payload enviado reproduce el mensaje de 3.2 y la firma verifica; sin
-llave registrada no se puede autorizar; cambiar un límite tras firmar obliga a re-firmar.
+TESTS (Vitest): el payload reproduce byte a byte mandate_signing_message y la firma verifica;
+sin llave registrada no se autoriza; editar un límite tras firmar genera firma nueva;
+expires_at = final del día local en UTC (al menos dos zonas simuladas); 409 de nonce reintenta
+una vez; 403 recarga el estado de la llave. Mutación: JSON.stringify, reutilizar firma tras
+editar, expires_at a medianoche UTC.
+
 Commit: "feat(frontend): el humano firma su mandato con la llave del dispositivo".
 ```
 
 ---
 
-### 3.5 — Exigir la firma humana `⛔ requiere P-01, P-02`
+### 3.5 — Exigir la firma humana (P-01, P-02 resueltas en la sección 4)
 
 **Objetivo:** el servidor deja de firmar por los usuarios. No-repudio a nivel de dispositivo de verdad.
 
 **Definición de terminado:** ningún mandato creado por un usuario existe sin firma humana; el sello de sistema solo existe para el seed (hasta 7.2); sondeo de ataques congelado como regresión.
 
 ```
-Lee docs/PLAN.md (secciones 1 a 4) y aplica todas las reglas. Rama fase-3-firma-cliente.
+Lee docs/PLAN.md (secciones 0b, 1 a 4) y aplica todas las reglas. Rama fase-3-firma-cliente.
 Paso 3.5: exigir la firma humana. Cambia el contrato de POST /mandates a propósito.
-DECISIÓN P-01: <escribe a o b>
-DECISIÓN P-02: <escribe la decisión>
+Decisiones: P-01 y P-02 según "Resoluciones vigentes".
 
-1. POST /mandates sin firma humana válida → 422 (falta) / 403 (no verifica). El servidor ya
-   no firma mandatos de usuarios. kind=system_seal solo se permite para el seed cargado al
-   arrancar; ningún endpoint puede crearlo.
-2. Revocación de llave según P-01. Si es (a): /verify agrega el check signing_key_active y
-   rechaza mandatos firmados con una llave revocada; DELETE /keys responde cuántos mandatos
-   quedan sin efecto.
+1. POST /mandates sin firma humana válida → 422 (falta) / 403 (no verifica). El servidor ya no
+   firma mandatos de usuarios. kind=system_seal solo para el seed cargado al arrancar; ningún
+   endpoint puede crearlo. Se retira kind=legacy_client (firma con llave no registrada) y el
+   camino legado que aceptaba un payment_token enviado por el cliente: el token siempre lo
+   emite el servidor y queda atado a message_hash (también para el seed).
+2. P-01 (a): /verify agrega el check signing_key_active y rechaza mandatos firmados con una
+   llave revocada; cambia a propósito el test que hoy fija lo contrario. DELETE /keys
+   responde cuántos mandatos quedan sin efecto.
 3. P-02: retira POST /mandates/create y las llaves humanas de _key_registry. Las llaves del
-   agente se quedan del lado del servidor; documenta en el código por qué (el agente es un
-   servicio de la plataforma). Ajusta el guardián de OpenAPI.
+   agente se quedan del lado del servidor; documenta por qué en el código. Ajusta el
+   guardián de OpenAPI.
 4. Sondeo de regresión permanente (tests/test_mandate_signature_attacks.py): sin firma;
-   firma basura; firma de otro dueño; llave de otro dueño con key_id propio; llave revocada;
-   mensaje de register-key presentado como mandato; replay de una creación; campo alterado
-   después de firmar; payment_token de otro mandato. Todos rechazados.
-5. Tests que creaban mandatos sin firma: pásalos al helper que firma como el cliente. Ninguno
-   puede seguir pasando por el sello del servidor salvo los que prueban el seed.
+   firma basura; firma de otro dueño; llave de otro dueño con key_id propio; llave revocada
+   antes y después de crear; mensaje de register-key presentado como mandato; replay de una
+   creación; campo alterado después de firmar; payment_token de otro mandato o enviado por
+   el cliente. Todos rechazados.
+5. Tests que creaban mandatos sin firma: pásalos al helper que firma como el cliente. Solo los
+   que prueban el seed pueden usar el sello.
 
-Mutación: vuelve a permitir el sello para usuarios y reactiva la ruta retirada; confirma que
-algo falla. Commit: "seguridad: exigir firma humana en mandatos; el servidor deja de firmar por el usuario".
+Mutación: permitir el sello para usuarios, reactivar la ruta retirada, ignorar la revocación.
+Commit: "seguridad: exigir firma humana en mandatos; el servidor deja de firmar por el usuario".
 ```
 
 ---
@@ -433,7 +502,7 @@ Paso 3.6: prepara el cierre de la Fase 3, sin cambiar código de producto.
 Commit: "docs: resumen de la Fase 3 para el PR".
 ```
 
-Luego René: `git push`, abre el PR de `fase-3-firma-cliente` → `main` con ese texto, espera el CI verde, hace merge y borra la rama (`git branch -d` local y la remota).
+Luego, el cierre de fase de la sección 0b (en modo autónomo lo hace Claude Code): CI replicado en limpio, merge `--no-ff` a `main` usando `docs/pr/fase-3.md` como mensaje, push, CI verde en `main`, rama borrada.
 
 ---
 
@@ -827,3 +896,13 @@ René: tag `v1.0.0` con notas de release, descripción y topics del repo en GitH
 - [ ] `docs/RESULTS.md` reproducible con un comando.
 - [ ] README con problema y fuentes, cómo probar (vivo y local), resultados contra alternativas, mapa del repo, datos con fuente, IA responsable, límites y siguiente paso, evidencia para cada afirmación, licencia y créditos.
 - [ ] Release `v1.0.0`.
+
+---
+
+## 18. Bitácora de progreso
+
+| Fecha | Paso | Commit | Tests (pytest / Vitest) | Notas |
+|---|---|---|---|---|
+| 2026-11-16 | 3.1 Enrolamiento del navegador | `eca397f` | 488 / 120 | Firma reproduce vectores de registro; 20 mutaciones detectadas |
+| 2026-11-16 | 3.2 Spec del mandato firmado v1 | `065f1bf` | 669 / 215 | 7 vectores válidos, 23 inválidos; añade currency y off_session_consent (D-15, D-16) |
+| 2026-11-16 | 3.3 Backend acepta mandatos firmados (doble vía) | `da4c784` | 756 / 215 | kind human / system_seal / legacy_client; binding de token; search_fields atados; llave revocada aún aprueba → 3.5 (P-01) |
