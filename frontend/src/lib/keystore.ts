@@ -11,8 +11,8 @@
  * - Un registro por email (normalizado como el backend): varios usuarios pueden
  *   compartir navegador sin pisarse.
  *
- * Todavía NO está conectado a la app: ni se registra la llave en el servidor
- * (sub-pasos 2.3-2.5) ni se firman mandatos (2.6 / paso 3).
+ * Desde el paso 3.1 la usa lib/enrollment.ts para registrar la llave en el
+ * servidor. Todavía NO firma mandatos (paso 3.4).
  */
 
 export const KEYSTORE_DB = "agentbuyer-keys";
@@ -242,6 +242,84 @@ export async function getOrCreateLocalKey(email: string): Promise<LocalKeyRecord
     request.onsuccess = () => {
       if (request.result) winner = request.result as LocalKeyRecord;  // alguien la creó mientras tanto
       else store.add(candidate);
+    };
+    await done;
+    return winner;
+  });
+
+  if (stored === candidate) await requestPersistentStorage();
+  return stored;
+}
+
+/** La llave guardada ya no es la que se esperaba (otra pestaña la cambió, o se borró). */
+export class LocalKeyChangedError extends Error {
+  constructor(message = "This device's key changed while it was being registered. Try again.") {
+    super(message);
+    this.name = "LocalKeyChangedError";
+  }
+}
+
+/**
+ * Anota que el servidor registró la llave local de `email` con `keyId` (3.1).
+ *
+ * Fail-closed y atómico: solo actualiza si la llave guardada sigue siendo
+ * `publicKeyHex` (la que se firmó y registró). Si otra pestaña la reemplazó o la
+ * borró entretanto, no marca nada y lanza LocalKeyChangedError: nunca se anota
+ * como registrada una llave que el servidor no conoce.
+ */
+export async function markLocalKeyRegistered(email: string, publicKeyHex: string, keyId: string): Promise<LocalKeyRecord> {
+  const key = normalizeEmail(email);
+  if (!keyId) throw new Error("A key id is required to mark a key as registered.");
+  await assertEd25519Supported();
+  return withKeystore(async (db) => {
+    const transaction = db.transaction(KEYSTORE_STORE, "readwrite");
+    const store = transaction.objectStore(KEYSTORE_STORE);
+    const done = transactionDone(transaction);
+    let updated: LocalKeyRecord | null = null;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const current = request.result as LocalKeyRecord | undefined;
+      if (!current || current.publicKeyHex !== publicKeyHex) return;
+      updated = { ...current, keyId, registered: true };
+      store.put(updated);
+    };
+    await done;
+    if (updated === null) throw new LocalKeyChangedError();
+    return updated;
+  });
+}
+
+/**
+ * Sustituye la llave local de `email` por una NUEVA si la guardada sigue siendo
+ * `expectedPublicKeyHex` (p. ej. el servidor la revocó y no puede volver a
+ * registrarse). Atómico como getOrCreateLocalKey: si otra pestaña ya la cambió,
+ * devuelve la que haya guardada sin generar otra encima. Si no había ninguna,
+ * guarda la nueva.
+ */
+export async function replaceLocalKey(email: string, expectedPublicKeyHex: string): Promise<LocalKeyRecord> {
+  const key = normalizeEmail(email);
+  await assertEd25519Supported();
+
+  const pair = await generateKeyPair();
+  const candidate: LocalKeyRecord = {
+    email: key,
+    privateKey: pair.privateKey,
+    publicKeyHex: await exportPublicKeyHex(pair.publicKey),
+    keyId: null,
+    registered: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const stored = await withKeystore(async (db) => {
+    const transaction = db.transaction(KEYSTORE_STORE, "readwrite");
+    const store = transaction.objectStore(KEYSTORE_STORE);
+    const done = transactionDone(transaction);
+    let winner = candidate;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const current = request.result as LocalKeyRecord | undefined;
+      if (current && current.publicKeyHex !== expectedPublicKeyHex) winner = current;  // ya la cambiaron
+      else store.put(candidate);
     };
     await done;
     return winner;

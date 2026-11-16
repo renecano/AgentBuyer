@@ -1,6 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  LocalKeyChangedError,
   UNSUPPORTED_BROWSER_MESSAGE,
   UnsupportedBrowserError,
   deleteLocalKey,
@@ -9,6 +10,8 @@ import {
   generateKeyPair,
   getLocalKey,
   getOrCreateLocalKey,
+  markLocalKeyRegistered,
+  replaceLocalKey,
   requestPersistentStorage,
   signBytes,
 } from "./keystore";
@@ -62,6 +65,8 @@ describe("detección de soporte Ed25519 (sin respaldo)", () => {
     ["getOrCreateLocalKey", () => getOrCreateLocalKey(MARTA)],
     ["getLocalKey", () => getLocalKey(MARTA)],
     ["deleteLocalKey", () => deleteLocalKey(MARTA)],
+    ["markLocalKeyRegistered", () => markLocalKeyRegistered(MARTA, "a".repeat(64), "key_1")],
+    ["replaceLocalKey", () => replaceLocalKey(MARTA, "a".repeat(64))],
     ["generateKeyPair", () => generateKeyPair()],
   ] as const)("%s falla con un error claro ANTES de tocar el keystore", async (_name, use) => {
     vi.spyOn(crypto.subtle, "generateKey").mockRejectedValue(new DOMException("Unrecognized name.", "NotSupportedError"));
@@ -189,6 +194,68 @@ describe("deleteLocalKey", () => {
     const second = await getOrCreateLocalKey(MARTA);
 
     expect(second.publicKeyHex).not.toBe(first.publicKeyHex);
+  });
+});
+
+// ── 3.1 Registro en el servidor ─────────────────────────────────────────────
+
+describe("markLocalKeyRegistered", () => {
+  it("anota keyId y registered=true sin tocar la llave (sigue no extraíble y firmando)", async () => {
+    const created = await getOrCreateLocalKey(MARTA);
+
+    const updated = await markLocalKeyRegistered(MARTA, created.publicKeyHex, "key_abc");
+
+    expect(updated).toMatchObject({ publicKeyHex: created.publicKeyHex, keyId: "key_abc", registered: true, createdAt: created.createdAt });
+    const stored = await getLocalKey(MARTA);
+    expect(stored).toMatchObject({ keyId: "key_abc", registered: true });
+    expect(stored!.privateKey.extractable).toBe(false);
+    const data = new TextEncoder().encode("still signs");
+    expect(await verifyWithPublicHex(created.publicKeyHex, await signBytes(stored!.privateKey, data), data)).toBe(true);
+  });
+
+  it("si la llave guardada ya no es la registrada, NO marca nada (fail-closed)", async () => {
+    await getOrCreateLocalKey(MARTA);
+
+    await expect(markLocalKeyRegistered(MARTA, "b".repeat(64), "key_abc")).rejects.toBeInstanceOf(LocalKeyChangedError);
+    expect(await getLocalKey(MARTA)).toMatchObject({ keyId: null, registered: false });
+  });
+
+  it("sin llave guardada, NO crea un registro", async () => {
+    await expect(markLocalKeyRegistered(MARTA, "b".repeat(64), "key_abc")).rejects.toBeInstanceOf(LocalKeyChangedError);
+    expect(await getLocalKey(MARTA)).toBeNull();
+  });
+});
+
+describe("replaceLocalKey", () => {
+  it("sustituye la llave esperada por una NUEVA, sin registrar y no extraíble", async () => {
+    const old = await getOrCreateLocalKey(MARTA);
+    await markLocalKeyRegistered(MARTA, old.publicKeyHex, "key_old");
+
+    const fresh = await replaceLocalKey(MARTA, old.publicKeyHex);
+
+    expect(fresh.publicKeyHex).not.toBe(old.publicKeyHex);
+    expect(fresh).toMatchObject({ keyId: null, registered: false });
+    expect(fresh.privateKey.extractable).toBe(false);
+    expect((await getLocalKey(MARTA))!.publicKeyHex).toBe(fresh.publicKeyHex);
+  });
+
+  it("si otra pestaña ya la cambió, devuelve la guardada y no pisa nada", async () => {
+    const current = await getOrCreateLocalKey(MARTA);
+
+    const result = await replaceLocalKey(MARTA, "c".repeat(64)); // esperaba otra llave
+
+    expect(result.publicKeyHex).toBe(current.publicKeyHex);
+    expect((await getLocalKey(MARTA))!.publicKeyHex).toBe(current.publicKeyHex);
+  });
+
+  it("dos reemplazos simultáneos de la misma llave dejan UNA sola llave nueva", async () => {
+    const old = await getOrCreateLocalKey(MARTA);
+
+    const results = await Promise.all([replaceLocalKey(MARTA, old.publicKeyHex), replaceLocalKey(MARTA, old.publicKeyHex)]);
+    const stored = await getLocalKey(MARTA);
+
+    expect(new Set(results.map((record) => record.publicKeyHex))).toEqual(new Set([stored!.publicKeyHex]));
+    expect(stored!.publicKeyHex).not.toBe(old.publicKeyHex);
   });
 });
 

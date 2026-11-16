@@ -4,6 +4,7 @@ import Saturday, { type SaturdayExpression } from "./Saturday";
 import { ApiError, request } from "../lib/api";
 import { LoginRateLimitedError, type AccessToken, type EmailLoginStart } from "../lib/authApi";
 import { useAuth } from "../lib/AuthProvider";
+import DeviceKeyCard from "./DeviceKeyCard";
 
 type MandateCreatorProps = {
   onCreated: (mandateId: string) => void;
@@ -758,6 +759,10 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
                 {loginError && !(cooldownSeconds > 0 && loginError.startsWith("Too many code requests")) && <p className="verify-hint verify-hint-warn" role="alert">{loginError}</p>}
               </div>}
             </section>
+
+            {/* c) Llave de firma de este dispositivo (paso 3.1). Opcional por ahora:
+                no bloquea crear el permiso y todavía no firma nada (paso 3.4). */}
+            {isAuthenticated && session && <DeviceKeyCard key={session.email} email={session.email} />}
           </div>}
 
           <div className="wizard-step" style={{ display: currentStep === 3 ? "grid" : "none" }}>
