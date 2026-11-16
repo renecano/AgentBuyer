@@ -21,7 +21,14 @@ from shared.schemas import (
     ActorType,
 )
 from mandate.sign import verify_signature
-from core.mandate_store import mandate_store, get_mandate, apply_approved_purchase
+from core.mandate_store import (
+    mandate_store,
+    get_mandate,
+    get_mandate_owner,
+    get_mandate_signer,
+    apply_approved_purchase,
+)
+from core.signed_mandates import KIND_HUMAN, verify_payment_token_binding, verify_signed_mandate
 from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.evaluator import evaluate_mandate_constraints
 from engine.state import state_manager
@@ -364,6 +371,28 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         return reject(mandate.mandate_id, f"Mandate is EXPIRED: {expiry['detail']}")
 
     # 4. Verify Human Signature (Ed25519)
+    signer = get_mandate_signer(mandate.mandate_id)
+    if signer is not None and signer.get("kind") == KIND_HUMAN:
+        # Mandato firmado por el TITULAR (3.3): misma verificación que api/verify,
+        # sobre el registro guardado tal cual (el modelo Mandate descarta campos
+        # firmados como key_id/nonce, así que no sirve para reconstruir el mensaje).
+        stored = get_mandate(mandate.mandate_id)
+        stored_mandate = stored["mandate"] if stored is not None else {}
+        human_ok, human_detail = verify_signed_mandate(stored_mandate, get_mandate_owner(mandate.mandate_id), signer)
+        checks.append(_check("human_signature_valid", human_ok, human_detail))
+        if not human_ok:
+            return reject(mandate.mandate_id, f"403 Forbidden: {human_detail}")
+        binding_ok, binding_detail = verify_payment_token_binding(stored_mandate, signer)
+        checks.append(_check("payment_token_binding", binding_ok, binding_detail))
+        if not binding_ok:
+            return reject(mandate.mandate_id, f"403 Forbidden: {binding_detail}")
+        signed_currency = (stored_mandate.get("constraints") or {}).get("currency")
+        currency_ok = isinstance(attempt.currency, str) and attempt.currency.strip().upper() == signed_currency
+        checks.append(_check("currency", currency_ok, f"{attempt.currency} vs signed {signed_currency}"))
+        if not currency_ok:
+            return reject(mandate.mandate_id, f"Currency {attempt.currency} is not the one authorized by the signed mandate ({signed_currency}).")
+        return _verify_agent_and_constraints(attempt, mandate, checks, now_iso, reject)
+
     unsigned_mandate_payload = {
         "mandate_id": mandate.mandate_id,
         "human_id": mandate.human_id,
@@ -391,7 +420,11 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
     ))
     if not human_sig_valid:
         return reject(mandate.mandate_id, "403 Forbidden: Human digital signature on mandate is INVALID or forged. Cryptographic verification failed.")
+    return _verify_agent_and_constraints(attempt, mandate, checks, now_iso, reject)
 
+
+def _verify_agent_and_constraints(attempt: PurchaseAttempt, mandate: Mandate, checks: List[Dict[str, Any]], now_iso: str, reject) -> VerificationResult:
+    """Pasos 5-8, comunes a ambas firmas del mandato (sello o titular)."""
     # 5. Verify Agent Signature
     unsigned_attempt_payload = {
         "attempt_id": attempt.attempt_id,

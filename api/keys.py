@@ -185,9 +185,13 @@ def issue_key_challenge(payload: ChallengeRequest, principal: Principal = Depend
     owner = _owner(principal)
     result = step_up_otp_service.verify(owner, payload.code)
     if result is OtpCheck.LOCKED:
+        # El código quedó invalidado: Retry-After dice cuándo se puede PEDIR otro
+        # (cooldown/ventana del OTP de step-up; 0 = ya). Se expone por CORS como el
+        # resto (api/main.py: expose_headers).
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed attempts. Request a new confirmation code.",
+            headers={"Retry-After": str(step_up_otp_service.seconds_until_next_issue(owner))},
         )
     if result is not OtpCheck.VALID:
         raise HTTPException(

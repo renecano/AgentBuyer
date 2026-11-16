@@ -291,6 +291,11 @@ def _search_fields(value: Any) -> Dict[str, Any]:
     return fields
 
 
+def normalize_search_fields(value: Any) -> Dict[str, Any]:
+    """search_fields normalizados según la spec v1 (para comparar con lo firmado)."""
+    return _search_fields(value)
+
+
 def _timestamp(value: Any, field: str) -> str:
     if not isinstance(value, str) or not _TIMESTAMP.fullmatch(value):
         raise MandateMessageError(field, 'must be ISO 8601 UTC with seconds and Z, e.g. "2026-12-01T00:00:00Z".')

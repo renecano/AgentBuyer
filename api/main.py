@@ -1,13 +1,15 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import json
+from datetime import datetime, timezone
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -23,6 +25,7 @@ from mandate.sign import generate_keypair
 from core.mandate_store import (
     mandate_store,
     create_mandate as store_create_mandate,
+    create_human_signed_mandate,
     get_mandate as store_get_mandate,
     revoke_mandate as store_revoke_mandate,
     reset_mandate,
@@ -42,6 +45,12 @@ from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
 from mandate.adversarial_tests import run_adversarial_suite
+from core.signed_mandates import (
+    SignedMandateError,
+    build_signed_mandate,
+    is_signed_format,
+    parse_signed_body,
+)
 
 startup_logger = logging.getLogger("agentbuyer.startup")
 
@@ -209,13 +218,53 @@ def api_create_mandate(req: CreateMandateRequest, principal: Principal = Depends
 
 
 @app.post("/mandates", status_code=status.HTTP_201_CREATED)
-def create_mandate_endpoint(
-    mandate: dict[str, Any],
+async def create_mandate_endpoint(
+    request: Request,
     principal: Principal = Depends(require_human_principal),
 ):
-    """Crea un mandato firmado y establece su estado vivo inicial.
+    """Crea un mandato y establece su estado vivo inicial. Doble vía (paso 3.3):
 
-    Exige token de persona (user/admin): quien lo crea queda como su dueño."""
+    - Formato FIRMADO (3.2: key_id + nonce + created_at + signature): el titular lo
+      firmó con su llave registrada; se verifica antes de guardar (kind=human).
+      Ver core/signed_mandates.py para el orden de los rechazos (403/409/422).
+    - Formato de hoy (sin key_id/nonce): el servidor lo sella como siempre
+      (kind=system_seal, o legacy_client si el cliente trajo su propia firma).
+
+    Exige token de persona (user/admin): quien lo crea queda como su dueño, y el
+    dueño sale del token, nunca del cuerpo."""
+    raw = await request.body()
+    try:
+        # Los montos como Decimal: el camino firmado no puede pasar por float.
+        signed_view = parse_signed_body(raw)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="The body must be valid JSON.") from None
+    if not isinstance(signed_view, dict):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="The mandate must be a JSON object.")
+
+    owner_email = owner_email_for(principal)
+    if is_signed_format(signed_view):
+        try:
+            mandate, signer, nonce = build_signed_mandate(signed_view, owner_email)
+        except SignedMandateError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from None
+        try:
+            record = create_human_signed_mandate(
+                mandate, signer, owner_email, nonce,
+                created_at=datetime.strptime(mandate["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        append_entry(
+            {
+                "type": "mandate_created",
+                "mandate_id": mandate["mandate_id"],
+                "summary": f"Mandato firmado por el titular creado para {mandate.get('human', {}).get('display_name', 'la persona autorizante')}.",
+            }
+        )
+        return record
+
+    # Camino de hoy, sin cambios: el cuerpo tal cual (floats como siempre).
+    mandate = json.loads(raw)
     mandate_id = mandate.get("mandate_id")
     if not isinstance(mandate_id, str) or not mandate_id.strip():
         raise HTTPException(
@@ -226,7 +275,7 @@ def create_mandate_endpoint(
     try:
         # Dueño derivado del token, NUNCA del cuerpo: un owner_email que venga en
         # `mandate` se guarda como un dato más del cliente, sin ningún efecto.
-        record = store_create_mandate(mandate, owner_email=owner_email_for(principal))
+        record = store_create_mandate(mandate, owner_email=owner_email)
         append_entry(
             {
                 "type": "mandate_created",

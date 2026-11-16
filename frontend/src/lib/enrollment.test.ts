@@ -5,7 +5,7 @@
  */
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FakeKeyServer, randomPublicKeyHex } from "../test/fakeKeyServer";
+import { FakeKeyServer, RESEND_COOLDOWN_SECONDS, randomPublicKeyHex } from "../test/fakeKeyServer";
 import { setTokenGetter, setUnauthorizedHandler } from "./api";
 import {
   EnrollmentProtocolError,
@@ -143,8 +143,9 @@ describe("step-up y challenge", () => {
     const failure = await completeEnrollment(MARTA, "000000").catch((caught: unknown) => caught);
 
     expect(failure).toBeInstanceOf(StepUpRateLimitedError);
-    // El backend real no manda Retry-After aquí: el código quedó invalidado.
-    expect(failure).toMatchObject({ needsNewCode: true, retryAfterSeconds: null });
+    // El código quedó invalidado; desde el 3.3 el backend dice con Retry-After cuándo
+    // se puede pedir otro (antes no lo mandaba y esto era null).
+    expect(failure).toMatchObject({ needsNewCode: true, retryAfterSeconds: RESEND_COOLDOWN_SECONDS });
     expect(onUnauthorized).not.toHaveBeenCalled();
 
     // Camino de salida: pedir un código nuevo y terminar.

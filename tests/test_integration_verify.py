@@ -238,7 +238,10 @@ def test_server_signed_mandate_passes_real_ed25519_verification(client):
     approved = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_1")).json()
     signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
     assert approved["verdict"] == "APPROVE"
-    assert signature_check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+    # 3.3: el detail dice QUÉ se verificó. Este mandato lo selló el servidor: no es
+    # una firma del titular, y el detail ya no lo deja suponer.
+    assert signature_check == {"rule": "signature", "pass": True,
+                               "detail": "Sello de sistema Ed25519 válido (llave del servidor; no es una firma del titular)."}
 
     mandate_store.MANDATES["mnd_server_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
     tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_2")).json()
@@ -293,7 +296,10 @@ def test_client_signature_with_its_own_key_is_approved(client):
     verdict, check = signature_result(client, client_signed("mnd_client_ok", priv, pub))
 
     assert verdict == "APPROVE"
-    assert check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+    # 3.3: firma del cliente con una llave NO registrada (camino legado, aditivo hasta
+    # el 3.5): verifica, pero el detail no la presenta como firma del titular.
+    assert check == {"rule": "signature", "pass": True,
+                     "detail": "Firma de cliente Ed25519 válida (llave no registrada; no identifica al titular)."}
 
 
 def test_public_key_of_one_key_and_signature_of_another_is_rejected(client):

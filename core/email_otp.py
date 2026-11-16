@@ -109,6 +109,19 @@ class EmailOtpService:
             self._codes[email] = _PendingCode(digest=self._digest(email, code), expires_at=now + self.ttl_seconds)
             return code
 
+    def seconds_until_next_issue(self, email: str) -> int:
+        """Segundos hasta que issue(email) deje de lanzar OtpRateLimited (0 = ya).
+        Misma regla que issue(): cooldown entre envíos y máximo por ventana."""
+        with self._lock:
+            now = self._clock()
+            history = [sent_at for sent_at in self._sends.get(email, []) if now - sent_at < self.send_window_seconds]
+            waits = [0.0]
+            if history:
+                waits.append(self.resend_cooldown_seconds - (now - history[-1]))
+            if len(history) >= self.max_sends_per_window:
+                waits.append(self.send_window_seconds - (now - history[0]))
+            return max(0, math.ceil(max(waits)))
+
     def invalidate(self, email: str) -> None:
         with self._lock:
             self._codes.pop(email, None)

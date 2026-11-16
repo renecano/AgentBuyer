@@ -10,13 +10,16 @@
  * Orden de POST /keys, como el real: pubkey mal formada → 422 (no consume) →
  * consumir challenge (desconocido/usado/ajeno → 403) → firma (mala → 403) →
  * registrar (otra cuenta / revocada / tope → 409; misma llave activa → idempotente).
- * El 429 de /keys/challenge (intentos agotados) NO trae Retry-After, como el real.
+ * El 429 de /keys/challenge (intentos agotados) trae Retry-After con lo que falta para
+ * poder pedir otro código (3.3), como el real; aquí, el cooldown entero de reenvío.
  */
 import { canonicalize } from "../lib/canonical";
 
 export const FAKE_API_BASE = "http://127.0.0.1:8000";
 const MAX_ACTIVE_KEYS = 10;
 const MAX_OTP_ATTEMPTS = 5;
+/** Cooldown de reenvío del OTP de step-up (core/email_otp: resend_cooldown_seconds). */
+export const RESEND_COOLDOWN_SECONDS = 60;
 
 export type FakeKey = {
   key_id: string;
@@ -154,7 +157,7 @@ export class FakeKeyServer {
         this.failedAttempts += 1;
         if (this.failedAttempts >= MAX_OTP_ATTEMPTS) {
           this.pendingCode = null;
-          return json(429, { detail: "Too many failed attempts. Request a new confirmation code." });
+          return json(429, { detail: "Too many failed attempts. Request a new confirmation code." }, { "Retry-After": String(RESEND_COOLDOWN_SECONDS) });
         }
       }
       return json(403, { detail: "A fresh confirmation code is required to register a key." });

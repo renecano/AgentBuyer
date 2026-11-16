@@ -90,6 +90,14 @@ Un paso no se considera hecho hasta que cumple su **Definición de terminado** y
 | D-12 | El seed se trata como "sello de sistema/legado", nunca como llave humana | Registrarlo afirmaría algo falso y ocultaría la distinción sello vs firma |
 | D-13 | No-dueño recibe 403 (no 404) | No añade filtración nueva; documentado en código |
 | D-14 | Sacar el seed del proyecto al final | Hoy sostiene tests; se reemplaza a propósito (P-11) |
+| D-15 | La moneda va **firmada** en el mandato; la v1 solo acepta `USD` | Centavos sin moneda son ambiguos; ampliar monedas exige definir sus decimales (no todas tienen 2) |
+| D-16 | `off_session_consent` va firmado **y se aplica**: en `false`, toda compra de un mandato firmado escala a aprobación humana | Es autorización para cobrar sin la persona presente; firmarlo sin aplicarlo sería teatro |
+| D-17 | Una clave desconocida en `constraints` se **rechaza** (422), no se ignora | Nada que autorice puede viajar junto al mandato sin estar firmado (`monthly_budget`, `conditions_expression`… no existen en v1) |
+| D-18 | `expires_at` es obligatorio y posterior a `created_at` (ISO 8601 UTC con `Z`, segundos) | Un mandato firmado sin vencimiento sería una autorización eterna |
+
+### Límites conocidos (se documentan, no se esconden)
+
+- **Minúsculas y Unicode.** La firma normaliza a minúsculas (`owner`, categorías, comercios) con `str.lower()` en Python y `toLowerCase()` en JS. Coinciden en lo probado (acentos, ß, emoji), pero dependen de la versión de Unicode de cada motor: un carácter raro podría bajar distinto. El efecto es **fail-closed**: los bytes no coinciden, la firma no verifica y el mandato se rechaza; nunca se aprueba algo distinto de lo firmado.
 
 ---
 
