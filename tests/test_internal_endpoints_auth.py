@@ -1,6 +1,10 @@
 """Endpoints internos (React no los llama) protegidos por rol:
 - user    (require_principal): JWT válido.
-- admin   (require_admin):     JWT válido con role="admin" y email en ADMIN_EMAILS.
+- admin   (is_admin):          JWT válido con role="admin" y email en ADMIN_EMAILS.
+                               7.1: ya no hay rutas solo-admin (inbox, send-ticket y
+                               approve-exception se retiraron, P-06/P-07); el poder
+                               admin es ver TODO en GET /audit y GET /disputes, y ahí
+                               se prueba.
 - service (require_service):   header X-Service-Key contra SERVICE_API_KEY.
 
 401 = no autenticado; 403 = autenticado sin el rol. El efecto nunca ocurre sin
@@ -19,7 +23,7 @@ from fastapi.testclient import TestClient
 import api.auth as auth_api
 import core.notifications as notifications
 from api.main import app
-from audit.log import get_trail_events
+from audit.log import append_entry, get_trail_events
 from core.auth_config import MIN_SERVICE_KEY_BYTES, ServiceKeyConfigError, service_api_keys
 from core.auth_tokens import ISSUER, create_access_token
 from api.security import Principal, require_service
@@ -34,9 +38,6 @@ SERVICE_PROBE = "/__tests__/service-probe"
 # (método, ruta concreta) → (body, rol exigido). Bodies vacíos o inválidos a
 # propósito: la autorización debe rechazar ANTES de validar el body (401/403, no 422).
 ENDPOINTS = {
-    ("GET", "/inbox/messages"): (None, ADMIN),
-    ("POST", "/notifications/send-ticket"): ({}, ADMIN),
-    ("POST", "/purchases/att_x/approve-exception"): ({}, ADMIN),
     ("GET", "/mandates"): (None, USER),
     ("POST", "/mandates/mnd_x/pause"): (None, USER),
     ("POST", "/mandates/mnd_x/resume"): (None, USER),
@@ -48,7 +49,6 @@ ENDPOINTS = {
 }
 
 BEARER_ENDPOINTS = {key: value for key, value in ENDPOINTS.items() if value[1] in (USER, ADMIN)}
-ADMIN_ENDPOINTS = {key: value for key, value in ENDPOINTS.items() if value[1] == ADMIN}
 SERVICE_ENDPOINTS = {key: value for key, value in ENDPOINTS.items() if value[1] == SERVICE}
 
 
@@ -119,31 +119,36 @@ def test_service_endpoint_without_valid_key_is_401(client, service_headers, endp
     assert response.headers["WWW-Authenticate"] == "X-Service-Key"
 
 
-# ── 403: autenticado, pero sin el rol ───────────────────────────────────────
+# ── El rol admin: ver TODO el trail (GET /audit) ────────────────────────────
 
-@pytest.mark.parametrize("endpoint", ADMIN_ENDPOINTS.items(), ids=ids(ADMIN_ENDPOINTS))
-def test_admin_endpoint_rejects_user_with_403(client, auth_headers, endpoint):
-    (method, path), (body, _) = endpoint
-    response = call(client, method, path, body, headers=auth_headers)
+FOREIGN_EVENT = "only an admin sees this"
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Admin role required."
-    assert "WWW-Authenticate" not in response.headers  # no es un problema de autenticación
+
+def sees_everything(client, headers) -> bool:
+    """¿Estas credenciales ven un evento de un mandato que no es de nadie? Solo un admin."""
+    if not any(event["summary"] == FOREIGN_EVENT for event in get_trail_events()):
+        append_entry({"type": "verification", "mandate_id": "mnd_nobodys", "summary": FOREIGN_EVENT})
+    response = client.get("/audit", headers=headers)
+    assert response.status_code == 200, response.text
+    return any(event["summary"] == FOREIGN_EVENT for event in response.json())
+
+
+def test_admin_sees_the_whole_trail_and_a_user_does_not(client, auth_headers, admin_headers):
+    assert sees_everything(client, admin_headers) is True
+    assert sees_everything(client, auth_headers) is False
 
 
 def test_admin_role_is_revoked_when_email_leaves_admin_emails(client, admin_headers, monkeypatch):
-    assert client.get("/disputes", headers=admin_headers).status_code == 200  # sigue siendo usuario válido
+    assert sees_everything(client, admin_headers) is True
     monkeypatch.setenv("ADMIN_EMAILS", "someone.else@example.com")
-
-    response = client.post("/purchases/att_x/approve-exception", json={}, headers=admin_headers)
-    assert response.status_code == 403
+    # El mismo token admin, todavía vigente, ya no ve lo ajeno: sigue siendo un usuario válido.
+    assert sees_everything(client, admin_headers) is False
 
 
 def test_user_token_of_listed_email_is_not_admin(client, admin_headers):
     """El rol lo fija el token al emitirse: un token "user" no se vuelve admin."""
     user_token_same_email = create_access_token(TEST_ADMIN_EMAIL)
-    response = client.get("/inbox/messages", headers=bearer(user_token_same_email))
-    assert response.status_code == 403
+    assert sees_everything(client, bearer(user_token_same_email)) is False
 
 
 def test_forged_admin_claim_is_401_not_403(client, admin_headers):
@@ -152,7 +157,7 @@ def test_forged_admin_claim_is_401_not_403(client, admin_headers):
         "attacker-secret-0123456789-abcdefghijklmnopqrstuv",
         algorithm="HS256",
     )
-    assert client.get("/inbox/messages", headers=bearer(forged)).status_code == 401
+    assert client.get("/audit", headers=bearer(forged)).status_code == 401
 
 
 # ── Credenciales que no se mezclan ──────────────────────────────────────────
@@ -165,7 +170,7 @@ def test_admin_jwt_does_not_open_service_endpoint(client, admin_headers, service
 
 def test_service_key_does_not_open_bearer_endpoints(client, service_headers):
     assert client.get("/disputes", headers=service_headers).status_code == 401
-    assert client.get("/inbox/messages", headers=service_headers).status_code == 401
+    assert client.get("/audit", headers=service_headers).status_code == 401
 
 
 def test_service_endpoint_fails_closed_without_configured_key(client, monkeypatch, caplog):
@@ -178,56 +183,22 @@ def test_service_endpoint_fails_closed_without_configured_key(client, monkeypatc
 
 # ── Pares sin credencial / credencial correcta (el efecto solo ocurre con ella) ──
 
-def test_inbox_messages_requires_admin(client, monkeypatch, auth_headers, admin_headers):
-    reads = []
-
-    def fake_inbox(limite=10):
-        reads.append(limite)
-        return {"status": 200, "connected": True, "messages": [{"subject": "hello"}]}
-
-    monkeypatch.setattr(notifications, "leer_correos_recibidos", fake_inbox)
-
-    assert client.get("/inbox/messages?limit=3").status_code == 401
-    assert client.get("/inbox/messages?limit=3", headers=auth_headers).status_code == 403
-    assert reads == []  # el Gmail no se leyó
-
-    authenticated = client.get("/inbox/messages?limit=3", headers=admin_headers)
-    assert authenticated.status_code == 200
-    assert authenticated.json()["messages"] == [{"subject": "hello"}]
-    assert reads == [3]
-
-
-def test_send_ticket_requires_admin(client, monkeypatch, auth_headers, admin_headers):
+@pytest.mark.parametrize("method, path, body", [
+    ("GET", "/inbox/messages", None),
+    ("POST", "/notifications/send-ticket", {"email": "victim@example.com"}),
+    ("POST", "/purchases/att_forged/approve-exception", {}),
+    ("POST", "/webhooks/stripe", {"data": {"object": {"metadata": {"mandate_id": "mnd_x"}, "amount": 13000}}}),
+    ("POST", "/webhooks/travel-provider", {"email": "victim@example.com", "mandate_id": "mnd_x"}),
+])
+def test_demo_routes_retired_in_7_1_are_gone(client, admin_headers, monkeypatch, method, path, body):
+    """7.1 (P-06, P-07): ni siquiera un admin las alcanza, y nada se escribe ni se envía.
+    Los webhooks ni siquiera pedían credencial: cualquiera podía escribir en el ledger."""
     sent = []
-
-    def fake_send(correo_destino, detalles_reserva):
-        sent.append(correo_destino)
-        return {"status": 200, "message": "sent", "sent_to": correo_destino}
-
-    monkeypatch.setattr(notifications, "enviar_ticket_confirmacion", fake_send)
-    payload = {"email": "victim@example.com", "passenger": "<b>phish</b>"}
-
-    assert client.post("/notifications/send-ticket", json=payload).status_code == 401
-    assert client.post("/notifications/send-ticket", json=payload, headers=auth_headers).status_code == 403
-    assert sent == []  # ningún correo salió
-
-    response = client.post("/notifications/send-ticket", json=payload, headers=admin_headers)
-    assert response.status_code == 200
-    assert sent == ["victim@example.com"]
-
-
-def test_approve_exception_requires_admin(client, auth_headers, admin_headers):
-    def approvals():
-        return [event for event in get_trail_events() if event["type"] == "hitl_approved"]
-
-    assert client.post("/purchases/att_forged/approve-exception", json={}).status_code == 401
-    assert client.post("/purchases/att_forged/approve-exception", json={}, headers=auth_headers).status_code == 403
-    assert approvals() == []  # no quedó una aprobación humana falsa en el ledger
-
-    response = client.post("/purchases/att_forged/approve-exception", json={}, headers=admin_headers)
-    assert response.status_code == 200
-    assert response.json()["status"] == "APPROVED_BY_HUMAN_OVERRIDE"
-    assert [event["attempt_id"] for event in approvals()] == ["att_forged"]
+    monkeypatch.setattr(notifications, "_deliver", lambda *args: sent.append(args))
+    before = len(get_trail_events())
+    assert call(client, method, path, body, headers=admin_headers).status_code in (404, 405)
+    assert call(client, method, path, body).status_code in (404, 405)
+    assert len(get_trail_events()) == before and sent == []
 
 
 def test_service_identity_requires_service_key(client, service_probe, auth_headers, service_headers):
@@ -290,8 +261,7 @@ def test_login_of_admin_email_issues_admin_token(client, monkeypatch):
     token = _login(client, monkeypatch, "boss@example.com")["access_token"]  # sin distinguir mayúsculas
 
     assert _role(token) == "admin"
-    monkeypatch.setattr(notifications, "leer_correos_recibidos", lambda limite=10: {"messages": []})
-    assert client.get("/inbox/messages", headers=bearer(token)).status_code == 200
+    assert sees_everything(client, bearer(token)) is True
 
 
 def test_login_of_non_admin_email_issues_user_token(client, monkeypatch):
@@ -301,7 +271,7 @@ def test_login_of_non_admin_email_issues_user_token(client, monkeypatch):
 
     assert _role(token) == "user"
     assert client.get("/disputes", headers=bearer(token)).status_code == 200
-    assert client.get("/inbox/messages", headers=bearer(token)).status_code == 403
+    assert sees_everything(client, bearer(token)) is False
 
 
 def test_login_without_admin_emails_configured_is_always_user(client, monkeypatch):
@@ -316,7 +286,6 @@ def test_login_without_admin_emails_configured_is_always_user(client, monkeypatc
 # 403 (servicio autenticado, que no puede ser dueño de un mandato).
 EXPECTED_SECURITY = {
     ("POST", "/mandates"): {"bearer", "service_key"},
-    ("GET", "/inbox/messages"): "bearer",
     # Por-mandato: token + ser dueño o admin (require_mandate_access).
     ("GET", "/mandates/{mandate_id}"): "bearer",
     ("POST", "/mandates/{mandate_id}/revoke"): "bearer",
@@ -330,8 +299,6 @@ EXPECTED_SECURITY = {
     ("POST", "/keys/step-up/start"): "bearer",
     ("POST", "/keys/challenge"): "bearer",
     ("DELETE", "/keys/{key_id}"): "bearer",
-    ("POST", "/notifications/send-ticket"): "bearer",
-    ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",
     ("POST", "/mandates/{mandate_id}/pause"): "bearer",
     ("POST", "/mandates/{mandate_id}/resume"): "bearer",

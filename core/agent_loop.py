@@ -386,7 +386,7 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         }
     )
     if completed:
-        append_entry(
+        completed_event = append_entry(
             {
                 "type": "purchase_completed",
                 "mandate_id": mandate_id,
@@ -395,26 +395,32 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
                 "summary": f"Compra completada por Saturday: {selected_flight['route']} por {format_money(selected_flight['price_cents'])} USD.",
             }
         )
+        # 7.1 (P-07): el recibo es un servicio interno que dispara la compra, con los
+        # datos REALES (los que verificó /verify y registró el ledger) y para el DUEÑO
+        # verificado del mandato (no el `human.email` que manda el cliente, sin firmar).
+        from core.mandate_store import get_mandate_owner
+        from core.notifications import PurchaseReceipt, send_purchase_receipt
+
+        purchase = attempt["purchase"]
         try:
-            from core.notifications import enviar_ticket_confirmacion
-            # Solo el correo del titular; sin él, notifications omite el envío
-            # (jamás caer a SMTP_USER: eso mandaba el recibo al propio emisor).
-            user_email = mandate.get("human", {}).get("email") or ""
-            enviar_ticket_confirmacion(
-                correo_destino=user_email,
-                detalles_reserva={
-                    "destino": selected_flight.get("route", "Buenos Aires ➔ Córdoba"),
-                    "proveedor": selected_flight.get("merchant", "VuelaYa Travel"),
-                    "pnr": f"PNR-VYA-{attempt_id[-6:].upper()}",
-                    # Borde con el correo: el recibo muestra unidades.
-                    "precio_total": selected_flight["price_cents"] / 100,
-                    "moneda": "USD",
-                    "pasajero": mandate.get("human", {}).get("display_name", "Marta"),
-                    "candidate_id": mandate_id,
-                }
-            )
-        except Exception as notify_err:
-            print("Aviso al enviar ticket de confirmación:", notify_err)
+            receipt_result = send_purchase_receipt(PurchaseReceipt(
+                recipient_email=get_mandate_owner(mandate_id) or "",
+                mandate_id=mandate_id,
+                attempt_id=attempt_id,
+                description=purchase["description"],
+                merchant_name=str(selected_flight.get("merchant") or purchase["merchant_id"]),
+                merchant_id=purchase["merchant_id"],
+                amount_cents=purchase["amount_cents"],
+                currency=purchase["currency"],
+                authorized_at=completed_event["timestamp"],
+                offer_url=purchase["metadata"].get("url"),
+                ledger_event_id=completed_event["event_id"],
+                holder_name=(mandate.get("human") or {}).get("display_name"),
+            ))
+        except Exception as error:  # el recibo nunca deshace ni rompe una compra aprobada
+            receipt_result = {"status": "failed", "reason": type(error).__name__}
+        if receipt_result["status"] != "sent":
+            print(f"[Receipt] Not sent for {attempt_id}: {receipt_result['status']} ({receipt_result.get('reason', '')})")
     return {
         "mandate_id": mandate_id,
         "attempt_id": attempt_id,

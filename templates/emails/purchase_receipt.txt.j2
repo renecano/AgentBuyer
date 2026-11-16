@@ -1,0 +1,19 @@
+{#- Versión en texto plano del recibo (7.1). -#}
+Purchase authorized
+
+{% if holder_name %}{{ holder_name }}, Saturday{% else %}Saturday{% endif %} authorized this purchase under a permission you signed on your device.
+
+Item:             {{ description }}
+Amount:           {{ amount }} {{ currency }}
+Merchant:         {{ merchant_name }} ({{ merchant_id }}, from the offer's web address)
+{% if offer_url %}Offer:            {{ offer_url }}
+{% endif %}Authorized at:    {{ authorized_at }}
+Permission:       {{ mandate_id }}
+Purchase attempt: {{ attempt_id }}
+{% if ledger_event_id %}Audit record:     {{ ledger_event_id }}
+{% endif %}
+AgentBuyer does not move money yet: this email records the authorization, not a payment.
+No booking was made with the merchant on your behalf.
+
+Before approving, AgentBuyer checked your signature, the permission's limits and the purchase attempt.
+The decision is in your audit history with the IDs above. If you didn't expect this purchase, revoke the permission from your account.

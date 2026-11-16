@@ -79,16 +79,6 @@ def owner_email_for(principal: Optional[Principal]) -> Optional[str]:
     return principal.subject.strip().lower()
 
 
-def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
-    """Exige un JWT válido (401 si no) con role="admin" (403 si no).
-
-    Además el email debe SEGUIR en ADMIN_EMAILS: quitarlo de la lista retira el
-    acceso de inmediato, sin esperar a que caduque un token admin ya emitido."""
-    if principal.role != ROLE_ADMIN or principal.subject.lower() not in admin_emails():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
-    return principal
-
-
 def _service_key_matches(provided_key: str) -> bool:
     """Compara la key contra TODAS las configuradas en tiempo constante (sin cortar
     en la primera coincidencia): el tiempo no revela cuál key ni cuántos bytes acertó.
@@ -145,7 +135,9 @@ def require_human_principal(
 
 def is_admin(principal: Principal) -> bool:
     """Admin efectivo: el token dice "admin" y el email SIGUE en ADMIN_EMAILS
-    (misma regla que require_admin: quitarlo de la lista retira el poder ya)."""
+    (quitarlo de la lista retira el poder ya, sin esperar a que caduque el token).
+    7.1: ya no hay rutas solo-admin (require_admin se retiró con ellas); el rol admin
+    es ver TODO en GET /audit y GET /disputes."""
     return principal.role == ROLE_ADMIN and principal.subject.strip().lower() in admin_emails()
 
 

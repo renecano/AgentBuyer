@@ -4,13 +4,11 @@ load_dotenv()
 from datetime import datetime, timezone
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from shared.schemas import (
     Mandate,
@@ -32,7 +30,6 @@ from core.agent_loop import PurchasingAgent
 from api.security import (
     Principal,
     owner_email_for,
-    require_admin,
     require_human_principal,
     require_mandate_access,
     require_principal,
@@ -154,43 +151,10 @@ def health():
     return {"status": "ok"}
 
 
-class TicketSendRequest(BaseModel):
-    email: str
-    pnr: Optional[str] = None
-    passenger: Optional[str] = None
-    destination: Optional[str] = None
-    merchant: Optional[str] = None
-    price: Optional[float] = None
-    currency: Optional[str] = "USD"
-
-
-@app.get("/inbox/messages")
-def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principal: Principal = Depends(require_admin)):
-    """
-    Connects to saturday.agentbuyer@gmail.com via IMAP and reads the latest received emails.
-    """
-    from core.notifications import leer_correos_recibidos
-    result = leer_correos_recibidos(limite=limit)
-    return result
-
-
-@app.post("/notifications/send-ticket")
-def api_send_ticket_notification(payload: TicketSendRequest, principal: Principal = Depends(require_admin)):
-    """
-    Dispatches an official receipt/ticket with Google Calendar integration to ANY destination email.
-    """
-    from core.notifications import enviar_ticket_confirmacion
-    reserva = {
-        "pnr": payload.pnr or "PNR-VYA-849201",
-        "pasajero": payload.passenger or "Authorized Customer",
-        "destino": payload.destination or "Direct Flight Buenos Aires (AEP) -> Córdoba (COR)",
-        "proveedor": payload.merchant or "VuelaYa Travel & Logistics Inc.",
-        "precio_total": payload.price or 130.00,
-        "moneda": payload.currency or "USD",
-        "orden_id": f"ORD-{int(time.time()) % 100000}",
-    }
-    result = enviar_ticket_confirmacion(payload.email, reserva)
-    return result
+# 7.1 (P-07): GET /inbox/messages (leía el Gmail del proyecto por IMAP) y
+# POST /notifications/send-ticket (mandaba un "recibo" con datos inventados a cualquier
+# dirección) se retiraron. El recibo es un servicio interno que dispara la compra
+# (core/notifications.send_purchase_receipt).
 
 
 # Mandate Endpoints
@@ -356,75 +320,12 @@ def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(req
     }
 
 
-# HITL Exception Approval
-class ApproveExceptionRequest(BaseModel):
-    user_passkey_signature: Optional[str] = None
-    notes: Optional[str] = None
-
-
-@app.post("/purchases/{purchase_id}/approve-exception")
-def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None, principal: Principal = Depends(require_admin)):
-    # Procesa excepción HITL firmada con Passkey
-    append_entry({
-        "type": "hitl_approved",
-        "attempt_id": purchase_id,
-        "mandate_id": "mnd_delegated",
-        "summary": f"Excepción autorizada manualmente por el titular con Passkey para intento {purchase_id}.",
-    })
-    return {
-        "ok": True,
-        "purchase_id": purchase_id,
-        "status": "APPROVED_BY_HUMAN_OVERRIDE",
-        "message": "Compra fuera de mandato autorizada mediante verificación step-up.",
-    }
-
-
-# Stripe Off-Session Webhook
-@app.post("/webhooks/stripe")
-def api_webhook_stripe(payload: dict):
-    event_type = payload.get("type", "payment_intent.succeeded")
-    mandate_id = payload.get("data", {}).get("object", {}).get("metadata", {}).get("mandate_id", "mnd_live")
-    amount = payload.get("data", {}).get("object", {}).get("amount", 13000) / 100.0
-
-    append_entry({
-        "type": "settlement_completed",
-        "mandate_id": mandate_id,
-        "summary": f"Cobro off-session de ${amount:.2f} USD confirmado por webhook de Stripe.",
-    })
-    return {"received": True, "event": event_type}
-
-
-# Travel Provider (Amadeus / VuelaYa) Webhook
-@app.post("/webhooks/travel-provider")
-def api_webhook_travel_provider(payload: dict):
-    pnr = payload.get("pnr", "PNR-VYA-849201")
-    flight_id = payload.get("flight_id", "FLIGHT_COR_130")
-    status_str = payload.get("status", "TICKET_ISSUED")
-    # Sin correo en el payload no se envía nada (nunca auto-enviarse el boleto).
-    user_email = payload.get("email") or ""
-
-    append_entry({
-        "type": "settlement_completed",
-        "mandate_id": payload.get("mandate_id", "mnd_live"),
-        "summary": f"Emisión de boleto confirmada por aerolínea: PNR {pnr} ({status_str}).",
-    })
-
-    try:
-        from core.notifications import enviar_ticket_confirmacion
-        enviar_ticket_confirmacion(
-            correo_destino=user_email,
-            detalles_reserva={
-                "destino": payload.get("destination", "Córdoba (COR)"),
-                "proveedor": payload.get("merchant", "VuelaYa Travel"),
-                "pnr": pnr,
-                "precio_total": payload.get("amount", 130),
-                "moneda": "USD",
-            }
-        )
-    except Exception as notify_err:
-        print("Aviso al enviar ticket desde webhook:", notify_err)
-
-    return {"received": True, "pnr": pnr, "status": status_str}
+# 7.1 (P-06): se retiraron POST /purchases/{id}/approve-exception (escribía una
+# "aprobación con Passkey" en el ledger sin verificar nada), POST /webhooks/stripe y
+# POST /webhooks/travel-provider. Los webhooks NO tenían autenticación: cualquiera podía
+# escribir eventos settlement_completed en el ledger, y el de viajes enviaba correos a la
+# dirección que le pasaran. Los pagos reales (Stripe con verificación de firma y secretos
+# por entorno) son el siguiente paso documentado, no algo que la demo simule.
 
 
 # Audit Trail Router (POST /audit/reset vive SOLO en api/audit.py desde el 4.1: era

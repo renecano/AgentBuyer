@@ -39,8 +39,9 @@ _EVENT_TYPES = {
     "agent_run",
     "human_override_approved",
     "human_override_declined",
-    "hitl_approved",
-    "settlement_completed",
+    # 7.1: "hitl_approved" y "settlement_completed" solo los escribían approve-exception
+    # y los webhooks (retirados, P-06). Una base vieja que los tenga sigue verificando:
+    # la cadena no depende del tipo.
 }
 
 

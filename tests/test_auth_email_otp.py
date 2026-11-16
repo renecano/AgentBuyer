@@ -245,10 +245,11 @@ def test_otp_policy_env_values_are_validated(monkeypatch):
 def test_real_email_carries_code_only_in_body(client, monkeypatch, capsys):
     """Envío real (enviar_token_otp) contra un SMTP simulado."""
     delivered = []
+    timeouts = []
 
     class FakeSMTP:
-        def __init__(self, host, port):
-            pass
+        def __init__(self, host, port, timeout=None):
+            timeouts.append(timeout)
 
         def __enter__(self):
             return self
@@ -275,6 +276,7 @@ def test_real_email_carries_code_only_in_body(client, monkeypatch, capsys):
 
     assert code not in message["Subject"]
     assert code not in response.text
+    assert timeouts == [10]  # 7.1: todo envío SMTP tiene timeout (SMTP_TIMEOUT_SECONDS)
     output = capsys.readouterr()
     assert code not in output.out and code not in output.err
     assert check(client, code).status_code == 200

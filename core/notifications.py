@@ -1,385 +1,90 @@
-from dotenv import load_dotenv
-load_dotenv()
+"""Correo saliente: códigos OTP y recibos de compras autorizadas (7.1).
+
+Cambios del 7.1 (P-06, P-07):
+- Sin IMAP: el inbox (GET /inbox/messages) se retiró, y con él la lectura del Gmail.
+- El recibo ya no lo dispara un endpoint ni un webhook: es un servicio interno que
+  llama la compra (core/agent_loop.py). Antes se armaba con f-strings SIN escapar (la
+  descripción de la oferta, que viene del LLM, entraba cruda al HTML) e inventaba casi
+  todo: un PNR que nadie emitió, un vuelo "a 3 días a las 14:00", mch_vuelaya y
+  FLT-COR-130 fijos, "TOTAL PAID", "Fiscal receipt". Ahora es una plantilla en archivo
+  (templates/emails, Jinja2 con autoescape) con los datos reales de la compra.
+- El destinatario es el DUEÑO VERIFICADO del mandato (el email del token con el que se
+  creó), no el campo `human.email` que manda el cliente: ese campo no está firmado y
+  permitía dirigir los recibos a cualquier dirección.
+- Todo envío SMTP tiene timeout (SMTP_TIMEOUT_SECONDS): un servidor colgado no
+  bloquea la compra ni el login.
+
+Configuración (variables de entorno, ver .env.example):
+    SMTP_USER / SMTP_PASS     credenciales (sin ellas no se envía nada)
+    SMTP_HOST / SMTP_PORT     servidor SMTP con TLS implícito (default smtp.gmail.com:465)
+    SMTP_TIMEOUT_SECONDS      timeout de conexión y envío (default 10)
+"""
+from __future__ import annotations
 
 import os
 import smtplib
-import urllib.parse
-from datetime import datetime, timezone, timedelta
-from email.mime.text import MIMEText
+from dataclasses import dataclass
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
 
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-def enviar_ticket_confirmacion(correo_destino: str, detalles_reserva: dict) -> dict:
-    """
-    Sends the official receipt / purchase confirmation for the commercial logistics
-    to the user once the agent completes the autonomous purchase with APPROVE verdict.
-    Includes 1-click Google Calendar button and interactive .ics attachment.
-    """
-    dest = (correo_destino or "").strip()
-    if not dest or "@" not in dest:
-        # Nunca auto-enviarse el recibo: sin correo del titular, no hay envío.
-        print("[Ticket email] Skipped: the mandate has no cardholder email; not sending the receipt to the sender itself.")
-        return {"status": 200, "message": "Skipped: no recipient email on the mandate.", "sent_to": None}
+from core.email_otp import env_positive_int
 
-    pnr = detalles_reserva.get('pnr', 'PNR-VYA-849201')
-    orden_id = detalles_reserva.get('orden_id', 'ORD-8492-1570')
-    destino = detalles_reserva.get('destino') or detalles_reserva.get('route') or 'Vuelo Directo Buenos Aires (AEP) -> Córdoba (COR)'
-    proveedor = detalles_reserva.get('proveedor') or detalles_reserva.get('merchant') or 'VuelaYa Travel & Logistics Inc.'
-    precio = detalles_reserva.get('precio_total') or detalles_reserva.get('price') or 130.00
-    moneda = detalles_reserva.get('moneda') or 'USD'
-    pasajero = detalles_reserva.get('pasajero') or 'Marta (Titular Autorizante)'
-    id_cliente = detalles_reserva.get('candidate_id') or 'mnd_live_8492'
-    token_id = detalles_reserva.get('token_id', 'vtok_849201_4242')
-    
-    now_utc = datetime.now(timezone.utc)
-    fecha_actual = now_utc.strftime("%A, %B %d, %Y")
-    hora_actual = now_utc.strftime("%I:%M %p UTC")
+TEMPLATES_PATH = Path(__file__).resolve().parents[1] / "templates" / "emails"
+DEFAULT_SMTP_HOST = "smtp.gmail.com"
+DEFAULT_SMTP_PORT = 465
+DEFAULT_SMTP_TIMEOUT_SECONDS = 10
+RECEIPT_SUBJECT = "Purchase authorized under your permission"
 
-    # Schedule calendar event (3 days ahead at 14:00 UTC)
-    event_start = now_utc + timedelta(days=3)
-    event_start = event_start.replace(hour=14, minute=0, second=0, microsecond=0)
-    event_end = event_start + timedelta(hours=2)
-    start_str = event_start.strftime("%Y%m%dT%H%M%SZ")
-    end_str = event_end.strftime("%Y%m%dT%H%M%SZ")
+# Autoescape para las plantillas HTML; el texto plano no es HTML. StrictUndefined: una
+# variable que falta es un error, no un hueco silencioso en el correo.
+_templates = Environment(
+    loader=FileSystemLoader(str(TEMPLATES_PATH)),
+    autoescape=lambda name: bool(name) and name.endswith(".html.j2"),
+    undefined=StrictUndefined,
+    keep_trailing_newline=True,
+)
 
-    cal_title = f"✈️ Flight: {destino} [{pnr}]"
-    cal_details = (
-        f"Reservation confirmed autonomously by Saturday Agent (Aegis Zero-Trust).\n"
-        f"Booking Code (PNR): {pnr}\n"
-        f"Provider: {proveedor}\n"
-        f"Passenger: {pasajero}\n"
-        f"Total Charged: ${precio:.2f} {moneda}\n"
-        f"Payment Method: Scoped Virtual Token ({token_id})\n"
-        f"Mandate signature: Ed25519, verified before the purchase.\n\n"
-        f"Online check-in available 24h before departure."
-    )
-    cal_location = f"{destino}"
 
-    gcal_url = (
-        f"https://calendar.google.com/calendar/render?action=TEMPLATE"
-        f"&text={urllib.parse.quote(cal_title)}"
-        f"&dates={start_str}/{end_str}"
-        f"&details={urllib.parse.quote(cal_details)}"
-        f"&location={urllib.parse.quote(cal_location)}"
-    )
+@dataclass(frozen=True)
+class SmtpConfig:
+    user: str
+    password: str
+    host: str
+    port: int
+    timeout_seconds: int
 
-    msg = MIMEMultipart("mixed")
-    msg['Subject'] = f"Reservation Confirmation & Receipt - {pnr} - Aegis Saturday Agent"
-    msg['From'] = f"Saturday Agent <{SMTP_USER}>" if SMTP_USER else "Saturday Agent <aegis@zero-trust.protocol>"
-    msg['To'] = dest
+    @classmethod
+    def from_env(cls) -> "SmtpConfig":
+        return cls(
+            user=os.environ.get("SMTP_USER", ""),
+            password=os.environ.get("SMTP_PASS", ""),
+            host=(os.environ.get("SMTP_HOST") or "").strip() or DEFAULT_SMTP_HOST,
+            port=env_positive_int("SMTP_PORT", DEFAULT_SMTP_PORT),
+            timeout_seconds=env_positive_int("SMTP_TIMEOUT_SECONDS", DEFAULT_SMTP_TIMEOUT_SECONDS),
+        )
 
-    # Formal HTML template — eCommerce / Travel Logistics style
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="utf-8">
-      <style>
-        body {{
-          background-color: #121212;
-          color: #e0e0e0;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          margin: 0;
-          padding: 20px;
-        }}
-        .container {{
-          max-width: 650px;
-          margin: 0 auto;
-          background-color: #1a1a1a;
-          border: 1px solid #333333;
-          border-radius: 8px;
-          padding: 28px;
-          box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-        }}
-        .section-title {{
-          font-size: 1.15rem;
-          font-weight: 700;
-          color: #ffffff;
-          margin-bottom: 4px;
-          letter-spacing: -0.01em;
-        }}
-        .order-number {{
-          font-size: 0.95rem;
-          color: #a0a0a0;
-          margin-bottom: 18px;
-          padding-bottom: 12px;
-          border-bottom: 1px solid #333333;
-        }}
-        .details-grid {{
-          width: 100%;
-          border-collapse: collapse;
-          margin-bottom: 24px;
-        }}
-        .details-grid td {{
-          padding: 7px 0;
-          vertical-align: top;
-          font-size: 0.9rem;
-        }}
-        .details-label {{
-          width: 38%;
-          color: #ffffff;
-          font-weight: 700;
-        }}
-        .details-value {{
-          width: 62%;
-          color: #d0d0d0;
-          line-height: 1.4;
-        }}
-        .divider {{
-          border: 0;
-          height: 1px;
-          background: #333333;
-          margin: 24px 0;
-        }}
-        .invoice-table {{
-          width: 100%;
-          border-collapse: collapse;
-          margin: 18px 0;
-          font-size: 0.82rem;
-          border: 1px solid #333333;
-        }}
-        .invoice-table th {{
-          background-color: #242424;
-          color: #ffffff;
-          padding: 8px 6px;
-          text-align: left;
-          border: 1px solid #333333;
-          font-weight: 600;
-        }}
-        .invoice-table td {{
-          padding: 8px 6px;
-          border: 1px solid #333333;
-          color: #cccccc;
-        }}
-        .text-right {{
-          text-align: right;
-        }}
-        .total-row td {{
-          background-color: #222222;
-          font-weight: bold;
-          color: #ffffff;
-        }}
-        .badge-zero-trust {{
-          display: inline-block;
-          background-color: #1e3a8a;
-          color: #93c5fd;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-size: 0.75rem;
-          font-weight: 700;
-          font-family: monospace;
-        }}
-        .footer {{
-          margin-top: 24px;
-          padding-top: 14px;
-          border-top: 1px solid #2a2a2a;
-          font-size: 0.72rem;
-          color: #777777;
-          line-height: 1.5;
-        }}
-        .pnr-box {{
-          background-color: #202b3c;
-          border: 1px solid #3b82f6;
-          color: #60a5fa;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-family: monospace;
-          font-weight: bold;
-        }}
-        .calendar-btn {{
-          display: inline-block;
-          background-color: #2563eb;
-          color: #ffffff !important;
-          text-decoration: none;
-          padding: 10px 18px;
-          border-radius: 6px;
-          font-size: 0.85rem;
-          font-weight: 700;
-          border: 1px solid #3b82f6;
-          box-shadow: 0 4px 12px rgba(37,99,235,0.3);
-          transition: background-color 0.2s;
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        
-        <!-- SECCIÓN 1: DETALLES DE LA RESERVA DE LOGÍSTICA / VIAJE -->
-        <div class="section-title">Autonomous Purchase Details & Confirmation</div>
-        <div class="order-number">Reservation Code: <strong>{pnr}</strong></div>
+    @property
+    def configured(self) -> bool:
+        return bool(self.user and self.password)
 
-        <table class="details-grid">
-          <tr>
-            <td class="details-label">Route / Description:</td>
-            <td class="details-value"><strong>{destino}</strong><br><small style="color: #38bdf8;">Autonomous AI Purchase via Saturday Agent</small></td>
-          </tr>
-          <tr>
-            <td class="details-label">Cardholder / Passenger:</td>
-            <td class="details-value">{pasajero}</td>
-          </tr>
-          <tr>
-            <td class="details-label">Mandate ID:</td>
-            <td class="details-value"><code>{id_cliente}</code></td>
-          </tr>
-          <tr>
-            <td class="details-label">PNR / Ticket Ref:</td>
-            <td class="details-value"><span class="pnr-box">{pnr}</span></td>
-          </tr>
-          <tr>
-            <td class="details-label">Date & Time:</td>
-            <td class="details-value">{fecha_actual} - {hora_actual}</td>
-          </tr>
-          <tr>
-            <td class="details-label">Merchant & Provider:</td>
-            <td class="details-value">{proveedor} (Direct Check-in Enabled)</td>
-          </tr>
-        </table>
+    @property
+    def sender(self) -> str:
+        return f"Saturday Agent <{self.user}>" if self.user else "Saturday Agent <no-reply@example.com>"
 
-        <!-- BOTÓN GOOGLE CALENDAR -->
-        <div style="text-align: center; margin: 18px 0 22px; padding: 14px; background-color: #1e2638; border-radius: 6px; border: 1px solid #2d3b55;">
-          <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 10px;">
-            🗓️ Sync this itinerary directly with your calendar:
-          </div>
-          <a href="{gcal_url}" target="_blank" class="calendar-btn">
-            📅 Add to Google Calendar
-          </a>
-        </div>
 
-        <hr class="divider">
+def _deliver(config: SmtpConfig, message, recipient: str) -> None:
+    """Envía por SMTP con TLS implícito y timeout. Lanza la excepción del envío."""
+    with smtplib.SMTP_SSL(config.host, config.port, timeout=config.timeout_seconds) as server:
+        server.login(config.user, config.password)
+        server.sendmail(config.user, [recipient], message.as_string())
 
-        <!-- SECCIÓN 2: INVOICE / RECIBO DETALLADO -->
-        <div class="section-title">Official Receipt & Tax Invoice</div>
-        <div style="font-size: 0.85rem; color: #888; margin-bottom: 12px;">
-          Invoice ID: <strong>{orden_id}</strong> &nbsp;|&nbsp; Transaction Date: <strong>{fecha_actual}</strong>
-        </div>
 
-        <table style="width: 100%; font-size: 0.8rem; margin-bottom: 12px; color: #aaa;">
-          <tr>
-            <td style="width: 50%;">
-              <strong style="color: #fff;">Merchant / Issuer:</strong><br>
-              {proveedor}<br>
-              Aegis Protocol Zero-Trust Settlement<br>
-              Merchant ID: <code>mch_vuelaya</code>
-            </td>
-            <td style="width: 50%;">
-              <strong style="color: #fff;">Bill To:</strong><br>
-              {pasajero}<br>
-              Mandate Delegation: <code>{id_cliente}</code><br>
-              Authorized Off-Session Purchase
-            </td>
-          </tr>
-        </table>
-
-        <table class="invoice-table">
-          <thead>
-            <tr>
-              <th style="width: 8%;">Qty</th>
-              <th style="width: 20%;">Item ID</th>
-              <th style="width: 36%;">Description</th>
-              <th style="width: 18%;">Holder</th>
-              <th style="width: 9%;" class="text-right">Unit</th>
-              <th style="width: 9%;" class="text-right">Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>1</td>
-              <td><code>FLT-COR-130</code></td>
-              <td>{destino}</td>
-              <td>{pasajero}</td>
-              <td class="text-right">${precio:.2f}</td>
-              <td class="text-right">${precio:.2f}</td>
-            </tr>
-            <tr>
-              <td>1</td>
-              <td><code>TAX-VAT</code></td>
-              <td>Tax Rate: 0.00% (Mandate Surcharge 0%)</td>
-              <td>Exempt</td>
-              <td class="text-right">$0.00</td>
-              <td class="text-right">$0.00</td>
-            </tr>
-            <tr class="total-row">
-              <td colspan="4" style="text-align: right;">Subtotal:</td>
-              <td colspan="2" class="text-right">${precio:.2f} {moneda}</td>
-            </tr>
-            <tr class="total-row">
-              <td colspan="4" style="text-align: right;">Shipping / Fees:</td>
-              <td colspan="2" class="text-right">$0.00 {moneda}</td>
-            </tr>
-            <tr class="total-row" style="background-color: #1e3a8a; color: #ffffff; font-size: 0.95rem;">
-              <td colspan="4" style="text-align: right;">TOTAL PAID (Off-Session):</td>
-              <td colspan="2" class="text-right"><strong>${precio:.2f} {moneda}</strong></td>
-            </tr>
-          </tbody>
-        </table>
-
-        <!-- SECCIÓN 3: SELLO CRIPTOGRÁFICO ZERO-TRUST -->
-        <div style="background-color: #182230; border: 1px solid #1e3a8a; border-radius: 6px; padding: 12px; margin-top: 16px;">
-          <div style="font-size: 0.78rem; font-weight: bold; color: #60a5fa; margin-bottom: 4px;">
-            🛡️ CRYPTOGRAPHIC SECURITY AUDIT (ZERO-TRUST)
-          </div>
-          <div style="font-size: 0.72rem; color: #94a3b8; line-height: 1.4;">
-            • <strong>Digital Signature:</strong> the mandate's Ed25519 signature was verified before the purchase.<br>
-            • <strong>Audit Ledger:</strong> decision recorded in the SHA-256 hash-chained audit ledger.
-          </div>
-        </div>
-
-        <div class="footer">
-          <strong>Aegis Zero-Trust Autonomous Protocol</strong> &nbsp;|&nbsp; Saturday Agentic Commerce Engine<br>
-          Fiscal receipt and commercial logistics confirmation issued autonomously under active mandate delegation.
-        </div>
-
-      </div>
-    </body>
-    </html>
-    """
-
-    # 1. Attach HTML body
-    msg.attach(MIMEText(html, 'html', 'utf-8'))
-
-    # 2. Attach interactive iCalendar (.ics) invitation for native detection in Gmail
-    ics_content = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Aegis Protocol//Saturday Agent//EN
-CALSCALE:GREGORIAN
-METHOD:REQUEST
-BEGIN:VEVENT
-UID:aegis-{pnr}-{int(now_utc.timestamp())}@zero-trust.protocol
-DTSTAMP:{now_utc.strftime('%Y%m%dT%H%M%SZ')}
-DTSTART:{start_str}
-DTEND:{end_str}
-SUMMARY:✈️ Flight: {destino} [{pnr}]
-DESCRIPTION:Reservation confirmed autonomously by Saturday Agent.\\nPNR: {pnr}\\nTotal: ${precio:.2f} {moneda}\\nZero-Trust Ed25519 Seal.
-LOCATION:{destino}
-STATUS:CONFIRMED
-ORGANIZER;CN=Saturday Agent:mailto:{SMTP_USER or 'saturday.agentbuyer@gmail.com'}
-ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;CN={pasajero}:mailto:{dest}
-END:VEVENT
-END:VCALENDAR"""
-
-    part_ics = MIMEText(ics_content, 'calendar; method=REQUEST; charset="utf-8"', 'utf-8')
-    part_ics.add_header('Content-Disposition', 'attachment; filename="itinerary-saturday.ics"')
-    msg.attach(part_ics)
-
-    current_smtp_user = os.environ.get("SMTP_USER", "")
-    current_smtp_pass = os.environ.get("SMTP_PASS", "")
-
-    if current_smtp_user and current_smtp_pass:
-        try:
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-                server.login(current_smtp_user, current_smtp_pass)
-                server.send_message(msg)
-            print(f"[Gmail SMTP] Official receipt with Google Calendar sent successfully to {dest}")
-            return {"status": 200, "message": "Official receipt sent successfully.", "sent_to": dest}
-        except Exception as e:
-            print(f"SMTP warning sending receipt to {dest}: {e}")
-            return {"status": 500, "message": f"SMTP error: {e}", "sent_to": dest}
-
-    print(f"[Local Mode] Receipt generated for {dest} (PNR: {pnr})")
-    return {"status": 200, "message": "Receipt generated in local mode.", "sent_to": dest}
-
+# ── Códigos OTP ─────────────────────────────────────────────────────────────
 
 # Qué autoriza cada código: el correo lo dice, para que la persona sepa qué está
 # aprobando. Un código de "registrar llave" que no pidió es la señal de que alguien
@@ -416,9 +121,7 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int 
     if proposito not in _OTP_EMAIL_TEXT:
         raise ValueError(f"Propósito de OTP desconocido: {proposito!r}.")
 
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASS", "")
-
+    config = SmtpConfig.from_env()
     subject, intro = _OTP_EMAIL_TEXT[proposito]
     msg = MIMEText(
         intro.format(code=codigo_otp)
@@ -428,14 +131,12 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int 
         "utf-8"
     )
     msg["Subject"] = subject
-    msg["From"] = f"Saturday Agent <{smtp_user}>" if smtp_user else "Saturday Agent <saturday.agentbuyer@gmail.com>"
+    msg["From"] = config.sender
     msg["To"] = dest
 
-    if smtp_user and smtp_pass:
+    if config.configured:
         try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_user, [dest], msg.as_string())
+            _deliver(config, msg, dest)
             print(f"[Gmail SMTP OTP] Verification code sent to {dest}")
             return {"status": 200, "message": f"Verification code sent to {dest}", "sent_via": "smtp"}
         except Exception as err:
@@ -446,99 +147,77 @@ def enviar_token_otp(correo_destino: str, codigo_otp: str, minutos_validez: int 
     return {"status": 200, "message": "SMTP not configured; email not sent.", "sent_via": "memory"}
 
 
-def leer_correos_recibidos(limite: int = 10) -> dict:
-    """
-    Reads the latest incoming emails received at saturday.agentbuyer@gmail.com via IMAP SSL.
-    Returns a list of parsed messages with sender, subject, date, and body preview.
-    """
-    import imaplib
-    import email
-    from email.header import decode_header
+# ── Recibo de una compra autorizada ─────────────────────────────────────────
 
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASS", "")
+@dataclass(frozen=True)
+class PurchaseReceipt:
+    """Datos REALES de una compra aprobada (los que verificó /verify y registró el ledger)."""
+    recipient_email: str          # dueño verificado del mandato
+    mandate_id: str
+    attempt_id: str
+    description: str              # descripción de la oferta (dato no confiable: se escapa)
+    merchant_name: str            # nombre que mostró la oferta (no confiable: se escapa)
+    merchant_id: str              # derivado del dominio de la oferta (core/merchant_identity)
+    amount_cents: int
+    currency: str
+    authorized_at: str            # instante del evento del ledger
+    offer_url: Optional[str] = None
+    ledger_event_id: Optional[str] = None
+    holder_name: Optional[str] = None
 
-    if not (smtp_user and smtp_pass):
-        return {
-            "status": 200,
-            "connected": False,
-            "total_messages": 0,
-            "messages": [],
-            "message": "SMTP/IMAP credentials not configured in environment."
-        }
 
+def _http_url(url: Optional[str]) -> Optional[str]:
+    """Solo enlaces http(s); cualquier otro esquema (javascript:, data:) no se enlaza."""
+    if not isinstance(url, str):
+        return None
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        mail.login(smtp_user, smtp_pass)
-        mail.select("inbox")
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+    return url.strip() if parsed.scheme in ("http", "https") and parsed.hostname else None
 
-        status, response = mail.search(None, "ALL")
-        if status != "OK":
-            mail.logout()
-            return {"status": 500, "message": "Failed to search inbox."}
 
-        email_ids = response[0].split()
-        total_inbox = len(email_ids)
-        recent_ids = email_ids[-limite:] if total_inbox >= limite else email_ids
-        recent_ids.reverse()
+def render_purchase_receipt(receipt: PurchaseReceipt) -> tuple[str, str, str]:
+    """(asunto, texto, html). El asunto es fijo: sin datos personales ni de la compra."""
+    from core.money import format_money
 
-        mensajes_recibidos = []
-        for e_id in recent_ids:
-            res, data = mail.fetch(e_id, "(RFC822)")
-            if res != "OK":
-                continue
+    context = {
+        "holder_name": (receipt.holder_name or "").strip() or None,
+        "description": receipt.description,
+        "amount": format_money(receipt.amount_cents),
+        "currency": receipt.currency,
+        "merchant_name": receipt.merchant_name,
+        "merchant_id": receipt.merchant_id,
+        "offer_url": _http_url(receipt.offer_url),
+        "authorized_at": receipt.authorized_at,
+        "mandate_id": receipt.mandate_id,
+        "attempt_id": receipt.attempt_id,
+        "ledger_event_id": receipt.ledger_event_id,
+    }
+    text = _templates.get_template("purchase_receipt.txt.j2").render(context)
+    html = _templates.get_template("purchase_receipt.html.j2").render(context)
+    return RECEIPT_SUBJECT, text, html
 
-            raw_email = data[0][1]
-            msg = email.message_from_bytes(raw_email)
 
-            subject_raw, encoding = decode_header(msg.get("Subject", ""))[0]
-            if isinstance(subject_raw, bytes):
-                subject = subject_raw.decode(encoding if encoding else "utf-8", errors="ignore")
-            else:
-                subject = str(subject_raw)
+def send_purchase_receipt(receipt: PurchaseReceipt) -> dict:
+    """Envía el recibo al dueño del mandato. Nunca rompe la compra: devuelve el
+    resultado (sent / skipped / failed) para que quien llama lo registre."""
+    dest = (receipt.recipient_email or "").strip().lower()
+    if not dest or "@" not in dest:
+        return {"status": "skipped", "reason": "The mandate has no verified owner email."}
+    subject, text, html = render_purchase_receipt(receipt)
+    config = SmtpConfig.from_env()
+    if not config.configured:
+        return {"status": "skipped", "reason": "SMTP is not configured."}
 
-            from_addr = msg.get("From", "")
-            date_str = msg.get("Date", "")
-
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    content_type = part.get_content_type()
-                    content_disposition = str(part.get("Content-Disposition"))
-                    if content_type == "text/plain" and "attachment" not in content_disposition:
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            body = payload.decode("utf-8", errors="ignore")
-                            break
-            else:
-                payload = msg.get_payload(decode=True)
-                if payload:
-                    body = payload.decode("utf-8", errors="ignore")
-
-            mensajes_recibidos.append({
-                "id": e_id.decode("utf-8") if isinstance(e_id, bytes) else str(e_id),
-                "from": from_addr,
-                "subject": subject,
-                "date": date_str,
-                "snippet": body[:200].strip() if body else "",
-            })
-
-        mail.close()
-        mail.logout()
-
-        return {
-            "status": 200,
-            "connected": True,
-            "account": smtp_user,
-            "total_inbox": total_inbox,
-            "returned_count": len(mensajes_recibidos),
-            "messages": mensajes_recibidos
-        }
-    except Exception as e:
-        print(f"[IMAP Receive ERROR] Failed reading inbox for {smtp_user}: {e}")
-        return {
-            "status": 500,
-            "connected": False,
-            "error": str(e),
-            "messages": []
-        }
+    message = MIMEMultipart("alternative")
+    message["Subject"] = subject
+    message["From"] = config.sender
+    message["To"] = dest
+    message.attach(MIMEText(text, "plain", "utf-8"))
+    message.attach(MIMEText(html, "html", "utf-8"))
+    try:
+        _deliver(config, message, dest)
+    except Exception as error:  # timeout, rechazo del servidor, credenciales…
+        return {"status": "failed", "reason": type(error).__name__}
+    return {"status": "sent"}
