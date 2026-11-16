@@ -11,7 +11,7 @@ from core.merchant import vuelaya_merchant
 from core.verify import get_pending_escalations, resolve_escalation
 from core.dispute import dispute_arbiter
 from audit.log import audit_ledger
-from tests.storage import tamper_document
+from tests.storage import tamper_document, tamper_ledger_row
 
 
 @pytest.fixture(autouse=True)
@@ -19,10 +19,8 @@ def cleanup(monkeypatch):
     # El Semantic Firewall usa su heurística offline sin OPENAI_API_KEY: tests herméticos.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mandate_store.clear()
-    audit_ledger.clear()
     yield
     mandate_store.clear()
-    audit_ledger.clear()
 
 
 def new_mandate(**overrides):
@@ -266,8 +264,8 @@ def test_audit_hash_chain_integrity_and_tamper_detection():
     is_valid, msg = audit_ledger.verify_chain_integrity()
     assert is_valid is True
 
-    # Tamper test
-    audit_ledger._entries[0].details["msg"] = "tampered_data"
+    # Tamper test (6.3: sobre la fila de la base, como quien edita el archivo)
+    tamper_ledger_row(0, lambda details: details.__setitem__("msg", "tampered_data"))
     is_valid_after_tamper, error_msg = audit_ledger.verify_chain_integrity()
     assert is_valid_after_tamper is False
     assert "Tampered entry" in error_msg

@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import get_trail_events, reset_trail
+from audit.log import get_trail_events
 from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.mandate_store import apply_approved_purchase
@@ -22,11 +22,9 @@ def client(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 @pytest.fixture()

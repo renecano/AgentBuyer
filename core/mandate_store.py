@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple, Union
 from sqlalchemy import and_, delete, func, insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from core.db import read_tx, write_tx
+from core.db import read_tx, write_tx, write_tx_or
 from core.db_schema import mandate_creation_nonces as NONCES
 from core.db_schema import mandate_periods as PERIODS
 from core.db_schema import mandate_signers as SIGNERS
@@ -265,9 +265,12 @@ class MandateStore:
         return m.status, m.revocation_reason
 
     def clear(self) -> None:
-        """Borra todos los mandatos (y, en cascada, firmantes y periodos) y los nonces de
-        creación. SOLO tests y la utilidad de reinicio de desarrollo."""
+        """Borra todos los mandatos (y, en cascada, firmantes y periodos), sus decisiones
+        humanas y los nonces de creación. SOLO tests: la app no borra mandatos."""
+        from core.db_schema import escalation_decisions
+
         with write_tx() as connection:
+            connection.execute(delete(escalation_decisions))  # referencian al mandato (FK)
             connection.execute(delete(MANDATES_TABLE))
             connection.execute(delete(NONCES))
 
@@ -487,21 +490,24 @@ def reserve_purchase(mandate_id: str, amount_cents: int, constraints: dict) -> O
         return None
 
 
-def apply_approved_purchase(mandate_id: str, amount_cents: int) -> dict | None:
+def apply_approved_purchase(mandate_id: str, amount_cents: int, *, connection=None) -> dict | None:
     """Consume un uso y suma gasto SIN re-chequear límites: es el efecto de una
     APROBACIÓN HUMANA de una escalación (api/escalations, core/verify.resolve_escalation),
     que autoriza justo lo que el mandato no cubría. Las aprobaciones automáticas usan
     reserve_purchase (5.2), que verifica y consume en la misma operación atómica.
 
     5.1 (P-09): el gasto es un entero de centavos. Un monto que no lo sea (float,
-    negativo, cero, bool) es un error del llamador: se rechaza, no se redondea."""
+    negativo, cero, bool) es un error del llamador: se rechaza, no se redondea.
+
+    Con `connection` corre dentro de la transacción del llamador (6.3, H2: la decisión
+    humana, la compra y su evento del ledger son una sola operación)."""
     from core.money import is_cents
 
     if not is_cents(amount_cents) or amount_cents <= 0:
         raise ValueError(f"apply_approved_purchase exige centavos enteros > 0 (recibido {amount_cents!r}).")
-    with write_tx() as connection:
-        if _load(connection, mandate_id) is None:
+    with write_tx_or(connection) as conn:
+        if _load(conn, mandate_id) is None:
             return None
-        _consume(connection, mandate_id, amount_cents, _period_of(connection, mandate_id))
-        return _load(connection, mandate_id)
+        _consume(conn, mandate_id, amount_cents, _period_of(conn, mandate_id))
+        return _load(conn, mandate_id)
 

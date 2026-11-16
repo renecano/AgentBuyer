@@ -14,7 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store
 from core.key_challenges import registration_message
 from mandate.sign import generate_keypair, sign_payload
@@ -31,11 +30,9 @@ MALLORY = "mallory.attacker@example.com"
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 @pytest.fixture()

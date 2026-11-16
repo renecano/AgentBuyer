@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import api.agent as agent_api
 import api.verify as verify_api
 from api.main import app
-from audit.log import get_trail_events, reset_trail
+from audit.log import get_trail_events
 from core import agent_keys, mandate_store, merchant_search
 from core.agent_keys import AGENT_SIGNATURE_FIELD, sign_attempt
 from core.auth_tokens import create_access_token
@@ -31,14 +31,11 @@ def client(monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: searches.append(prompt) or "[]")
     mandate_store.mandate_store.clear()
     agent_keys.clear()
-    verify_api.attempt_nonces.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         test_client.searches = searches
         yield test_client
     mandate_store.mandate_store.clear()
     agent_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -64,6 +61,8 @@ def bearer(email: str) -> dict:
 def attempt(mandate_id: str, attempt_id: str = "att_1", currency: str = "USD", **extra) -> dict:
     return {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
+        # 6.3: intento reciente, ANTES de firmarlo (la firma del agente cubre created_at).
+        "created_at": verify_api.attempt_timestamp(verify_api._utcnow()),
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000,
                      "currency": currency, "metadata": {"price_cents": 10000}},
         **extra,

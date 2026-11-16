@@ -23,6 +23,11 @@ from core.notifications import enviar_token_otp
 router = APIRouter()
 
 # Instancia del proceso; los tests la sustituyen por una con reloj controlado.
+# EN MEMORIA a propósito (P-10, docs/design/persistence.md §2.2): perder estos datos
+# en un reinicio no concede nada (a lo sumo pide otro código). PUNTO DE ENGANCHE A
+# REDIS: esta línea. Con varios workers, se construye aquí una implementación con la
+# misma interfaz (issue / verify / invalidate / seconds_until_next_issue para el OTP;
+# issue / consume para los challenges) que guarde en Redis con TTL.
 otp_service = EmailOtpService.from_env()
 
 _EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")

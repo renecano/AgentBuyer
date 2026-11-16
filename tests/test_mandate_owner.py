@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.security import Principal, assert_can_access_mandate, owner_email_for
-from audit.log import reset_trail
 from core import mandate_store
 from core.mandate_store import get_mandate_owner
 from core.auth_tokens import create_access_token
@@ -23,11 +22,9 @@ SEED_ID = "mnd_marta_001"
 @pytest.fixture()
 def client(active_seed):
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def react_payload(mandate_id: str, **extra) -> dict:

@@ -9,7 +9,7 @@
 | Paso | Estado |
 |---|---|
 | 6.2 | **Hecho.** `core/db.py`, `core/db_schema.py`, `migrations/` (`0001_mandates_and_keys`). Llaves del titular, mandatos, dueños, firmantes, periodos y nonces de creación son persistentes. H5 corregido. Tests: `tests/test_persistence.py`, más los de concurrencia del 5.2, que ahora exigen que cada intento simultáneo reciba una respuesta |
-| 6.3 | Pendiente: ledger, cabeza y triggers (H4), nonces de intento con `created_at` firmado (H1), `escalation_decisions` (H2), disputas, cuota y llaves públicas del agente |
+| 6.3 | **Hecho.** Migración `0002_ledger_and_runtime_state`: ledger con cabeza y triggers (H4), verificación completa al arrancar (con la cadena rota la API no arranca) y `python -m scripts.verify_ledger`. Nonces de intento durables con `created_at` obligatorio, firmado por el agente y con ventana de 10 min + 2 de margen (H1). `escalation_decisions`, en la misma transacción que la compra y su evento (H2). Disputas y cuota persistentes. `POST /audit/reset` retirado. Punto de enganche a Redis documentado en `api/auth.py` y `api/keys.py`. Tests: `tests/test_ledger_persistence.py`. **Diferido:** las llaves del agente (§2.4) pasan al 9.1, porque requieren un secreto de producción (P-13) |
 
 ## 1. Por qué
 
@@ -74,6 +74,8 @@ Persistir cualquiera de estos sería migrar dos veces código que se va a borrar
 - La base guarda solo `agent_public_keys(agent_id, public_key, valid_from, valid_to)`, para auditar intentos viejos.
 - Sin `AGENT_SIGNING_KEY` fuera de `AUTH_DEV_MODE`, la API no arranca. Es la misma regla que `JWT_SECRET`.
 
+**Estado (6.3): diferido al 9.1.** Exigir un secreto nuevo de producción es parte del despliegue (P-13). Hasta entonces, la llave del agente cambia en cada reinicio. El efecto es acotado: un intento firmado antes del reinicio ya no verifica después, y ese intento tiene como mucho 10 minutos de vida (H1). Ninguna compra se aprueba de más por esto.
+
 ## 3. Hallazgos del mapeo
 
 Son problemas reales que se encontraron al leer el código para este diseño. Se resuelven en el paso indicado, salvo H3, que requiere una decisión.
@@ -118,9 +120,9 @@ Las migraciones son de Alembic. Los montos son `INTEGER` en centavos. Las fechas
 | `audit_ledger` | `idx` INTEGER PK (= `index`), `entry_id` UNIQUE, `prev_hash`, `hash` UNIQUE, `timestamp`, `event_type`, `actor_type`, `actor_id`, `mandate_id`, `attempt_id`, `details` TEXT (JSON canónico, el mismo que se hashea), `signature` | Triggers `BEFORE UPDATE` y `BEFORE DELETE` → `RAISE(ABORT)`. Índices `mandate_id` y `attempt_id` |
 | `ledger_head` | `id` PK `CHECK(id=1)`, `last_idx`, `last_hash` | Se actualiza en la misma transacción que el append (H4) |
 | `escalation_decisions` | `attempt_id` PK, `mandate_id`, `decision`, `decided_by`, `decided_at` | `CHECK(decision IN ('approve','decline'))`. La PK cierra H2 |
-| `disputes` | `dispute_id` PK, `attempt_id`, `mandate_id`, `claimant_email`, `reason`, `status`, `evidence` TEXT, `created_at` | Índices `mandate_id` y `attempt_id` |
-| `agent_run_usage` | `id` PK, `subject`, `used_at` | Índice `(subject, used_at)`. Un refund borra la fila de esa corrida: no es evidencia, es un contador |
-| `agent_public_keys` | `(agent_id, public_key)` PK, `valid_from`, `valid_to` NULL | §2.4 |
+| `disputes` | `dispute_id` PK, `mandate_id`, `attempt_id`, `created_at`, `claim` TEXT | Índice `mandate_id`. *Implementado (6.3):* la disputa resuelta se guarda como el JSON exacto que se devolvió (incluye razón, estado, evidencia y resolución), en vez de desnormalizarla en columnas que nadie consulta por separado |
+| `quota_usage` | `id` PK, `bucket`, `subject`, `used_at` (epoch) | Índice `(bucket, subject, used_at)`. Un refund borra la fila de esa corrida: no es evidencia, es un contador. *Implementado (6.3)* con `bucket`, para que el tope global del 9.1 use la misma tabla |
+| `agent_public_keys` | `(agent_id, public_key)` PK, `valid_from`, `valid_to` NULL | §2.4. **Diferido al 9.1** |
 
 **Lo que se queda fuera de la base:**
 

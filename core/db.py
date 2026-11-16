@@ -145,3 +145,14 @@ def write_tx() -> Iterator[Connection]:
 def read_tx() -> Iterator[Connection]:
     with get_engine().connect() as connection, connection.begin():
         yield connection
+
+
+@contextmanager
+def write_tx_or(connection: Optional[Connection] = None) -> Iterator[Connection]:
+    """Usa la transacción del llamador si la hay; si no, abre una de escritura.
+    Permite que varias escrituras (decisión + compra + evento del ledger) sean UNA."""
+    if connection is not None:
+        yield connection
+    else:
+        with write_tx() as own:
+            yield own

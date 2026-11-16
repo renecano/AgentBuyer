@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.conftest import verify_as_service
 
-from audit.log import get_trail_events, reset_trail
+from audit.log import get_trail_events
 from api.main import app
 from core import mandate_store
 from mandate.sign import generate_keypair, sign_payload
@@ -27,7 +27,8 @@ ENGINE_RULES = {"amount", "category", "merchant", "uses", "condition.price_below
 # la vigencia de su llave (P-01 a), el binding del payment_token y la moneda firmada.
 # 4.2 (P-03): y antes del estado, el nonce único del intento (anti-replay). Este intento
 # no declara firma del agente; si la declarara, "agent_signature" iría tras agent_identity.
-SECURITY_ORDER = ["signature", "signing_key_active", "payment_token_binding", "agent_identity", "nonce_fresh", "status", "currency"]
+# 6.3 (H1): "attempt_fresh" (intento reciente) va antes del nonce: uno viejo no reserva nonce.
+SECURITY_ORDER = ["signature", "signing_key_active", "payment_token_binding", "agent_identity", "attempt_fresh", "nonce_fresh", "status", "currency"]
 SECURITY_RULES = set(SECURITY_ORDER)
 # Y después del engine, el consentimiento a comprar sin la persona presente (D-16).
 CONSENT_RULE = "off_session_consent"
@@ -40,10 +41,8 @@ def client(auth_headers):
     # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
     with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.mandate_store.clear()
-        reset_trail()
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def make_mandate(mandate_id: str = "mnd_test_001", **overrides) -> dict:
@@ -233,7 +232,6 @@ def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
         assert record["mandate"]["constraints"]["max_uses"] == 3
         assert record["mandate"]["expires_at"] == active_seed["expires_at"]
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 # ── Mandato firmado por el titular (payload del wizard desde el 3.4) ────────

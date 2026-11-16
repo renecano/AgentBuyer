@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 import api.auth as auth_api
 import core.notifications as notifications
 from api.main import app
-from audit.log import get_trail_events, reset_trail
+from audit.log import get_trail_events
 from core.auth_config import MIN_SERVICE_KEY_BYTES, ServiceKeyConfigError, service_api_keys
 from core.auth_tokens import ISSUER, create_access_token
 from api.security import Principal, require_service
@@ -73,10 +73,8 @@ def service_probe():
 
 @pytest.fixture()
 def client():
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
-    reset_trail()
 
 
 def call(client, method, path, body=None, headers=None):
@@ -345,7 +343,6 @@ EXPECTED_SECURITY = {
     ("POST", "/agent/run"): "bearer",
     ("GET", "/audit"): "bearer",
     ("POST", "/disputes/file"): "bearer",
-    ("POST", "/audit/reset"): "bearer",  # utilidad de desarrollo: admin + AUTH_DEV_MODE
     # 4.2 (P-03): la verificación es del comercio/agente.
     ("POST", "/verify"): "service_key",
 }

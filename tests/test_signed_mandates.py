@@ -24,7 +24,6 @@ import core.agent_loop as agent_loop
 import core.mandate_store as store_module
 import core.signed_mandates as signed_module
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store, owner_keys
 from core.auth_tokens import create_access_token
 from core.mandate_store import get_mandate_signer
@@ -75,11 +74,9 @@ def clock(monkeypatch) -> Clock:
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 class SignedMandateClient(MandateSigner):

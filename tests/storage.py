@@ -81,3 +81,20 @@ def move_keys_of_owner(owner_email: str, new_owner_email: str) -> None:
     with write_tx() as connection:
         connection.execute(update(owner_keys).where(owner_keys.c.owner_email == owner_email)
                            .values(owner_email=new_owner_email))
+
+
+def tamper_ledger_row(idx: int, change: Callable[[dict], None]) -> None:
+    """Edita los `details` de una fila del ledger como lo haría alguien con acceso de
+    escritura al ARCHIVO: quita el trigger append-only, escribe y lo vuelve a poner.
+    (La app no puede hacerlo: tests/test_ledger_persistence.py.)"""
+    from core.db_schema import audit_ledger
+    with write_tx() as connection:
+        connection.exec_driver_sql("DROP TRIGGER audit_ledger_no_update")
+        raw = connection.execute(select(audit_ledger.c.details).where(audit_ledger.c.idx == idx)).scalar_one()
+        details = json.loads(raw)
+        change(details)
+        connection.execute(update(audit_ledger).where(audit_ledger.c.idx == idx)
+                           .values(details=json.dumps(details, ensure_ascii=False)))
+        connection.exec_driver_sql(
+            "CREATE TRIGGER audit_ledger_no_update BEFORE UPDATE ON audit_ledger "
+            "BEGIN SELECT RAISE(ABORT, 'audit_ledger is append-only'); END")

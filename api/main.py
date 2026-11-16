@@ -37,7 +37,7 @@ from api.security import (
     require_mandate_access,
     require_principal,
 )
-from audit.log import audit_ledger, append_entry, get_trail_for
+from audit.log import LedgerIntegrityError, audit_ledger, append_entry, get_trail_for
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
 from core.agent_keys import get_or_create_agent_keys
@@ -97,6 +97,13 @@ async def lifespan(_app: FastAPI):
     except DatabaseConfigError as error:
         startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
         raise
+    # 6.3: la evidencia se verifica COMPLETA antes de servir. Con la cadena rota la API
+    # no arranca (no hay modo solo lectura: docs/design/persistence.md §6). Para
+    # investigar sin la API: python -m scripts.verify_ledger
+    chain_ok, chain_detail = audit_ledger.verify_chain_integrity()
+    if not chain_ok:
+        startup_logger.critical("AgentBuyer API no puede arrancar: el ledger de auditoría no verifica. %s", chain_detail)
+        raise LedgerIntegrityError(chain_detail)
     load_seed_mandates()
     yield
 
@@ -427,7 +434,7 @@ def api_webhook_travel_provider(payload: dict):
 @app.get("/audit/verify")
 def api_verify_audit_integrity():
     is_valid, msg = audit_ledger.verify_chain_integrity()
-    return {"valid": is_valid, "message": msg, "total_blocks": len(audit_ledger._entries)}
+    return {"valid": is_valid, "message": msg, "total_blocks": audit_ledger.count()}
 
 
 

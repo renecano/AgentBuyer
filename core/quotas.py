@@ -1,22 +1,27 @@
 """Cuotas por usuario (paso 4.1): cada corrida del agente consume búsqueda web real
 (OpenAI), así que un usuario autenticado no puede dispararla sin límite.
 
-Ventana deslizante por sujeto (email normalizado del token), en memoria como el resto
-del estado efímero (OTP, challenges): se pierde al reiniciar. El punto donde se
-conectaría Redis es esta clase (consume/refund son las dos únicas operaciones).
+Ventana deslizante por sujeto (email normalizado del token). Desde el 6.3 se guarda en
+la base (tabla quota_usage): es un control de COSTO (P-16), no un rate limit
+anti-abuso, y en memoria cada despliegue regalaba corridas. La decisión "contar e
+insertar" es una transacción BEGIN IMMEDIATE: dos corridas simultáneas no pasan el tope.
 
 Configuración (P-16: por defecto 20 corridas por usuario cada 24 h):
     AGENT_RUN_QUOTA_PER_USER         corridas permitidas por ventana   (default 20)
     AGENT_RUN_QUOTA_WINDOW_SECONDS   largo de la ventana en segundos   (default 86400)
-El tope GLOBAL diario de gasto llega con el despliegue (9.1, P-16).
+El tope GLOBAL diario de gasto llega con el despliegue (9.1, P-16): esta tabla es la
+contabilidad sobre la que se apoyará.
 """
 from __future__ import annotations
 
 import math
-import threading
 import time
-from typing import Callable, Dict, List
+from typing import Callable
 
+from sqlalchemy import and_, delete, func, insert, select
+
+from core.db import write_tx
+from core.db_schema import quota_usage as USAGE
 from core.email_otp import env_positive_int
 
 DEFAULT_AGENT_RUNS_PER_USER = 20
@@ -32,14 +37,13 @@ class QuotaExceeded(Exception):
 
 
 class PerSubjectQuota:
-    def __init__(self, limit: int, window_seconds: int, clock: Callable[[], float] = time.time):
+    def __init__(self, limit: int, window_seconds: int, clock: Callable[[], float] = time.time, bucket: str = "agent_run"):
         if limit <= 0 or window_seconds <= 0:
             raise ValueError("La cuota y su ventana deben ser positivas.")
         self.limit = limit
         self.window_seconds = window_seconds
+        self.bucket = bucket
         self._clock = clock
-        self._uses: Dict[str, List[float]] = {}
-        self._lock = threading.Lock()
 
     @classmethod
     def agent_runs_from_env(cls) -> "PerSubjectQuota":
@@ -48,25 +52,31 @@ class PerSubjectQuota:
             window_seconds=env_positive_int("AGENT_RUN_QUOTA_WINDOW_SECONDS", DEFAULT_AGENT_RUN_WINDOW_SECONDS),
         )
 
+    def _mine(self, key: str):
+        return and_(USAGE.c.bucket == self.bucket, USAGE.c.subject == key)
+
     def consume(self, subject: str) -> None:
         """Toma un uso de la cuota de `subject` o lanza QuotaExceeded (sin tomarlo)."""
         key = subject.strip().lower()
-        with self._lock:
+        with write_tx() as connection:
             now = self._clock()
-            recent = [used_at for used_at in self._uses.get(key, []) if now - used_at < self.window_seconds]
-            if len(recent) >= self.limit:
-                self._uses[key] = recent
-                raise QuotaExceeded(max(1, math.ceil(self.window_seconds - (now - recent[0]))))
-            recent.append(now)
-            self._uses[key] = recent
+            # Los usos fuera de la ventana ya no cuentan: se olvidan.
+            connection.execute(delete(USAGE).where(and_(self._mine(key), USAGE.c.used_at <= now - self.window_seconds)))
+            used, oldest = connection.execute(
+                select(func.count(), func.min(USAGE.c.used_at)).where(self._mine(key))
+            ).one()
+            if used >= self.limit:
+                raise QuotaExceeded(max(1, math.ceil(self.window_seconds - (now - oldest))))
+            connection.execute(insert(USAGE).values(bucket=self.bucket, subject=key, used_at=now))
 
     def refund(self, subject: str) -> None:
         """Devuelve el último uso (la corrida no llegó a buscar: p. ej. un 422 previo)."""
         key = subject.strip().lower()
-        with self._lock:
-            if self._uses.get(key):
-                self._uses[key].pop()
+        with write_tx() as connection:
+            last = connection.execute(select(func.max(USAGE.c.id)).where(self._mine(key))).scalar_one()
+            if last is not None:
+                connection.execute(delete(USAGE).where(USAGE.c.id == last))
 
     def clear(self) -> None:
-        with self._lock:
-            self._uses.clear()
+        with write_tx() as connection:
+            connection.execute(delete(USAGE).where(USAGE.c.bucket == self.bucket))

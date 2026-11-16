@@ -17,6 +17,7 @@ import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import insert, inspect
 from sqlalchemy.exc import IntegrityError
@@ -78,7 +79,8 @@ def test_migrating_twice_is_a_no_op(tmp_path):
     db.migrate_to_head(engine)
     db.migrate_to_head(engine)
     with engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "0001_mandates_and_keys"
+        head = ScriptDirectory.from_config(db.alembic_config()).get_current_head()
+        assert MigrationContext.configure(connection).get_current_revision() == head
     engine.dispose()
 
 

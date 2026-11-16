@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 import core.llm as llm
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.llm import DEFAULT_MODEL, LLMConfig, LLMError, OpenAIResponsesClient, get_llm, set_llm_client
@@ -202,11 +201,9 @@ def test_heuristic_reads_english_and_spanish_and_says_what_it_found():
 def client(monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 @pytest.fixture()

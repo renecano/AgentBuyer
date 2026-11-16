@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store
 from core.owner_keys import MAX_ACTIVE_KEYS_PER_OWNER, get_active_keys, is_key_active, register_key
 from tests.conftest import TEST_USER_EMAIL, KeyRegistrar
@@ -26,11 +25,9 @@ def clean_registry():
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def post_key(registrar: KeyRegistrar, headers, public_key: str, challenge_id: str, signature: str):

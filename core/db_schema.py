@@ -6,7 +6,7 @@ Montos en centavos (INTEGER). Fechas: texto ISO 8601 UTC, el mismo formato que s
 firma y se encadena (nada se re-serializa distinto). Los documentos firmados se
 guardan como el JSON exacto que se verificó.
 """
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, MetaData, PrimaryKeyConstraint, Table, Text
+from sqlalchemy import CheckConstraint, Column, Float, ForeignKey, Index, Integer, MetaData, PrimaryKeyConstraint, Table, Text
 
 metadata = MetaData()
 
@@ -81,3 +81,79 @@ mandate_creation_nonces = Table(
     PrimaryKeyConstraint("owner_email", "nonce", name="pk_mandate_creation_nonces"),
 )
 Index("ix_mandate_creation_nonces_expires_at", mandate_creation_nonces.c.expires_at)
+
+# ── 6.3: ledger, cabeza, nonces de intento, decisiones, disputas y cuota ──────
+# Los triggers (append-only, cabeza que solo avanza) viven en la migración 0002;
+# compare_metadata no compara triggers: tests/test_ledger_persistence.py los prueba.
+
+audit_ledger = Table(
+    "audit_ledger",
+    metadata,
+    Column("idx", Integer, primary_key=True, autoincrement=False),
+    Column("entry_id", Text, nullable=False, unique=True),
+    Column("prev_hash", Text, nullable=False),
+    Column("hash", Text, nullable=False, unique=True),
+    Column("timestamp", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("actor_type", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("mandate_id", Text, nullable=True),
+    Column("attempt_id", Text, nullable=True),
+    Column("details", Text, nullable=False),  # JSON exacto del que se calculó el hash
+    Column("signature", Text, nullable=True),
+    CheckConstraint("idx >= 0", name="ck_audit_ledger_idx"),
+    CheckConstraint("length(hash) = 64 AND length(prev_hash) = 64", name="ck_audit_ledger_hash_length"),
+)
+Index("ix_audit_ledger_mandate_id", audit_ledger.c.mandate_id)
+Index("ix_audit_ledger_attempt_id", audit_ledger.c.attempt_id)
+
+ledger_head = Table(
+    "ledger_head",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=False),
+    Column("last_idx", Integer, nullable=False),
+    Column("last_hash", Text, nullable=False),
+    CheckConstraint("id = 1", name="ck_ledger_head_single_row"),
+)
+
+attempt_nonces = Table(
+    "attempt_nonces",
+    metadata,
+    Column("nonce", Text, primary_key=True),  # la PK ES el anti-replay de intentos
+    Column("mandate_id", Text, nullable=True),
+    Column("seen_at", Text, nullable=False),
+    Column("expires_at", Text, nullable=False),
+)
+Index("ix_attempt_nonces_expires_at", attempt_nonces.c.expires_at)
+
+escalation_decisions = Table(
+    "escalation_decisions",
+    metadata,
+    Column("attempt_id", Text, primary_key=True),  # una decisión humana por intento (H2)
+    Column("mandate_id", Text, ForeignKey("mandates.mandate_id"), nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("decided_by", Text, nullable=False),
+    Column("decided_at", Text, nullable=False),
+    CheckConstraint("decision IN ('approve', 'decline')", name="ck_escalation_decisions_decision"),
+)
+
+disputes = Table(
+    "disputes",
+    metadata,
+    Column("dispute_id", Text, primary_key=True),
+    Column("mandate_id", Text, nullable=False),
+    Column("attempt_id", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+    Column("claim", Text, nullable=False),  # JSON exacto de la disputa resuelta que se devolvió
+)
+Index("ix_disputes_mandate_id", disputes.c.mandate_id)
+
+quota_usage = Table(
+    "quota_usage",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("bucket", Text, nullable=False),
+    Column("subject", Text, nullable=False),
+    Column("used_at", Float, nullable=False),  # epoch en segundos; es un contador, no evidencia
+)
+Index("ix_quota_usage_bucket_subject_used_at", quota_usage.c.bucket, quota_usage.c.subject, quota_usage.c.used_at)

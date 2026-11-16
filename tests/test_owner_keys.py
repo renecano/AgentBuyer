@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.security import Principal, owner_email_for
-from audit.log import reset_trail
 from core import mandate_store
 from core.auth_tokens import create_access_token
 from core.owner_keys import (
@@ -37,11 +36,9 @@ def clean_registry():
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def pubkey() -> str:

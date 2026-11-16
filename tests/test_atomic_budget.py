@@ -14,10 +14,10 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+import api.verify as verify_api
 import core.mandate_store as store_module
 from api.main import app
 from api.verify import verify_attempt
-from audit.log import reset_trail
 from core import mandate_store
 from core.auth_tokens import create_access_token
 from core.mandate_store import period_usage, seal_seed_mandate
@@ -30,11 +30,9 @@ from tests.storage import live_state
 def client(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -49,6 +47,7 @@ def attempt(mandate_id: str, cents: int = 10000) -> dict:
     return {
         "attempt_id": f"att_{secrets.token_hex(6)}", "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
         "nonce": secrets.token_hex(16),
+        "created_at": verify_api.attempt_timestamp(verify_api._utcnow()),
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": cents,
                      "currency": "USD", "metadata": {"price_cents": cents}},
     }

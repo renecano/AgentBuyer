@@ -19,20 +19,25 @@ disputas muestra a cada uno las suyas; un admin, todas (misma regla que P-04).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import insert, select
 
 from api.security import Principal, assert_can_access_mandate, is_admin, owner_email_for, require_principal
 from audit.log import append_entry, get_trail_events
+from core.db import read_tx, write_tx
+from core.db_schema import disputes as DISPUTES
 from core.mandate_store import get_mandate, mandate_ids_owned_by
 
 router = APIRouter()
 
-_disputes: dict[str, dict] = {}
+# 6.3: las disputas resueltas se guardan en la base (tabla disputes) con el JSON exacto
+# que se devolvió; antes vivían en un dict y se perdían al reiniciar.
 
 
 class FileDisputeBody(BaseModel):
@@ -116,23 +121,29 @@ def file_dispute(body: FileDisputeBody, principal: Principal = Depends(require_p
         "claimant_id": body.claimant_id, "reason": body.reason, "created_at": now,
         "status": "RESOLVED", "audit_evidence": evidence, **resolution,
     }
-    _disputes[dispute_id] = claim
-
-    append_entry({
-        "type": "DISPUTE_RESOLVED", "mandate_id": body.mandate_id, "attempt_id": body.attempt_id,
-        "verdict": None,
-        "summary": (
-            f"Disputa {dispute_id} resuelta: {resolution['liable_party']} responsable"
-            + (" — reembolso emitido al titular." if resolution["refund_issued"] else " — cargo válido, sin reembolso.")
-        ),
-    })
+    # La disputa resuelta y su evento en el ledger: una sola transacción.
+    with write_tx() as connection:
+        connection.execute(insert(DISPUTES).values(
+            dispute_id=dispute_id, mandate_id=body.mandate_id, attempt_id=body.attempt_id,
+            created_at=now, claim=json.dumps(claim, ensure_ascii=False),
+        ))
+        append_entry({
+            "type": "DISPUTE_RESOLVED", "mandate_id": body.mandate_id, "attempt_id": body.attempt_id,
+            "verdict": None,
+            "summary": (
+                f"Disputa {dispute_id} resuelta: {resolution['liable_party']} responsable"
+                + (" — reembolso emitido al titular." if resolution["refund_issued"] else " — cargo válido, sin reembolso.")
+            ),
+        }, connection=connection)
     return claim
 
 
 @router.get("/disputes")
 def list_disputes(principal: Principal = Depends(require_principal)) -> list[dict]:
     """Las disputas de los mandatos del usuario; un admin ve todas."""
+    with read_tx() as connection:
+        rows = connection.execute(select(DISPUTES.c.mandate_id, DISPUTES.c.claim).order_by(DISPUTES.c.created_at)).all()
     if is_admin(principal):
-        return list(_disputes.values())
+        return [json.loads(row.claim) for row in rows]
     owned = mandate_ids_owned_by(owner_email_for(principal))
-    return [claim for claim in _disputes.values() if claim["mandate_id"] in owned]
+    return [json.loads(row.claim) for row in rows if row.mandate_id in owned]
