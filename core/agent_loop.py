@@ -329,13 +329,17 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
     selected_flight = min(eligible, key=lambda flight: flight["price_cents"])
     attempt_id = f"att_agent_{uuid.uuid4().hex[:12]}"
     agent_id = mandate.get("agent", {}).get("id", "agent_marta")
-    
+    import api.verify as verify_api  # reloj y formato de /verify (los tests sustituyen el reloj)
+
     attempt = {
         "attempt_id": attempt_id,
         "mandate_id": mandate_id,
         "presented_by_agent": agent_id,
         # 4.2: nonce único (anti-replay) y firma del agente sobre el intento.
         "nonce": secrets.token_hex(16),
+        # 6.3 (H1): cuándo se creó, cubierto por la firma del agente; /verify rechaza
+        # intentos viejos, así que un intento capturado deja de servir.
+        "created_at": verify_api.attempt_timestamp(verify_api._utcnow()),
         "purchase": {
             "merchant_id": selected_flight["merchant_id"],
             "category": selected_flight["category"],

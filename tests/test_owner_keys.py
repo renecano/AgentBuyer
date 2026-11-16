@@ -10,8 +10,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.security import Principal, owner_email_for
-from audit.log import reset_trail
-from core import mandate_store, owner_keys
+from core import mandate_store
 from core.auth_tokens import create_access_token
 from core.owner_keys import (
     MAX_ACTIVE_KEYS_PER_OWNER,
@@ -24,25 +23,22 @@ from core.owner_keys import (
 )
 from mandate.sign import generate_keypair, sign_payload
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_USER_EMAIL
+from tests.storage import key_records
 
 OTHER_EMAIL = "someone.else@example.com"
 
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    owner_keys.clear()
     yield
-    owner_keys.clear()
 
 
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def pubkey() -> str:
@@ -62,7 +58,7 @@ def test_register_key_without_token_is_401(client):
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
-    assert owner_keys.OWNER_KEYS == {}
+    assert key_records() == []
 
 
 def test_register_key_with_token_records_it_under_the_token_email(key_registrar):
@@ -121,7 +117,7 @@ def test_service_key_cannot_register_keys(client, service_headers):
     body = {"public_key": pubkey(), "challenge_id": "chl_x", "signature": "00" * 64}
     response = client.post("/keys", json=body, headers=service_headers)
     assert response.status_code == 401
-    assert owner_keys.OWNER_KEYS == {}
+    assert key_records() == []
 
 
 def test_same_key_twice_for_the_same_owner_is_idempotent(key_registrar):
@@ -150,7 +146,7 @@ def test_token_email_is_normalized_like_mandate_owners(key_registrar):
     response, _, key = key_registrar.register(messy)
     assert response.status_code == 201
 
-    assert "mixed.case@example.com" in owner_keys.OWNER_KEYS
+    assert key_records("mixed.case@example.com")
     assert normalize_owner_email(messy) == owner_email_for(Principal(subject=messy, role="user"))
     assert is_key_active(messy, key)
 
@@ -198,7 +194,7 @@ def test_revoke_sets_revoked_at_and_excludes_the_key():
 
     assert revoke_key(TEST_USER_EMAIL, revoked_id) is True
 
-    record = next(r for r in owner_keys.OWNER_KEYS[TEST_USER_EMAIL] if r["key_id"] == revoked_id)
+    record = next(r for r in key_records(TEST_USER_EMAIL) if r["key_id"] == revoked_id)
     assert record["revoked_at"] is not None  # el registro se conserva, marcado
     assert get_active_keys(TEST_USER_EMAIL) == [kept]
     assert is_key_active(TEST_USER_EMAIL, revoked) is False
@@ -244,7 +240,7 @@ def test_active_keys_per_owner_are_capped():
         register_key(TEST_USER_EMAIL, pubkey())
 
     # Revocar libera cupo.
-    revoke_key(TEST_USER_EMAIL, owner_keys.OWNER_KEYS[TEST_USER_EMAIL][0]["key_id"])
+    revoke_key(TEST_USER_EMAIL, key_records(TEST_USER_EMAIL)[0]["key_id"])
     register_key(TEST_USER_EMAIL, pubkey())
 
 

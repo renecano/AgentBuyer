@@ -11,13 +11,14 @@ import threading
 from fastapi.testclient import TestClient
 
 from api.main import app
-from core.mandate_store import mandate_store, MANDATES
+from core.mandate_store import mandate_store
+from tests.storage import all_mandate_ids
 
 
 def test_list_mandates_no_deadlock(auth_headers):
     # El context manager dispara el evento de startup que carga el seed
     with TestClient(app) as client:
-        assert MANDATES, "el seed debería cargar al menos un mandato"
+        assert all_mandate_ids(), "el seed debería cargar al menos un mandato"
 
         result: dict = {}
 

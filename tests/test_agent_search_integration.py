@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store, merchant_search
 
 WEB_OFFERS = [
@@ -25,10 +24,8 @@ def client(auth_headers):
     # (POST /mandates), igual que hace React hoy. La auth no se desactiva.
     with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.mandate_store.clear()
-        reset_trail()
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def web_mandate(allowed_merchants: list[str]) -> dict:

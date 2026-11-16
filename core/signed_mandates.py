@@ -31,11 +31,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from core.owner_keys import find_key, normalize_owner_email
 from core.money import MoneyError, cents_to_text
@@ -89,35 +88,8 @@ def _key_forbidden() -> SignedMandateError:
 
 
 # ── Anti-replay de creación ─────────────────────────────────────────────────
-
-class _NonceRegistry:
-    """Nonces de creación usados, por dueño. Acotado: un nonce cuyo created_at ya
-    salió de la ventana se olvida, porque ese mandato se rechazaría por viejo."""
-
-    def __init__(self) -> None:
-        self._seen: Dict[Tuple[str, str], datetime] = {}
-        self._lock = threading.Lock()
-
-    def claim(self, owner: str, nonce: str, created_at: datetime, now: datetime) -> bool:
-        with self._lock:
-            horizon = now - MAX_AGE - MAX_CLOCK_SKEW
-            for key in [key for key, seen_at in self._seen.items() if seen_at < horizon]:
-                del self._seen[key]
-            if (owner, nonce) in self._seen:
-                return False
-            self._seen[(owner, nonce)] = created_at
-            return True
-
-    def release(self, owner: str, nonce: str) -> None:
-        with self._lock:
-            self._seen.pop((owner, nonce), None)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._seen.clear()
-
-
-used_nonces = _NonceRegistry()
+# Persistente desde el 6.2: tabla mandate_creation_nonces, decidida en la misma
+# transacción que el alta (core/mandate_store.create_human_signed_mandate).
 
 
 # ── Utilidades ──────────────────────────────────────────────────────────────

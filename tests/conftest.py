@@ -383,13 +383,9 @@ class SignedMandatePoster:
 @pytest.fixture()
 def signed_poster(client, key_registrar):
     """Crea mandatos firmados por el titular (flujo real) desde dicts con forma de React.
-    Limpia el registro de llaves antes y después: sin eso, las llaves de un test se
-    sumarían al tope de 10 por cuenta del siguiente."""
-    from core import owner_keys
-
-    owner_keys.clear()
+    Cada test corre sobre su propia base (conftest.py de la raíz, 6.2): las llaves de un
+    test no se suman al tope de 10 por cuenta del siguiente."""
     yield SignedMandatePoster(client, key_registrar)
-    owner_keys.clear()
 
 
 # ── /verify es la verificación del comercio/agente (4.2, P-03) ───────────────
@@ -402,10 +398,15 @@ def service_key(monkeypatch):
 
 
 def verify_as_service(client, attempt: dict, nonce: str | None = None):
-    """POST /verify COMO SERVICIO (X-Service-Key), con un nonce único por intento si el
-    test no fija uno: así verifica el comercio o el agente desde el 4.2."""
+    """POST /verify COMO SERVICIO (X-Service-Key), con un nonce único por intento y un
+    created_at de ahora si el test no los fija: así verifica el comercio o el agente
+    desde el 4.2 (nonce) y el 6.3 (created_at)."""
     import secrets
+
+    import api.verify as verify_api
 
     body = dict(attempt)
     body.setdefault("nonce", nonce or secrets.token_hex(16))
+    # 6.3 (H1): /verify exige un intento reciente. Mismo reloj que /verify.
+    body.setdefault("created_at", verify_api.attempt_timestamp(verify_api._utcnow()))
     return client.post("/verify", json=body, headers={"X-Service-Key": TEST_SERVICE_KEY})

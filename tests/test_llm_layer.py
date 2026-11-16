@@ -12,15 +12,14 @@ from fastapi.testclient import TestClient
 
 import core.llm as llm
 from api.main import app
-from audit.log import reset_trail
-from core import mandate_store, merchant_search, owner_keys
+from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.llm import DEFAULT_MODEL, LLMConfig, LLMError, OpenAIResponsesClient, get_llm, set_llm_client
-from core.mandate_store import MANDATES
 from core.merchant_identity import merchant_id_from_url
 from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.llm_judge import verificar_semantica_con_llm
 from tests.conftest import TEST_USER_EMAIL, verify_as_service
+from tests.storage import live_state
 
 SECRET = "sk-test-NOT-A-REAL-KEY-0123456789"
 
@@ -75,6 +74,16 @@ def test_config_defaults_to_the_verified_model_and_is_overridable(monkeypatch):
         LLMConfig.from_env()
 
 
+def test_every_request_has_an_output_token_budget(monkeypatch):
+    """P-15: presupuesto por request. Configurable; mal formado → error, no se adivina."""
+    assert LLMConfig.from_env().max_output_tokens == 2000
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "300")
+    assert LLMConfig.from_env().max_output_tokens == 300
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "0")
+    with pytest.raises(ValueError):
+        LLMConfig.from_env()
+
+
 def sdk_client(monkeypatch, behaviour):
     client = OpenAIResponsesClient(SECRET, LLMConfig("gpt-6-luna", 5, 0))
     calls = []
@@ -112,11 +121,25 @@ def test_malformed_structured_answer_is_an_error(monkeypatch, output_text):
     assert raised.value.kind == "malformed"
 
 
+@pytest.mark.parametrize("operation", ["structured", "web_search"])
+def test_an_answer_cut_by_the_token_budget_is_not_used(monkeypatch, operation):
+    """Una respuesta incompleta (p. ej. choca con max_output_tokens) puede ser JSON válido
+    a medias o texto truncado: no se usa."""
+    client, _ = sdk_client(monkeypatch, lambda: type("R", (), {"status": "incomplete", "output_text": '{"verdict": "APPROVE"}'})())
+    with pytest.raises(LLMError) as raised:
+        if operation == "structured":
+            client.structured(system="s", user="u", schema_name="x", schema={"type": "object"})
+        else:
+            client.web_search("find flights")
+    assert raised.value.kind == "malformed"
+
+
 def test_structured_and_web_search_requests_have_the_right_shape(monkeypatch):
     client, calls = sdk_client(monkeypatch, lambda: type("R", (), {"output_text": '{"ok": true}'})())
     assert client.structured(system="sys", user="usr", schema_name="audit", schema={"type": "object"}) == {"ok": True}
     client.web_search("find flights")
     structured, search = calls
+    assert structured["max_output_tokens"] == search["max_output_tokens"] == 2000
     assert structured["model"] == "gpt-6-luna" and structured["text"]["format"]["type"] == "json_schema"
     assert structured["text"]["format"]["strict"] is True
     assert search["tools"] == [{"type": "web_search"}] and search["tool_choice"] == "required"
@@ -178,13 +201,9 @@ def test_heuristic_reads_english_and_spanish_and_says_what_it_found():
 def client(monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -217,7 +236,7 @@ def test_firewall_escalate_escalates_on_the_react_line(client, mine):
     set_llm_client(FakeLLM(answer={"verdict": "ESCALATE", "risks": ["odd"], "summary": "A person should check this."}))
     result = verify_as_service(client, attempt(mine, 12000)).json()
     assert result["verdict"] == "ESCALATE"
-    assert MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
 
 
 def test_firewall_failure_does_not_approve_on_the_react_line(client, mine):

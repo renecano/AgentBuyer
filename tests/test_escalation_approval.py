@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import verify_as_service
 
 from api.main import app
-from audit.log import get_trail_events, reset_trail
+from audit.log import get_trail_events
 from core import mandate_store
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -19,10 +19,8 @@ def client(auth_headers):
     # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
     with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.mandate_store.clear()
-        reset_trail()
         yield test_client
     mandate_store.mandate_store.clear()
-    reset_trail()
 
 
 def make_mandate() -> dict:

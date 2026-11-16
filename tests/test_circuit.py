@@ -5,12 +5,13 @@ from shared.schemas import MandateStatus, VerificationStatus
 from mandate.sign import generate_keypair
 from mandate.issue import create_mandate
 from core import verify as core_verify
-from core.mandate_store import MANDATES, get_mandate, mandate_store
+from core.mandate_store import get_mandate, mandate_store
 from core.agent_loop import PurchasingAgent
 from core.merchant import vuelaya_merchant
 from core.verify import get_pending_escalations, resolve_escalation
 from core.dispute import dispute_arbiter
 from audit.log import audit_ledger
+from tests.storage import tamper_document, tamper_ledger_row
 
 
 @pytest.fixture(autouse=True)
@@ -18,10 +19,8 @@ def cleanup(monkeypatch):
     # El Semantic Firewall usa su heurística offline sin OPENAI_API_KEY: tests herméticos.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mandate_store.clear()
-    audit_ledger.clear()
     yield
     mandate_store.clear()
-    audit_ledger.clear()
 
 
 def new_mandate(**overrides):
@@ -265,8 +264,8 @@ def test_audit_hash_chain_integrity_and_tamper_detection():
     is_valid, msg = audit_ledger.verify_chain_integrity()
     assert is_valid is True
 
-    # Tamper test
-    audit_ledger._entries[0].details["msg"] = "tampered_data"
+    # Tamper test (6.3: sobre la fila de la base, como quien edita el archivo)
+    tamper_ledger_row(0, lambda details: details.__setitem__("msg", "tampered_data"))
     is_valid_after_tamper, error_msg = audit_ledger.verify_chain_integrity()
     assert is_valid_after_tamper is False
     assert "Tampered entry" in error_msg
@@ -303,7 +302,7 @@ def test_expired_mandate_is_rejected():
 def test_unreadable_expires_at_fails_closed():
     """El store ignora una fecha ilegible y deja el mandato ACTIVE; la verificación no."""
     mandate, agent = new_mandate()
-    MANDATES[mandate.mandate_id]["mandate"]["expires_at"] = "not-a-date"
+    tamper_document(mandate.mandate_id, lambda document: document.__setitem__("expires_at", "not-a-date"))
 
     attempt, result = agent.attempt_purchase(mandate, vuelaya_merchant.get_item("FLIGHT_COR_130"))
 

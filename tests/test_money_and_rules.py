@@ -7,11 +7,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import get_trail_events, reset_trail
-from core import mandate_store, merchant_search, owner_keys
+from audit.log import get_trail_events
+from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
-from core.mandate_store import MANDATES, apply_approved_purchase
+from core.mandate_store import apply_approved_purchase
 from tests.conftest import TEST_USER_EMAIL, verify_as_service
+from tests.storage import live_state, stored_document
 
 pytestmark = pytest.mark.usefixtures("service_key")
 
@@ -21,13 +22,9 @@ def client(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -64,7 +61,7 @@ def offers(*prices) -> str:
 # ── Dinero exacto ───────────────────────────────────────────────────────────
 
 def test_signed_mandate_is_stored_in_cents(client, mine):
-    constraints = MANDATES[mine]["mandate"]["constraints"]
+    constraints = stored_document(mine)["constraints"]
     assert constraints["max_amount_per_purchase_cents"] == 15000
     assert constraints["conditions"] == [{"type": "price_below", "value_cents": 14000}]
     assert "max_amount_per_purchase" not in constraints
@@ -74,26 +71,26 @@ def test_spend_accumulates_exactly_in_cents(client, mine):
     """10 + 20 céntimos son exactamente 30 (con float: 0.1 + 0.2 = 0.30000000000000004)."""
     for index, cents in enumerate((10, 20)):
         assert verify_as_service(client, attempt(mine, f"att_{index}", cents)).json()["verdict"] == "APPROVE"
-    assert MANDATES[mine]["live_state"]["amount_spent_cents"] == 30
+    assert live_state(mine)["amount_spent_cents"] == 30
 
 
 @pytest.mark.parametrize("amount", [130.0, 13000.5, -100, 0, "13000", True])
 def test_verify_rejects_amounts_that_are_not_positive_integer_cents(client, mine, amount):
     result = verify_as_service(client, attempt(mine, "att_bad", amount)).json()
     assert result["verdict"] == "REJECT"
-    assert MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
 
 
 @pytest.mark.parametrize("amount", [130.0, -1, 0, True, "100"])
 def test_apply_approved_purchase_refuses_anything_but_positive_cents(client, mine, amount):
     with pytest.raises(ValueError):
         apply_approved_purchase(mine, amount)
-    assert MANDATES[mine]["live_state"] == {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None}
+    assert live_state(mine) == {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None}
 
 
 def test_seed_is_loaded_in_cents(client, active_seed):
     with TestClient(app):
-        constraints = MANDATES[active_seed["mandate_id"]]["mandate"]["constraints"]
+        constraints = stored_document(active_seed["mandate_id"])["constraints"]
     assert constraints["max_amount_per_purchase_cents"] == 15000
     assert constraints["monthly_budget_cents"] == 50000
     assert constraints["conditions"] == [{"type": "price_below", "value_cents": 15000}]
@@ -108,7 +105,7 @@ def test_paused_mandate_is_rejected_on_the_react_line(client, mine):
     result = verify_as_service(client, attempt(mine, "att_paused", 10000)).json()
     assert result["verdict"] == "REJECT"
     assert next(check for check in result["checks"] if check["rule"] == "status")["detail"] == "mandato pausado"
-    assert MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
 
     assert client.post(f"/mandates/{mine}/resume", headers=headers()).status_code == 200
     assert verify_as_service(client, attempt(mine, "att_resumed", 10000)).json()["verdict"] == "APPROVE"
@@ -167,4 +164,4 @@ def test_agent_attempts_are_in_cents(client, mine, monkeypatch):
     purchase = run["attempt"]["purchase"]
     assert purchase["amount_cents"] == 12050 and purchase["metadata"]["price_cents"] == 12050
     assert "amount" not in purchase
-    assert MANDATES[mine]["live_state"]["amount_spent_cents"] == 12050
+    assert live_state(mine)["amount_spent_cents"] == 12050

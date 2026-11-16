@@ -11,11 +11,12 @@ from fastapi.testclient import TestClient
 
 import api.agent as agent_api
 from api.main import app
-from audit.log import append_entry, get_trail_events, get_trail_for, reset_trail
-from core import mandate_store, merchant_search, owner_keys
+from audit.log import append_entry, get_trail_events, get_trail_for
+from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.quotas import PerSubjectQuota
 from tests.conftest import FakeClock, TEST_ADMIN_EMAIL, TEST_USER_EMAIL, verify_as_service
+from tests.storage import live_state, stored_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
@@ -27,13 +28,9 @@ OTHER = "otra.persona@example.com"
 def client(monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")  # sin red
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -193,25 +190,17 @@ def test_list_disputes_shows_only_own(client, two_users, admin_headers):
 
 
 # ── POST /audit/reset (P-05) ────────────────────────────────────────────────
+# 6.3 (cambio de contrato): la ruta ya no existe, ni siquiera en desarrollo. El ledger
+# vive en la base y la base impide borrarlo (tests/test_ledger_persistence.py).
 
-def test_audit_reset_is_out_of_the_product(client, two_users, auth_headers, admin_headers, monkeypatch):
+def test_audit_reset_no_longer_exists_even_for_an_admin_in_dev_mode(client, two_users, auth_headers, admin_headers, monkeypatch):
     append_entry({"type": "verification", "mandate_id": "mnd_mine", "summary": "keep me"})
     before = len(get_trail_events())
-
-    assert client.post("/audit/reset").status_code == 401
-    assert client.post("/audit/reset", headers=auth_headers).status_code == 403
-    assert client.post("/audit/reset", headers=admin_headers).status_code == 404  # sin AUTH_DEV_MODE no existe
-    assert len(get_trail_events()) == before  # el ledger sigue intacto
-
     monkeypatch.setenv("AUTH_DEV_MODE", "true")
-    assert client.post("/audit/reset", headers=auth_headers).status_code == 403  # ni en dev un user
-    assert client.post("/audit/reset", headers=admin_headers).status_code == 200
-    assert get_trail_events() == []
-
-
-def test_audit_reset_is_registered_once(client):
-    routes = [route for route in app.routes if getattr(route, "path", None) == "/audit/reset"]
-    assert len(routes) == 1
+    for headers in ({}, auth_headers, admin_headers):
+        assert client.post("/audit/reset", headers=headers).status_code in (404, 405)
+    assert len(get_trail_events()) == before  # el ledger sigue intacto
+    assert not [route for route in app.routes if getattr(route, "path", None) == "/audit/reset"]
 
 
 # ── Escalaciones sobre mandatos que ya no son válidos ───────────────────────
@@ -239,7 +228,7 @@ def test_cannot_approve_escalation_on_expired_mandate(client, two_users, monkeyp
     from datetime import datetime, timedelta, timezone
     headers = bearer(TEST_USER_EMAIL)
     attempt = escalated(client, "mnd_mine")
-    expires = datetime.strptime(mandate_store.MANDATES["mnd_mine"]["mandate"]["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
+    expires = datetime.strptime(stored_document("mnd_mine")["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
     monkeypatch.setattr(mandate_store, "_utcnow", lambda: expires.replace(tzinfo=timezone.utc) + timedelta(seconds=1))
     assert approve(client, "mnd_mine", attempt, headers).status_code == 409
 
@@ -248,13 +237,13 @@ def test_cannot_approve_escalation_when_the_signing_key_was_revoked(client, sign
     signed_poster.create(mandate("mnd_mine"), email=TEST_USER_EMAIL)
     headers = bearer(TEST_USER_EMAIL)
     attempt = escalated(client, "mnd_mine")
-    key_id = mandate_store.MANDATES["mnd_mine"]["mandate"]["key_id"]
+    key_id = stored_document("mnd_mine")["key_id"]
     assert client.delete(f"/keys/{key_id}", headers=headers).status_code == 200
 
     response = approve(client, "mnd_mine", attempt, headers)
     assert response.status_code == 409
     assert "revocada" in response.json()["detail"]
-    assert mandate_store.MANDATES["mnd_mine"]["live_state"]["uses_count"] == 0
+    assert live_state("mnd_mine")["uses_count"] == 0
 
 
 def test_strict_line_escalation_on_revoked_mandate_is_rejected():

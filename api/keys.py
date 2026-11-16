@@ -48,6 +48,11 @@ router = APIRouter()
 # El OTP de step-up es un servicio APARTE del de login (api/auth.otp_service): un
 # código de login no confirma un registro de llave, ni al revés, y cada uno lleva
 # su propio rate limit.
+# EN MEMORIA a propósito (P-10, docs/design/persistence.md §2.2): perder estos datos
+# en un reinicio no concede nada (a lo sumo pide otro código). PUNTO DE ENGANCHE A
+# REDIS: esta línea. Con varios workers, se construye aquí una implementación con la
+# misma interfaz (issue / verify / invalidate / seconds_until_next_issue para el OTP;
+# issue / consume para los challenges) que guarde en Redis con TTL.
 step_up_otp_service = EmailOtpService.from_env()
 challenge_service = KeyChallengeService()
 

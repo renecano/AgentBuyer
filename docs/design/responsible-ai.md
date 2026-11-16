@@ -26,6 +26,7 @@ Todo pasa por un único cliente: `core/llm.py`.
 
 - **Modelo:** configurable con `OPENAI_MODEL`. El default es `gpt-6-luna`, verificado el 16 nov 2026 en la documentación oficial.
 - **Timeout y reintentos:** acotados (`LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`).
+- **Presupuesto por request:** tope de tokens de salida (`LLM_MAX_OUTPUT_TOKENS`, default 2000). Una respuesta cortada por el tope llega incompleta y se descarta: no se usa JSON a medias. Test: `test_an_answer_cut_by_the_token_budget_is_not_used`.
 - **Sin claves en los logs:** se registra el tipo de fallo y el código HTTP; nunca la clave ni el cuerpo del error.
 
 | Falla | Efecto | Test |

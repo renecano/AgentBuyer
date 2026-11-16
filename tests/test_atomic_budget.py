@@ -14,28 +14,25 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+import api.verify as verify_api
 import core.mandate_store as store_module
 from api.main import app
 from api.verify import verify_attempt
-from audit.log import reset_trail
-from core import mandate_store, owner_keys
+from core import mandate_store
 from core.auth_tokens import create_access_token
-from core.mandate_store import MANDATES, period_usage, seal_seed_mandate
+from core.mandate_store import period_usage, seal_seed_mandate
 from engine.evaluator import evaluate
 from tests.conftest import TEST_USER_EMAIL
+from tests.storage import live_state
 
 
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -50,6 +47,7 @@ def attempt(mandate_id: str, cents: int = 10000) -> dict:
     return {
         "attempt_id": f"att_{secrets.token_hex(6)}", "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
         "nonce": secrets.token_hex(16),
+        "created_at": verify_api.attempt_timestamp(verify_api._utcnow()),
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": cents,
                      "currency": "USD", "metadata": {"price_cents": cents}},
     }
@@ -85,6 +83,10 @@ def race(mandate_id: str, n: int, monkeypatch, cents: int = 10000) -> list[str]:
         thread.start()
     for thread in threads:
         thread.join()
+    # 6.2: CADA compra simultánea recibe un veredicto. Un hilo que muere por un error de
+    # la base (p. ej. una transacción que no tomó el lock de escritura al empezar y
+    # choca al escribir) no deja veredicto y antes pasaba desapercibido.
+    assert len(verdicts) == n, f"{n - len(verdicts)} compras simultáneas terminaron en error"
     return verdicts
 
 
@@ -99,8 +101,8 @@ def test_fifty_concurrent_purchases_against_max_uses_3_approve_exactly_3(client,
     verdicts = race("mnd_race", 50, monkeypatch)
 
     assert verdicts.count("APPROVE") == 3
-    assert MANDATES["mnd_race"]["live_state"]["uses_count"] == 3
-    assert MANDATES["mnd_race"]["live_state"]["amount_spent_cents"] == 30000
+    assert live_state("mnd_race")["uses_count"] == 3
+    assert live_state("mnd_race")["amount_spent_cents"] == 30000
     assert set(verdicts) <= {"APPROVE", "ESCALATE"}  # las demás quedan para la persona, ninguna compra de más
 
 
@@ -110,7 +112,7 @@ def test_concurrent_purchases_never_exceed_the_monthly_budget(client, clock, mon
 
     assert verdicts.count("APPROVE") == 2
     assert period_usage("mnd_budget_race")["spent_cents"] == 20000
-    assert MANDATES["mnd_budget_race"]["live_state"]["amount_spent_cents"] == 20000
+    assert live_state("mnd_budget_race")["amount_spent_cents"] == 20000
 
 
 # ── Presupuesto mensual ─────────────────────────────────────────────────────
@@ -122,14 +124,14 @@ def test_monthly_budget_is_applied_and_resets_with_the_calendar_month(client, cl
     second = verify_attempt(attempt(mandate_id, 12000))  # 120 + 120 > 200
     assert second["verdict"] == "ESCALATE"
     assert next(c for c in second["checks"] if c["rule"] == "monthly_budget")["pass"] is False
-    assert MANDATES[mandate_id]["live_state"]["uses_count"] == 1
+    assert live_state(mandate_id)["uses_count"] == 1
 
     clock.now = datetime(2026, 12, 1, 0, 0, 1, tzinfo=timezone.utc)  # cambia el mes (UTC)
     assert verify_attempt(attempt(mandate_id, 12000))["verdict"] == "APPROVE"
     assert period_usage(mandate_id) == {"month": "2026-12", "uses": 1, "spent_cents": 12000}
     # El total de por vida no se reinicia: max_uses es de por vida.
-    assert MANDATES[mandate_id]["live_state"]["uses_count"] == 2
-    assert MANDATES[mandate_id]["live_state"]["amount_spent_cents"] == 24000
+    assert live_state(mandate_id)["uses_count"] == 2
+    assert live_state(mandate_id)["amount_spent_cents"] == 24000
 
 
 def test_month_boundary_is_utc(client, clock):

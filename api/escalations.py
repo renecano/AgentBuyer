@@ -10,9 +10,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import insert
+from sqlalchemy.exc import IntegrityError
 
 from api.security import Principal, require_mandate_access
 from audit.log import append_entry, get_trail_events
+from core.db import write_tx
+from core.db_schema import escalation_decisions as ESCALATION_DECISIONS
 from core.mandate_store import apply_approved_purchase, get_mandate, get_mandate_signer
 from core.money import is_cents
 from core.signed_mandates import KIND_HUMAN, verify_signing_key_active
@@ -104,48 +108,50 @@ def approve_escalation(
         "summary": verification.get("summary", ""),
     }
 
-    if decision == "approve":
-        amount_cents = verification.get("amount_cents")
-        if not is_cents(amount_cents) or amount_cents <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="La escalación no registró un monto verificable; no se puede aprobar.",
+    amount_cents = verification.get("amount_cents")
+    if decision == "approve" and (not is_cents(amount_cents) or amount_cents <= 0):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La escalación no registró un monto verificable; no se puede aprobar.",
+        )
+    verdict = "APPROVE" if decision == "approve" else "REJECT"
+    human_readable = ("Compra aprobada por revisión humana tras la escalación." if decision == "approve"
+                      else "Compra rechazada por revisión humana tras la escalación.")
+    outcome = "APROBADA" if decision == "approve" else "RECHAZADA"
+    decided_at = datetime.now(timezone.utc).isoformat()
+
+    # 6.3 (H2): la decisión, la compra y su evento del ledger son UNA transacción, y la
+    # decisión tiene al intento como clave primaria. Antes "¿ya hay decisión?" y "aplicar
+    # la compra" eran pasos separados: dos aprobaciones simultáneas cobraban dos veces.
+    try:
+        with write_tx() as connection:
+            connection.execute(insert(ESCALATION_DECISIONS).values(
+                attempt_id=attempt_id, mandate_id=mandate_id, decision=decision,
+                decided_by=principal.subject, decided_at=decided_at,
+            ))
+            if decision == "approve":
+                # Exactamente el mismo efecto que un APPROVE del flujo normal.
+                apply_approved_purchase(mandate_id, amount_cents, connection=connection)
+            append_entry(
+                {
+                    "type": "human_override_approved" if decision == "approve" else "human_override_declined",
+                    "mandate_id": mandate_id,
+                    "attempt_id": attempt_id,
+                    "verdict": verdict,
+                    "escalation_reason": escalation_reason,
+                    "summary": (
+                        "Escalada por "
+                        + (", ".join(escalation_reason["failed_rules"]) or "reglas no registradas")
+                        + f" — revisada y {outcome} por una persona."
+                    ),
+                },
+                connection=connection,
             )
-        # Exactamente el mismo efecto que un APPROVE del flujo normal.
-        apply_approved_purchase(mandate_id, amount_cents)
-        verdict = "APPROVE"
-        human_readable = "Compra aprobada por revisión humana tras la escalación."
-        append_entry(
-            {
-                "type": "human_override_approved",
-                "mandate_id": mandate_id,
-                "attempt_id": attempt_id,
-                "verdict": verdict,
-                "escalation_reason": escalation_reason,
-                "summary": (
-                    "Escalada por "
-                    + (", ".join(escalation_reason["failed_rules"]) or "reglas no registradas")
-                    + " — revisada y APROBADA por una persona."
-                ),
-            }
-        )
-    else:
-        verdict = "REJECT"
-        human_readable = "Compra rechazada por revisión humana tras la escalación."
-        append_entry(
-            {
-                "type": "human_override_declined",
-                "mandate_id": mandate_id,
-                "attempt_id": attempt_id,
-                "verdict": verdict,
-                "escalation_reason": escalation_reason,
-                "summary": (
-                    "Escalada por "
-                    + (", ".join(escalation_reason["failed_rules"]) or "reglas no registradas")
-                    + " — revisada y RECHAZADA por una persona."
-                ),
-            }
-        )
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Este intento ya fue revisado por una persona.",
+        ) from None
 
     # Misma forma que la respuesta de /verify para que el front la renderice igual.
     return {
@@ -164,5 +170,5 @@ def approve_escalation(
             {"rule": "status", "pass": True, "detail": "Mandato activo al momento de la revisión."},
         ],
         "human_readable": human_readable,
-        "decided_at": datetime.now(timezone.utc).isoformat(),
+        "decided_at": decided_at,
     }

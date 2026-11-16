@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 import api.main as api_main
 from api.main import app
-from audit.log import reset_trail
 from core.agent_loop import PurchasingAgent
 from core.auth_tokens import create_access_token
 from core.mandate_store import (
@@ -40,10 +39,8 @@ LIVE_STATE_KEYS = {"status", "uses_count", "amount_spent_cents", "revoked_at"}  
 def clean_state(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)  # firewall offline: tests herméticos
     mandate_store.clear()
-    reset_trail()
     yield
     mandate_store.clear()
-    reset_trail()
 
 
 def strict_mandate(**overrides):

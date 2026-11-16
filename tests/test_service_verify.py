@@ -11,12 +11,13 @@ from fastapi.testclient import TestClient
 import api.agent as agent_api
 import api.verify as verify_api
 from api.main import app
-from audit.log import get_trail_events, reset_trail
-from core import agent_keys, mandate_store, merchant_search, owner_keys
+from audit.log import get_trail_events
+from core import agent_keys, mandate_store, merchant_search
 from core.agent_keys import AGENT_SIGNATURE_FIELD, sign_attempt
 from core.auth_tokens import create_access_token
 from core.quotas import PerSubjectQuota
 from tests.conftest import TEST_SERVICE_KEY, TEST_USER_EMAIL, FakeClock, verify_as_service
+from tests.storage import live_state
 
 pytestmark = pytest.mark.usefixtures("service_key")
 
@@ -29,17 +30,12 @@ def client(monkeypatch):
     searches: list = []
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: searches.append(prompt) or "[]")
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     agent_keys.clear()
-    verify_api.attempt_nonces.clear()
-    reset_trail()
     with TestClient(app) as test_client:
         test_client.searches = searches
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     agent_keys.clear()
-    reset_trail()
 
 
 @pytest.fixture()
@@ -65,6 +61,8 @@ def bearer(email: str) -> dict:
 def attempt(mandate_id: str, attempt_id: str = "att_1", currency: str = "USD", **extra) -> dict:
     return {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
+        # 6.3: intento reciente, ANTES de firmarlo (la firma del agente cubre created_at).
+        "created_at": verify_api.attempt_timestamp(verify_api._utcnow()),
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000,
                      "currency": currency, "metadata": {"price_cents": 10000}},
         **extra,
@@ -83,7 +81,7 @@ def test_verify_requires_a_service_credential(client, mine, auth_headers, admin_
     assert client.post("/verify", json=body, headers=auth_headers).status_code == 401  # un JWT no es una key
     assert client.post("/verify", json=body, headers=admin_headers).status_code == 401
     assert client.post("/verify", json=body, headers={"X-Service-Key": "wrong-key-0123456789"}).status_code == 401
-    assert mandate_store.MANDATES[mine]["live_state"]["uses_count"] == 0  # nada se ejecutó
+    assert live_state(mine)["uses_count"] == 0  # nada se ejecutó
 
     response = client.post("/verify", json=body, headers={"X-Service-Key": TEST_SERVICE_KEY})
     assert response.status_code == 200 and response.json()["verdict"] == "APPROVE"
@@ -98,7 +96,7 @@ def test_replayed_nonce_is_rejected(client, mine):
 
     assert replay["verdict"] == "REJECT"
     assert check(replay, "nonce_fresh")["pass"] is False
-    assert mandate_store.MANDATES[mine]["live_state"]["uses_count"] == 1  # el replay no compró
+    assert live_state(mine)["uses_count"] == 1  # el replay no compró
 
 
 @pytest.mark.parametrize("nonce", [None, "", "short", "x" * 129, 12345])
@@ -150,7 +148,7 @@ def test_bad_agent_signature_is_rejected(client, mine, forgery):
     result = verify_as_service(client, body).json()
     assert result["verdict"] == "REJECT"
     assert check(result, "agent_signature")["pass"] is False
-    assert mandate_store.MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
 
 
 def test_agent_runs_sign_their_attempts(client, mine, monkeypatch):
@@ -188,7 +186,7 @@ def test_trap_offer_is_caught_and_never_buys(client, mine):
     assert result["purchase_completed"] is False
     assert "Escenario de demostración" in result["human_readable"]
     assert client.searches == []  # sin búsqueda web
-    assert mandate_store.MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
     types = [event["type"] for event in get_trail_events(mandate_id=mine)]
     assert "scenario_verification" in types and "verification" not in types  # no parece una compra
 
@@ -223,7 +221,7 @@ def test_a_scenario_that_would_approve_still_buys_nothing(client, mine, monkeypa
     result = run(client, mine, "trap_offer").json()
     assert result["verification"]["verdict"] == "APPROVE"
     assert result["purchase_completed"] is False
-    assert mandate_store.MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
     assert "no se realizó ninguna compra" in result["verification"]["human_readable"]
 
 

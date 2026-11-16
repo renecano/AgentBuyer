@@ -9,15 +9,17 @@ del intento debe ser la del mandato.
 """
 
 import functools
-import threading
-import time
-from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete, insert, select
 
 from api.security import Principal, require_service
 from core.agent_keys import AGENT_SIGNATURE_FIELD, verify_attempt_signature
+from core.db import write_tx
+from core.db_schema import attempt_nonces as ATTEMPT_NONCES
 from core.merchant_identity import merchant_id_from_url
 from core.money import is_cents
 
@@ -48,39 +50,58 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── Anti-replay de intentos (4.2) ───────────────────────────────────────────
-
-NONCE_TTL_SECONDS = 24 * 60 * 60
+# ── Anti-replay de intentos (4.2; durable desde el 6.3) ─────────────────────
+# H1 (docs/design/persistence.md): antes el nonce se olvidaba a las 24 h y en cada
+# reinicio, y el intento no llevaba fecha: un intento capturado volvía a servir.
+# Ahora el intento trae `created_at` (lo firma el agente junto con todo el intento),
+# /verify rechaza intentos viejos o del futuro, y el nonce se guarda en la base hasta
+# que el intento ya se rechazaría por viejo. Olvidarlo después es seguro.
+MAX_ATTEMPT_AGE = timedelta(minutes=10)
+ATTEMPT_CLOCK_SKEW = timedelta(minutes=2)
 NONCE_MIN_LENGTH, NONCE_MAX_LENGTH = 16, 128
+ATTEMPT_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
-class AttemptNonceGuard:
-    """Nonces de intento ya vistos. Un nonce sirve UNA vez (aunque el intento se
-    rechace): un intento capturado no se puede volver a presentar. En memoria; los
-    vencidos se purgan (la persistencia durable llega en el 6.3)."""
-
-    def __init__(self, ttl_seconds: int = NONCE_TTL_SECONDS, clock: Callable[[], float] = time.time):
-        self.ttl_seconds = ttl_seconds
-        self._clock = clock
-        self._seen: dict[str, float] = {}
-        self._lock = threading.Lock()
-
-    def claim(self, nonce: str) -> bool:
-        with self._lock:
-            now = self._clock()
-            for stale in [key for key, seen_at in self._seen.items() if now - seen_at >= self.ttl_seconds]:
-                del self._seen[stale]
-            if nonce in self._seen:
-                return False
-            self._seen[nonce] = now
-            return True
-
-    def clear(self) -> None:
-        with self._lock:
-            self._seen.clear()
+def _utcnow() -> datetime:
+    """Reloj de /verify (frescura de intentos). Los tests lo sustituyen."""
+    return datetime.now(timezone.utc)
 
 
-attempt_nonces = AttemptNonceGuard()
+def attempt_timestamp(moment: datetime) -> str:
+    """created_at de un intento: UTC con resolución de segundos y sufijo Z."""
+    return moment.astimezone(timezone.utc).strftime(ATTEMPT_TIMESTAMP_FORMAT)
+
+
+_ATTEMPT_TIMESTAMP_SHAPE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def _parse_attempt_time(value: Any) -> Optional[datetime]:
+    """Solo el formato canónico exacto (strptime solo no basta: acepta "t"/"z" en
+    minúscula). El agente firma ese texto tal cual."""
+    if not isinstance(value, str) or not _ATTEMPT_TIMESTAMP_SHAPE.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, ATTEMPT_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def claim_attempt_nonce(nonce: str, mandate_id: Optional[str], created_at: datetime, now: datetime) -> bool:
+    """Reserva el nonce (True) o detecta un replay (False). Un nonce sirve UNA vez,
+    aunque el intento se rechace después. Purga los vencidos en la misma transacción."""
+    with write_tx() as connection:
+        connection.execute(delete(ATTEMPT_NONCES).where(ATTEMPT_NONCES.c.expires_at < _stamp(now)))
+        if connection.execute(select(ATTEMPT_NONCES.c.nonce).where(ATTEMPT_NONCES.c.nonce == nonce)).first() is not None:
+            return False
+        connection.execute(insert(ATTEMPT_NONCES).values(
+            nonce=nonce, mandate_id=mandate_id, seen_at=_stamp(now),
+            expires_at=_stamp(created_at + MAX_ATTEMPT_AGE + ATTEMPT_CLOCK_SKEW),
+        ))
+        return True
 
 
 def _finish(
@@ -282,10 +303,26 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
             return finish(mandate_id, attempt_id, "REJECT", security_checks,
                           "Compra rechazada: el comercio no coincide con la fuente de la oferta.")
 
-    # 2b''. Anti-replay (4.2): cada intento trae un nonce único; un intento ya
-    # presentado (aprobado o no) no se acepta otra vez.
+    # 2b''. Frescura (6.3, H1): el intento declara cuándo se creó. Uno viejo o "del
+    # futuro" se rechaza ANTES de reservar su nonce.
+    now = _utcnow()
+    created_at = _parse_attempt_time(attempt_purchase.get("created_at"))
+    fresh = created_at is not None and now - MAX_ATTEMPT_AGE <= created_at <= now + ATTEMPT_CLOCK_SKEW
+    security_checks.append({
+        "rule": "attempt_fresh",
+        "pass": fresh,
+        "detail": "Intento reciente." if fresh
+        else "El intento no trae una fecha válida o es demasiado viejo (más de 10 minutos) o del futuro.",
+    })
+    if not fresh:
+        return finish(mandate_id, attempt_id, "REJECT", security_checks,
+                      "Compra rechazada: el intento no es reciente.")
+
+    # 2b'''. Anti-replay (4.2; durable desde el 6.3): cada intento trae un nonce único;
+    # un intento ya presentado (aprobado o no) no se acepta otra vez, ni tras reiniciar.
     nonce = attempt_purchase.get("nonce")
-    nonce_ok = isinstance(nonce, str) and NONCE_MIN_LENGTH <= len(nonce) <= NONCE_MAX_LENGTH and attempt_nonces.claim(nonce)
+    nonce_ok = (isinstance(nonce, str) and NONCE_MIN_LENGTH <= len(nonce) <= NONCE_MAX_LENGTH
+                and claim_attempt_nonce(nonce, mandate_id, created_at, now))
     security_checks.append({
         "rule": "nonce_fresh",
         "pass": nonce_ok,

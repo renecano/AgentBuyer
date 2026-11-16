@@ -18,6 +18,8 @@ cryptography==50.0.1       # firmas Ed25519 (mandate/sign.py)
 PyJWT==2.14.0              # access tokens (core/auth_tokens.py)
 python-dotenv==1.2.3
 openai==3.14.1             # búsqueda real de ofertas (core/merchant_search.py)
+SQLAlchemy==2.1.6          # persistencia (core/db.py, P-10); 2.1.7/2.1.8 tenían < 2 semanas al fijarla
+alembic==1.20.1            # migraciones (migrations/)
 
 # ── Transitivas ──────────────────────────────────────────────────────────────
 annotated-doc==0.0.5
@@ -31,6 +33,8 @@ httptools==0.8.0
 httpx2==2.13.0
 idna==3.20
 jiter==0.17.0
+Mako==1.4.3                # de alembic
+MarkupSafe==3.0.3          # de Mako
 pycparser==3.0
 pydantic_core==2.41.5
 PyYAML==6.0.3

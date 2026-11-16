@@ -17,7 +17,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from audit.log import reset_trail
 from core import mandate_store, merchant_search
 from core.mandate_store import get_mandate_signer
 from tests.conftest import MandateSigner, verify_as_service
@@ -44,8 +43,7 @@ WEB_OFFERS = [
 def _clear_backend_state() -> None:
     # Único punto acoplado a internals del backend: si el refactor cambia dónde
     # vive el estado, solo hay que ajustar esta función, no las aserciones.
-    mandate_store.MANDATES.clear()
-    reset_trail()
+    mandate_store.mandate_store.clear()
 
 
 @pytest.fixture(autouse=True)
