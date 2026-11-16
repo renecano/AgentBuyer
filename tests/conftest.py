@@ -321,3 +321,72 @@ class MandateSigner:
         response = self.post(body)
         assert response.status_code == 201, response.text
         return body
+
+
+class SignedMandatePoster:
+    """Desde el 3.5 todo mandato de usuario va firmado por su titular. Este helper toma
+    el MISMO dict con forma de React que arma cada test ({mandate_id, human, agent,
+    constraints, search_fields?, expires_at?}), lo firma como el navegador con una
+    llave registrada por el flujo real (una por email, registrada la primera vez) y lo
+    postea. La intención del test no cambia; solo cómo nace el mandato.
+
+    Las constraints se firman tal cual (la spec v1 las valida); si faltan `currency` u
+    `off_session_consent` se usan los valores que envía el wizard (USD, True)."""
+
+    def __init__(self, client, registrar: KeyRegistrar, default_email: str = TEST_USER_EMAIL, now=None):
+        self.client = client
+        self.registrar = registrar
+        self.default_email = default_email
+        self.now = now
+        self._signers: dict[str, MandateSigner] = {}
+
+    def signer_for(self, email: str) -> MandateSigner:
+        normalized = email.strip().lower()
+        if normalized not in self._signers:
+            signer = MandateSigner(self.client, self.registrar, normalized, now=self.now)
+            signer.register()
+            self._signers[normalized] = signer
+        return self._signers[normalized]
+
+    def body(self, mandate: dict, email: str | None = None) -> dict:
+        import copy
+
+        signer = self.signer_for(email or self.default_email)
+        constraints = copy.deepcopy(mandate.get("constraints") or {})
+        constraints.setdefault("currency", "USD")
+        constraints.setdefault("off_session_consent", True)
+        changes = {
+            "mandate_id": mandate["mandate_id"],
+            "agent_id": (mandate.get("agent") or {}).get("id", "agt_saturday"),
+            "constraints": constraints,
+            "search_fields": copy.deepcopy(mandate.get("search_fields") or {}),
+        }
+        if "expires_at" in mandate:
+            changes["expires_at"] = mandate["expires_at"]
+        signed = signer.body(**changes)
+        if "human" in mandate:
+            signed["human"] = copy.deepcopy(mandate["human"])
+        if "agent" in mandate:
+            signed["agent"] = {key: value for key, value in mandate["agent"].items() if key in ("id", "display_name")}
+        return signed
+
+    def post(self, mandate: dict, email: str | None = None, headers: dict | None = None):
+        signer = self.signer_for(email or self.default_email)
+        return self.client.post("/mandates", json=self.body(mandate, email), headers=headers or signer.headers)
+
+    def create(self, mandate: dict, email: str | None = None) -> dict:
+        response = self.post(mandate, email)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+
+@pytest.fixture()
+def signed_poster(client, key_registrar):
+    """Crea mandatos firmados por el titular (flujo real) desde dicts con forma de React.
+    Limpia el registro de llaves antes y después: sin eso, las llaves de un test se
+    sumarían al tope de 10 por cuenta del siguiente."""
+    from core import owner_keys
+
+    owner_keys.clear()
+    yield SignedMandatePoster(client, key_registrar)
+    owner_keys.clear()

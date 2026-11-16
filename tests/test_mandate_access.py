@@ -35,7 +35,8 @@ def other_headers(auth_config) -> dict[str, str]:
 
 
 def react_payload(mandate_id: str = MANDATE_ID) -> dict:
-    """Payload que manda MandateCreator.tsx (sin firma ni dueño: los pone el servidor)."""
+    """Forma del mandato de MandateCreator.tsx. Desde el 3.5 se firma como el navegador
+    (signed_poster); el dueño lo pone el servidor desde el token."""
     return {
         "mandate_id": mandate_id,
         "human": {"id": "hum_access", "display_name": "Owner", "email": TEST_USER_EMAIL},
@@ -51,10 +52,9 @@ def react_payload(mandate_id: str = MANDATE_ID) -> dict:
 
 
 @pytest.fixture()
-def owned_mandate(client, auth_headers) -> str:
-    """Mandato creado por el usuario de auth_headers, que queda como su dueño."""
-    response = client.post("/mandates", json=react_payload(), headers=auth_headers)
-    assert response.status_code == 201, response.text
+def owned_mandate(client, signed_poster) -> str:
+    """Mandato firmado y creado por el usuario de auth_headers, que queda como su dueño."""
+    signed_poster.create(react_payload(), email=TEST_USER_EMAIL)
     return MANDATE_ID
 
 
@@ -152,10 +152,10 @@ def test_unknown_mandate_is_404_for_an_authenticated_user(client, auth_headers):
 
 # ── El flujo de React de punta a punta ──────────────────────────────────────
 
-def test_react_flow_create_then_operate_with_the_same_token(client, auth_headers, other_headers):
+def test_react_flow_create_then_operate_with_the_same_token(client, signed_poster, auth_headers, other_headers):
     """Lo que hace el navegador: crear con el token de la sesión y seguir usando
     ESE mismo token para leer, revocar y resetear. Es el flujo central de la UI."""
-    assert client.post("/mandates", json=react_payload(), headers=auth_headers).status_code == 201
+    assert signed_poster.post(react_payload(), email=TEST_USER_EMAIL, headers=auth_headers).status_code == 201
 
     record = client.get(f"/mandates/{MANDATE_ID}", headers=auth_headers)
     assert record.status_code == 200
@@ -175,13 +175,15 @@ def test_react_flow_create_then_operate_with_the_same_token(client, auth_headers
         assert client.request(method, path, headers=other_headers).status_code == 403
 
 
-def test_owner_email_from_the_token_survives_case_and_spacing(client):
+def test_owner_email_from_the_token_survives_case_and_spacing(client, signed_poster):
     """El token trae el email como lo escribió la persona; el dueño se guarda
     normalizado y el chequeo normaliza igual. Si esto se rompiera, React crearía
     un mandato que no podría volver a leer."""
     messy = "  Owner.Person@Example.COM  "
     headers = {"Authorization": f"Bearer {create_access_token(messy)}"}
 
-    assert client.post("/mandates", json=react_payload(), headers=headers).status_code == 201
+    # El titular firma con su email normalizado (el que trae su sesión desde el servidor).
+    body = signed_poster.body(react_payload(), email="owner.person@example.com")
+    assert client.post("/mandates", json=body, headers=headers).status_code == 201
     assert mandate_store.get_mandate_owner(MANDATE_ID) == "owner.person@example.com"
     assert client.get(f"/mandates/{MANDATE_ID}", headers=headers).status_code == 200

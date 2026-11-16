@@ -53,6 +53,8 @@ export class FakeKeyServer {
   devMode = true;
   /** Si no es null, step-up/start responde 429 con este Retry-After. */
   stepUpRetryAfter: number | null = null;
+  /** Mandatos vigentes firmados con cada llave (para la respuesta de DELETE /keys). */
+  readonly mandatesSignedWith = new Map<string, number>();
   /** Interceptor para forzar una respuesta concreta en un endpoint (p. ej. un 422). */
   override: ((method: string, path: string) => Response | null) | null = null;
 
@@ -211,7 +213,8 @@ export class FakeKeyServer {
     if (!key || key.revoked_at !== null) return json(404, { detail: "Key not found." });
     if (key.owner !== this.owner) return json(403, { detail: "This key belongs to another account." });
     key.revoked_at = new Date().toISOString();
-    return json(200, { key_id: keyId, revoked_at: key.revoked_at });
+    // Como el real (3.5): cuántos mandatos vigentes firmados con esa llave quedan sin efecto.
+    return json(200, { key_id: keyId, revoked_at: key.revoked_at, mandates_affected: this.mandatesSignedWith.get(keyId) ?? 0 });
   }
 }
 

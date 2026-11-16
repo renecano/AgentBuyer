@@ -346,7 +346,7 @@ def test_los_nonces_viejos_se_olvidan_pero_su_mandato_seria_rechazado_por_viejo(
     assert signer.post(replay).status_code == 422
 
 
-# ── Sin firma: igual que hoy ────────────────────────────────────────────────
+# ── Sin firma del titular no hay mandato (3.5) ─────────────────────────────
 
 def unsigned_payload(mandate_id: str) -> dict:
     return {
@@ -362,27 +362,34 @@ def unsigned_payload(mandate_id: str) -> dict:
     }
 
 
-def test_sin_firma_se_sella_como_hoy_y_queda_system_seal(client, auth_headers):
-    payload = unsigned_payload("mnd_unsigned")
-    response = client.post("/mandates", json=payload, headers=auth_headers)
-    assert response.status_code == 201
-    stored = response.json()["mandate"]
-    assert set(stored) - set(payload) == {"payment_token", "human_pubkey", "signature"}
-    assert get_mandate_signer("mnd_unsigned")["kind"] == "system_seal"
-
-    result = verify(client, "mnd_unsigned")
-    assert result["verdict"] == "APPROVE"
-    assert "Sello de sistema" in check(result, "signature")["detail"]
-    assert {item["rule"] for item in result["checks"]}.isdisjoint({"payment_token_binding", "currency", "off_session_consent"})
+def test_sin_firma_del_titular_el_mandato_no_se_crea(client, auth_headers):
+    """3.5 (cambio deliberado): el payload de antes del 3.4 ya no se sella: 422."""
+    response = client.post("/mandates", json=unsigned_payload("mnd_unsigned"), headers=auth_headers)
+    assert response.status_code == 422
+    assert "cardholder signature is required" in response.json()["detail"]
+    assert "mnd_unsigned" not in MANDATES and get_mandate_signer("mnd_unsigned") is None
 
 
-def test_firma_propia_del_cliente_queda_legacy_client(client, auth_headers):
+def test_firma_propia_del_cliente_ya_no_crea_el_mandato(client, auth_headers):
+    """3.5: una firma Ed25519 real con una llave propia NO registrada (el antiguo
+    legacy_client) no prueba quién firmó: 422, ni se crea."""
     from mandate.sign import generate_keypair, sign_payload
     priv, pub = generate_keypair()
     payload = unsigned_payload("mnd_legacy")
     payload.update(human_pubkey=pub, signature=sign_payload(priv, payload["constraints"]))
-    assert client.post("/mandates", json=payload, headers=auth_headers).status_code == 201
-    assert get_mandate_signer("mnd_legacy")["kind"] == "legacy_client"
+    assert client.post("/mandates", json=payload, headers=auth_headers).status_code == 422
+    assert "mnd_legacy" not in MANDATES
+
+
+def test_el_seed_es_el_unico_sello_y_su_token_lo_emite_el_servidor(client, active_seed):
+    """El sello de sistema solo existe para el seed cargado al arrancar (D-12), y su
+    payment_token ya no es el del archivo: lo emite el servidor atado a lo sellado."""
+    with TestClient(app):
+        signer = get_mandate_signer(active_seed["mandate_id"])
+        token = MANDATES[active_seed["mandate_id"]]["mandate"]["payment_token"]
+    assert signer["kind"] == "system_seal"
+    assert token["bound_message_hash"] == signer["message_hash"]
+    assert token["token_id"] != active_seed["payment_token"]["token_id"]
 
 
 # ── /verify sobre lo guardado ───────────────────────────────────────────────
@@ -459,13 +466,36 @@ def test_cambiar_lo_guardado_por_otra_version_firmada_da_reject(signer, client):
     assert check(result, "signature")["detail"] == "Firma humana inválida: el mandato cambió después de firmarse."
 
 
-def test_llave_revocada_despues_de_crear_sigue_verificando_hasta_p01(signer, client):
-    """P-01 (pendiente para el 3.5) decide qué pasa con lo firmado por una llave luego
-    revocada. Hasta entonces se exige PERTENENCIA, no que siga activa; este test fija
-    ese comportamiento para que el 3.5 lo cambie a propósito, no por accidente."""
-    body = signer.create()
-    assert signer.client.delete(f"/keys/{signer.key_id}", headers=signer.headers).status_code == 200
-    assert verify(client, body["mandate_id"])["verdict"] == "APPROVE"
+def test_llave_revocada_despues_de_crear_deja_sin_efecto_el_mandato(signer, client):
+    """P-01 (a), 3.5 (inversión deliberada del test del 3.3, que aprobaba): revocar la
+    llave deja sin efecto lo firmado con ella, sin mutar el estado del mandato. DELETE
+    /keys informa cuántos mandatos vigentes quedan sin efecto."""
+    first = signer.create()
+    second = signer.create()
+    assert verify(client, first["mandate_id"])["verdict"] == "APPROVE"
+
+    revoked = signer.client.delete(f"/keys/{signer.key_id}", headers=signer.headers)
+    assert revoked.status_code == 200
+    assert revoked.json()["mandates_affected"] == 2
+
+    result = client.post("/verify", json=attempt(first["mandate_id"], attempt_id="att_2")).json()
+    assert result["verdict"] == "REJECT"
+    assert check(result, "signing_key_active")["pass"] is False
+    assert check(result, "signature")["pass"] is True  # la firma era auténtica: lo que cambió es la llave
+    assert MANDATES[second["mandate_id"]]["live_state"]["status"] == "active"  # sin mutar el estado
+
+
+def test_revocar_cuenta_solo_mandatos_vigentes_de_esa_llave(signer, client, key_registrar, clock):
+    other_device = SignedMandateClient(client, key_registrar, clock, email=signer.email)
+    other_device.register()
+    kept = other_device.create()
+    revoked_first = signer.create()
+    signer.create()
+    assert client.post(f"/mandates/{revoked_first['mandate_id']}/revoke", headers=signer.headers).status_code == 200
+
+    response = signer.client.delete(f"/keys/{signer.key_id}", headers=signer.headers)
+    assert response.json()["mandates_affected"] == 1  # el revocado y el del otro dispositivo no cuentan
+    assert verify(client, kept["mandate_id"])["verdict"] == "APPROVE"
 
 
 def test_expires_at_vencido_da_reject(signer, client, clock):
@@ -590,14 +620,6 @@ def test_agent_run_usa_lo_firmado(signer, client, searches):
     assert searches == [signed_fields, signed_fields]
 
 
-def test_agent_run_en_mandato_sellado_sigue_como_hoy(client, auth_headers, searches):
-    payload = {**unsigned_payload("mnd_unsigned_agent"), "search_fields": {"origin": "MEX", "destination": "COR"}}
-    assert client.post("/mandates", json=payload, headers=auth_headers).status_code == 201
-    other = {"origin": "MEX", "destination": "BOG"}
-    assert client.post("/agent/run", json={"mandate_id": "mnd_unsigned_agent", "search_fields": other}).status_code == 200
-    assert searches == [other]
-
-
 # ── Pendiente del 3.1: Retry-After en el 429 de /keys/challenge ─────────────
 
 def test_challenge_bloqueado_manda_retry_after(client, key_registrar):
@@ -624,3 +646,45 @@ def test_retry_after_del_challenge_se_expone_por_cors(client, key_registrar, mon
         locked = client.post("/keys/challenge", json={"code": "000000"}, headers=headers)
     assert locked.status_code == 429
     assert "retry-after" in locked.headers.get("access-control-expose-headers", "").lower()
+
+
+# ── 3.5: huecos que señaló la prueba de mutación ────────────────────────────
+
+def test_linea_estricta_rechaza_mandato_con_llave_revocada(signer):
+    """P-01 (a) también en core/verify: revocar la llave deja sin efecto el mandato."""
+    body = signer.create()
+    assert signer.client.delete(f"/keys/{signer.key_id}", headers=signer.headers).status_code == 200
+
+    result = strict_verify_purchase(strict_attempt(body["mandate_id"]))
+    assert result.authorized is False
+    assert next(item for item in result.checks if item["rule"] == "signing_key_active")["pass"] is False
+    # Corta AHÍ, por la revocación: no sigue evaluando (ni token, ni moneda, ni agente).
+    assert "revocada" in result.reason
+    assert [item["rule"] for item in result.checks][-1] == "signing_key_active"
+
+
+def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verifique(client):
+    """Un mandato que llegue al registro sin firmante (ni titular ni sello del seed) se
+    rechaza: aunque traiga una firma Ed25519 legada que SÍ verificaría con su propia
+    llave (el antiguo legacy_client), esa firma no prueba quién la hizo."""
+    from mandate.sign import generate_keypair, sign_payload
+    priv, pub = generate_keypair()
+    constraints = {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
+                   "allowed_merchants": ["mch_vuelaya"], "max_uses": 3}
+    MANDATES["mnd_no_signer"] = {
+        "mandate": {"mandate_id": "mnd_no_signer", "agent": {"id": "agt_saturday"}, "constraints": constraints,
+                    "human_pubkey": pub, "signature": sign_payload(priv, constraints)},
+        "live_state": {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None},
+    }
+    result = verify(client, "mnd_no_signer")
+    assert result["verdict"] == "REJECT"
+    assert check(result, "signature") == {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
+
+
+def test_el_seed_no_puede_traer_firma_propia(client):
+    from core.mandate_store import seal_seed_mandate
+    seed = {"mandate_id": "mnd_seed_signed", "constraints": {"max_amount_per_purchase": 150},
+            "human_pubkey": "ab" * 32, "signature": "cd" * 64}
+    with pytest.raises(ValueError, match="no puede traer firma"):
+        seal_seed_mandate(seed)
+    assert "mnd_seed_signed" not in MANDATES

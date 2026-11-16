@@ -206,9 +206,14 @@ export default function DeviceKeyCard({ email, onStatusChange, refreshSignal = 0
     setBusy({ revoking: keyId });
     setError(null);
     try {
-      await revokeServerKey(keyId);
+      const affected = await revokeServerKey(keyId);
       const keys = await listServerKeys();
-      if (alive.current) setView({ name: "limit", keys });
+      if (!alive.current) return;
+      setView({ name: "limit", keys });
+      // Lo firmado con esa llave deja de autorizar compras: se dice en el momento.
+      setNotice(affected === 0
+        ? "Device revoked. No active permissions were signed with it."
+        : `Device revoked. ${affected} active permission${affected === 1 ? " was" : "s were"} signed with it and no longer work${affected === 1 ? "s" : ""}: sign ${affected === 1 ? "it" : "them"} again from a registered device.`);
     } catch (caught) {
       if (alive.current) setError(messageFor(caught));
     } finally {

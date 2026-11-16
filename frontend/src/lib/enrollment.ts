@@ -277,10 +277,18 @@ export async function requestKeyChallenge(code: string): Promise<KeyChallenge> {
   };
 }
 
-/** DELETE /keys/{key_id}: revoca una llave propia (libera cupo; no vuelve a registrarse). */
-export async function revokeServerKey(keyId: string): Promise<void> {
+/**
+ * DELETE /keys/{key_id}: revoca una llave propia (libera cupo; no vuelve a registrarse).
+ * Devuelve cuántos permisos vigentes firmados con ella quedan sin efecto (P-01 a, 3.5).
+ */
+export async function revokeServerKey(keyId: string): Promise<number> {
   if (!keyId) throw new EnrollmentProtocolError("missing key id");
-  await request<unknown>(`/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+  const body = await request<{ mandates_affected?: unknown }>(`/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+  const affected = body?.mandates_affected;
+  if (typeof affected !== "number" || !Number.isSafeInteger(affected) || affected < 0) {
+    throw new EnrollmentProtocolError("unexpected revocation response from the server");
+  }
+  return affected;
 }
 
 // ── Orquestación ────────────────────────────────────────────────────────────

@@ -24,10 +24,10 @@ def client(auth_headers):
     # El cliente va autenticado como un usuario real: crear mandatos exige token
     # (POST /mandates), igual que hace React hoy. La auth no se desactiva.
     with TestClient(app, headers=auth_headers) as test_client:
-        mandate_store.MANDATES.clear()
+        mandate_store.mandate_store.clear()
         reset_trail()
         yield test_client
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
     reset_trail()
 
 
@@ -43,8 +43,7 @@ def web_mandate(allowed_merchants: list[str]) -> dict:
             "max_uses": 3,
             "conditions": [{"type": "price_below", "value": 150.00}],
         },
-        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
-        # (antes: "firma-de-prueba", que solo pasaba por el fail-open de /verify).
+        # 3.5: lo firma el titular (signed_poster, como el navegador).
     }
 
 
@@ -71,9 +70,11 @@ def test_merchant_search_endpoint_validates_body(client, auth_headers):
     ).status_code == 422
 
 
-def test_agent_run_uses_web_offers_when_search_fields_present(client, monkeypatch):
+def test_agent_run_uses_web_offers_when_search_fields_present(client, signed_poster, monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda p: json.dumps(WEB_OFFERS))
-    client.post("/mandates", json=web_mandate(["mch_despegar", "mch_kayak"]))
+    # 3.5: el mandato firmado lleva sus search_fields; el request puede repetirlos
+    # (iguales) pero no cambiarlos (test_signed_mandates: 422 si difieren).
+    signed_poster.create({**web_mandate(["mch_despegar", "mch_kayak"]), "search_fields": SEARCH_FIELDS})
 
     result = client.post(
         "/agent/run", json={"mandate_id": "mnd_web_001", "search_fields": SEARCH_FIELDS}
@@ -87,13 +88,13 @@ def test_agent_run_uses_web_offers_when_search_fields_present(client, monkeypatc
     assert result["attempt"]["purchase"]["metadata"]["source"] == "web"
 
 
-def test_agent_run_reports_no_offers_when_search_fails(client, monkeypatch):
+def test_agent_run_reports_no_offers_when_search_fails(client, signed_poster, monkeypatch):
     """Sin catálogo demo de respaldo: si la búsqueda falla, NO se inventa nada."""
     def broken(prompt):
         raise RuntimeError("sin red")
 
     monkeypatch.setattr(merchant_search, "_call_web_search", broken)
-    client.post("/mandates", json=web_mandate(["mch_vuelaya"]))
+    signed_poster.create({**web_mandate(["mch_vuelaya"]), "search_fields": SEARCH_FIELDS})
 
     result = client.post(
         "/agent/run", json={"mandate_id": "mnd_web_001", "search_fields": SEARCH_FIELDS}
@@ -105,10 +106,10 @@ def test_agent_run_reports_no_offers_when_search_fails(client, monkeypatch):
     assert result["purchase_completed"] is False
 
 
-def test_agent_run_without_search_fields_reports_no_offers(client):
+def test_agent_run_without_search_fields_reports_no_offers(client, signed_poster):
     """Sin campos de búsqueda (ni en el request ni en el mandato) no hay red
     que consultar → no hay vuelos ni intento, nunca datos falsos."""
-    client.post("/mandates", json=web_mandate(["mch_vuelaya"]))
+    signed_poster.create(web_mandate(["mch_vuelaya"]))
     result = client.post("/agent/run", json={"mandate_id": "mnd_web_001"}).json()
     assert result["no_offers"] is True
     assert result["selected_flight"] is None
@@ -132,14 +133,14 @@ def hotel_mandate() -> dict:
     return mandate
 
 
-def test_agent_run_buys_hotels_with_stored_fields(client, monkeypatch):
+def test_agent_run_buys_hotels_with_stored_fields(client, signed_poster, monkeypatch):
     """Mandato de hoteles: descubre con la categoría correcta y compra la más barata."""
     prompts = []
     def fake_search(prompt):
         prompts.append(prompt)
         return json.dumps(HOTEL_OFFERS)
     monkeypatch.setattr(merchant_search, "_call_web_search", fake_search)
-    client.post("/mandates", json=hotel_mandate())
+    signed_poster.create(hotel_mandate())
 
     result = client.post("/agent/run", json={"mandate_id": "mnd_web_001"}).json()
 
@@ -152,12 +153,12 @@ def test_agent_run_buys_hotels_with_stored_fields(client, monkeypatch):
     assert "3 nights" in result["selected_flight"]["route"]
 
 
-def test_agent_run_uses_mandate_stored_search_fields(client, monkeypatch):
+def test_agent_run_uses_mandate_stored_search_fields(client, signed_poster, monkeypatch):
     """Si el request no trae search_fields, se usan los guardados en el mandato."""
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda p: json.dumps(WEB_OFFERS))
     mandate = web_mandate(["mch_despegar", "mch_kayak"])
     mandate["search_fields"] = SEARCH_FIELDS
-    client.post("/mandates", json=mandate)
+    signed_poster.create(mandate)
 
     result = client.post("/agent/run", json={"mandate_id": "mnd_web_001"}).json()
 

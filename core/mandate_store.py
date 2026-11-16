@@ -21,13 +21,13 @@ MANDATE_OWNERS: Dict[str, Optional[str]] = {}
 
 # Quién firmó cada mandato, por mandate_id (paso 3.3). Aparte, como MANDATE_OWNERS:
 # es un dato interno de verificación que no se filtra a ninguna respuesta.
-#   {"kind": "human" | "system_seal" | "legacy_client",
+#   {"kind": "human" | "system_seal",
 #    "key_id": str | None, "public_key": str | None,
 #    "message_hash": sha256 hex de los bytes firmados | None, "signed_at": ISO 8601}
-# human         = el titular firmó con SU llave registrada (core/signed_mandates).
-# system_seal   = el servidor firmó con una llave suya (no es una firma del titular).
-# legacy_client = el cliente aportó su propia firma con una llave NO registrada
-#                 (camino legado, aditivo; no prueba quién firmó). Lo retira el 3.5.
+# human       = el titular firmó con SU llave registrada (core/signed_mandates). Es el
+#               único camino para los mandatos de usuarios (3.5).
+# system_seal = el servidor selló el mandato SEMILLA al arrancar (no es una firma del
+#               titular). Ningún endpoint lo crea; desaparece con el seed (7.2, P-11).
 MANDATE_SIGNERS: Dict[str, dict] = {}
 
 
@@ -219,53 +219,57 @@ mandate_store = MandateStore()
 
 
 # Funciones funcionales para frontend y routers
-def create_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
-    """Crea el mandato (flujo React/API). `owner_email` lo decide el SERVIDOR
-    (token autenticado o seed); nunca se lee del cuerpo `mandate`."""
-    import uuid
+def seal_seed_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
+    """Sella el mandato SEMILLA al arrancar (api/main.load_seed_mandates): el único
+    mandato que el servidor firma con una llave suya (kind=system_seal, D-12). No lo
+    llama ningún endpoint: los usuarios crean mandatos firmados por ellos (3.5).
+
+    El payment_token lo emite el servidor atado a los bytes sellados (también aquí):
+    uno que venga en el seed se descarta. Una firma que venga en el seed es un error,
+    no un "sello del cliente": ese camino legado ya no existe."""
+    from core.signed_mandates import issue_payment_token
     from mandate.sign import canonical_json, generate_keypair, sign_payload
 
     mandate_id = mandate.get("mandate_id")
     if not mandate_id:
         raise ValueError("El mandate_id es obligatorio")
-    if mandate_id in MANDATES:
-        raise ValueError("El mandate_id ya existe")
+    if "signature" in mandate or "human_signature" in mandate:
+        raise ValueError("El seed no puede traer firma: el servidor lo sella al cargarlo.")
 
     m_copy = deepcopy(mandate)
-    
-    # 🛡️ Garantía DLP: Asignar Scoped Virtual Token si no existe
-    if "payment_token" not in m_copy:
-        m_copy["payment_token"] = {
-            "token_id": f"vtok_{uuid.uuid4().hex[:12]}",
-            "token_type": "SCOPED_VIRTUAL_TOKEN",
-            "masked_card": "•••• 4242",
-            "bank_issuer": "Galicia AI Payments",
-            "bound_mandate_id": mandate_id,
+    sealed = m_copy.get("constraints", m_copy.get("scope", {}))
+    sealed_bytes = canonical_json(sealed)
+    h_priv, h_pub = generate_keypair()
+    m_copy["human_pubkey"] = h_pub
+    m_copy["signature"] = sign_payload(h_priv, sealed)
+    signer = _sealed_signer(h_pub, sealed_bytes, "system_seal")
+    m_copy["payment_token"] = issue_payment_token(mandate_id, signer["message_hash"])
+
+    with mandate_store._lock:
+        if mandate_id in MANDATES:
+            raise ValueError("El mandate_id ya existe")
+        MANDATES[mandate_id] = {
+            "mandate": m_copy,
+            "live_state": {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None},
         }
+        MANDATE_OWNERS[mandate_id] = _normalize_owner(owner_email)
+        MANDATE_SIGNERS[mandate_id] = signer
+        return get_mandate(mandate_id)
 
-    # 🔐 Sello Criptográfico: Asignar firma y claves si no existen
-    if "signature" not in m_copy and "human_signature" not in m_copy:
-        h_priv, h_pub = generate_keypair()
-        sealed = m_copy.get("constraints", m_copy.get("scope", {}))
-        m_copy["human_pubkey"] = h_pub
-        m_copy["signature"] = sign_payload(h_priv, sealed)
-        signer = _sealed_signer(h_pub, canonical_json(sealed), "system_seal")
-    else:
-        # El cliente trajo su propia firma (camino legado): no es un sello del servidor.
-        signer = _sealed_signer(m_copy.get("human_pubkey") or None, None, "legacy_client")
 
-    MANDATES[mandate_id] = {
-        "mandate": m_copy,
-        "live_state": {
-            "status": "active",
-            "uses_count": 0,
-            "amount_spent": 0,
-            "revoked_at": None,
-        },
-    }
-    MANDATE_OWNERS[mandate_id] = _normalize_owner(owner_email)
-    MANDATE_SIGNERS[mandate_id] = signer
-    return get_mandate(mandate_id)
+def count_mandates_signed_with(owner_email: str, key_id: str) -> int:
+    """Mandatos del dueño firmados con `key_id` que todavía podrían autorizar compras
+    (activos o pausados): los que quedan sin efecto si esa llave se revoca (P-01 a)."""
+    owner = _normalize_owner(owner_email)
+    with mandate_store._lock:
+        return sum(
+            1
+            for mandate_id, signer in MANDATE_SIGNERS.items()
+            if signer.get("kind") == "human"
+            and signer.get("key_id") == key_id
+            and MANDATE_OWNERS.get(mandate_id) == owner
+            and MANDATES.get(mandate_id, {}).get("live_state", {}).get("status") in ("active", "paused")
+        )
 
 
 def create_human_signed_mandate(mandate: dict, signer: dict, owner_email: str, nonce: str, created_at: datetime) -> dict:

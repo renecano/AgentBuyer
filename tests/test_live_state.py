@@ -22,7 +22,11 @@ from core.mandate_store import (
 from core.merchant import vuelaya_merchant
 from core.verify import resolve_escalation
 from engine.state import MandateRollingState
+from datetime import datetime, timedelta, timezone
+
+import core.mandate_store as mandate_store_module
 from mandate.issue import create_mandate
+from tests.conftest import TEST_USER_EMAIL
 from mandate.sign import generate_keypair
 from shared.schemas import MandateStatus, VerificationStatus
 
@@ -52,6 +56,13 @@ def strict_mandate(**overrides):
     return mandate, PurchasingAgent("agent_marta", a_priv, a_pub)
 
 
+@pytest.fixture()
+def client():
+    """Cliente de la app (lo usa key_registrar para registrar llaves por el flujo real)."""
+    with TestClient(app) as test_client:
+        yield test_client
+
+
 def live(mandate_id: str) -> dict:
     return get_mandate(mandate_id)["live_state"]
 
@@ -59,12 +70,21 @@ def live(mandate_id: str) -> dict:
 # ── La línea estricta escribe en lo que lee React ───────────────────────────
 
 def test_strict_purchase_is_visible_in_get_mandate(auth_headers):
-    """/purchases/execute (estricta) → GET /mandates/{id} (lo que lee la UI)."""
+    """/purchases/execute (estricta) → GET /mandates/{id} (lo que lee la UI).
+
+    3.5: POST /mandates/create se retiró (P-02). La línea estricta (legado D-01) solo
+    entiende mandatos de mandate/issue.py, que ya no tienen endpoint de alta: aquí se
+    crea uno por dentro, con la llave de AGENTE que el servidor usa en
+    /purchases/execute. Esa línea y este sello se retiran en el 7.2 (P-08)."""
     with TestClient(app) as client:
-        mandate = client.post(
-            "/mandates/create", json={"human_id": "hum_live", "max_amount_per_tx": 150}, headers=auth_headers
-        ).json()
-        mandate_id = mandate["mandate_id"]
+        agent_keys = api_main._get_or_create_agent_keys("agent_marta")
+        h_priv, h_pub = generate_keypair()
+        mandate = create_mandate(
+            human_id="hum_live", human_privkey=h_priv, human_pubkey=h_pub,
+            agent_id="agent_marta", agent_pubkey=agent_keys["pub"], max_amount_per_tx=150.0,
+        )
+        mandate_store.save_mandate(mandate, owner_email=TEST_USER_EMAIL)
+        mandate_id = mandate.mandate_id
 
         response = client.post("/purchases/execute", json={
             "mandate_id": mandate_id, "agent_id": "agent_marta", "item_id": "FLIGHT_COR_130",
@@ -143,31 +163,35 @@ def test_status_seen_by_ui_and_strict_line_is_the_same():
     assert strict_view.revoked_at == revoked["live_state"]["revoked_at"]
 
 
-def test_expiry_is_exposed_without_a_prior_strict_read(auth_headers):
+def test_expiry_is_exposed_without_a_prior_strict_read(client, auth_headers, signed_poster, monkeypatch):
     """Antes, GET /mandates/{id} mostraba "active" en un mandato vencido hasta que
-    alguien lo leía por la clase. Ahora ambos lectores aplican la misma regla."""
-    expired = {
+    alguien lo leía por la clase. Ahora ambos lectores aplican la misma regla.
+
+    3.5: el mandato lo firma el titular (un expires_at pasado ni se firmaría: debe ser
+    posterior a created_at), así que se vence adelantando el reloj del almacén."""
+    expiring = {
         "mandate_id": "mnd_live_expired",
         "human": {"id": "hum_live", "display_name": "Test User"},
         "agent": {"id": "agt_saturday"},
-        "expires_at": "2020-01-01T00:00:00Z",
-        "constraints": {"max_amount_per_purchase": 150.0},
-        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
-        # para que /verify llegue al check de status (con relleno cortaba antes, en la firma).
+        "constraints": {
+            "max_amount_per_purchase": 150.0, "allowed_categories": ["travel.flights"],
+            "allowed_merchants": ["mch_vuelaya"], "max_uses": 3,
+        },
     }
-    with TestClient(app) as client:
-        assert client.post("/mandates", json=expired, headers=auth_headers).status_code == 201
+    signed = signed_poster.create(expiring)
+    expires_at = datetime.strptime(signed["mandate"]["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    monkeypatch.setattr(mandate_store_module, "_utcnow", lambda: expires_at + timedelta(seconds=1))
 
-        live_state = client.get("/mandates/mnd_live_expired", headers=auth_headers).json()["live_state"]
-        assert live_state["status"] == "expired"
-        assert mandate_store.get_mandate("mnd_live_expired").status == MandateStatus.EXPIRED
+    live_state = client.get("/mandates/mnd_live_expired", headers=auth_headers).json()["live_state"]
+    assert live_state["status"] == "expired"
+    assert mandate_store.get_mandate("mnd_live_expired").status == MandateStatus.EXPIRED
 
-        verification = client.post("/verify", json={
-            "attempt_id": "att_live_expired", "mandate_id": "mnd_live_expired", "presented_by_agent": "agt_saturday",
-            "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
-        }).json()
-        assert verification["verdict"] == "REJECT"
-        assert next(check for check in verification["checks"] if check["rule"] == "status")["pass"] is False
+    verification = client.post("/verify", json={
+        "attempt_id": "att_live_expired", "mandate_id": "mnd_live_expired", "presented_by_agent": "agt_saturday",
+        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
+    }).json()
+    assert verification["verdict"] == "REJECT"
+    assert next(check for check in verification["checks"] if check["rule"] == "status")["pass"] is False
 
 
 def test_expired_seed_is_still_rejected(monkeypatch, tmp_path):

@@ -196,7 +196,8 @@ describe("409: tope de llaves y llave revocada", () => {
     if (conflict.kind !== "limit_reached") throw new Error("unreachable");
     expect(conflict.keys).toHaveLength(MAX_ACTIVE_KEYS_PER_OWNER);
 
-    await revokeServerKey(conflict.keys[0].keyId);
+    server.mandatesSignedWith.set(conflict.keys[0].keyId, 2);
+    expect(await revokeServerKey(conflict.keys[0].keyId)).toBe(2); // 3.5: lo que queda sin efecto
     expect(server.activeKeys()).toHaveLength(MAX_ACTIVE_KEYS_PER_OWNER - 1);
 
     const retry = await enrollOnce();
@@ -244,6 +245,14 @@ describe("409: tope de llaves y llave revocada", () => {
     expect(again.record.publicKeyHex).not.toBe(first.record.publicKeyHex);
     expect((await loadKeyState(MARTA)).status).toBe("registered");
   });
+});
+
+it("una respuesta de revocación sin mandates_affected es un error de protocolo (fail-closed)", async () => {
+  const key = server.seedKey(await randomPublicKeyHex());
+  server.override = (method) => method === "DELETE"
+    ? new Response(JSON.stringify({ key_id: key.key_id, revoked_at: "now" }), { status: 200 })
+    : null;
+  await expect(revokeServerKey(key.key_id)).rejects.toBeInstanceOf(EnrollmentProtocolError);
 });
 
 // ── Sin soporte ─────────────────────────────────────────────────────────────

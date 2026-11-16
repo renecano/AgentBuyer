@@ -260,9 +260,11 @@ def test_seed_sealing_key_is_not_registered_as_a_human_key(client, active_seed, 
     assert is_key_active(seed_owner, sealed["human_pubkey"]) is False
 
 
-def test_verify_does_not_consult_the_registry_yet(client, auth_headers):
-    """ADITIVO: una firma de cliente con una llave NO registrada sigue aprobando en
-    /verify, y registrar llaves no cambia ningún veredicto. El paso 3 invierte esto."""
+def test_only_a_registered_key_of_the_owner_can_create_a_mandate(client, auth_headers):
+    """3.5 (inversión deliberada del test aditivo del paso 1): antes una firma Ed25519
+    de cliente con una llave NO registrada creaba el mandato y /verify lo aprobaba.
+    Ahora esa firma no prueba quién firmó, así que el mandato ni se crea (422); solo
+    la llave registrada del titular autoriza (tests/test_signed_mandates.py)."""
     priv, pub = generate_keypair()
     constraints = {
         "max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
@@ -274,12 +276,6 @@ def test_verify_does_not_consult_the_registry_yet(client, auth_headers):
         "agent": {"id": "agt_saturday"}, "constraints": constraints,
         "human_pubkey": pub, "signature": sign_payload(priv, constraints),
     }
-    assert client.post("/mandates", json=mandate, headers=auth_headers).status_code == 201
+    assert client.post("/mandates", json=mandate, headers=auth_headers).status_code == 422
+    assert mandate_store.get_mandate("mnd_unregistered_key") is None
     assert get_active_keys(TEST_USER_EMAIL) == []
-
-    verdict = client.post("/verify", json={
-        "attempt_id": "att_k", "mandate_id": "mnd_unregistered_key", "presented_by_agent": "agt_saturday",
-        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0,
-                     "currency": "USD", "metadata": {"price": 100.0}},
-    }, headers=auth_headers).json()["verdict"]
-    assert verdict == "APPROVE"

@@ -1,9 +1,9 @@
-"""Mandatos firmados por el HUMANO (paso 3.3): alta verificada y verificación en /verify.
+"""Mandatos firmados por el HUMANO: alta verificada (3.3) y verificación en /verify.
 
-Doble vía, ADITIVO: POST /mandates sigue aceptando el payload de hoy (el servidor lo
-sella); si el cuerpo trae el formato del 3.2 (key_id + nonce + created_at +
-signature), se verifica la firma del humano con SU llave registrada y el mandato
-queda kind="human". El 3.5 exigirá este camino.
+Desde el 3.5 es el ÚNICO camino para que un usuario cree un mandato: POST /mandates
+exige el formato del 3.2 (key_id + nonce + created_at + signature) firmado con SU
+llave registrada, y el servidor ya no firma por nadie. El sello de sistema solo
+existe para el mandato semilla que se carga al arrancar (hasta el 7.2).
 
 Al crear (create_signed_mandate), en este orden:
     1. forma del cuerpo                                         → 422 (SignedMandateError)
@@ -23,8 +23,9 @@ public_key de MANDATE_SIGNERS; su sha256 debe ser el message_hash del alta y la 
 debe verificar. La llave debe seguir perteneciendo al dueño. Así, alterar cualquier
 campo que el engine usa después de firmar rompe la verificación.
 
-Revocación (P-01, pendiente para el 3.5): hoy se exige que la llave PERTENEZCA al
-dueño, no que siga activa. Qué pasa con un mandato cuya llave se revoca lo decide P-01.
+Revocación (P-01 a, desde el 3.5): la llave debe PERTENECER al dueño y además seguir
+ACTIVA. Revocarla deja sin efecto todo lo firmado con ella (check signing_key_active),
+sin mutar el estado del mandato: el titular re-firma con su llave nueva.
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from core.owner_keys import find_key, normalize_owner_email
 from mandate.mandate_message import (
@@ -50,15 +51,10 @@ MAX_CLOCK_SKEW = timedelta(minutes=2)
 MAX_AGE = timedelta(minutes=10)
 
 KIND_HUMAN = "human"
+# Solo el mandato semilla cargado al arrancar (core/mandate_store.seal_seed_mandate):
+# ningún endpoint puede crearlo. Desaparece con el seed en el 7.2 (P-11).
 KIND_SYSTEM_SEAL = "system_seal"
-# Firma aportada por el cliente con una llave NO registrada (camino legado, aditivo).
-# No es un sello del servidor ni prueba quién firmó: se etiqueta aparte para no
-# afirmar algo falso (R12). El 3.5 la retira.
-KIND_LEGACY_CLIENT = "legacy_client"
 
-# Los campos que distinguen el formato del 3.2. `signature` sola NO: el camino
-# legado ya admitía una firma del cliente (y tests la usan vacía a propósito).
-SIGNED_FORMAT_MARKERS = ("key_id", "nonce")
 SIGNED_FORMAT_REQUIRED = ("signature", "key_id", "created_at", "nonce")
 SIGNED_BODY_KEYS = frozenset({
     "mandate_id", "human", "agent", "constraints", "search_fields",
@@ -126,9 +122,17 @@ used_nonces = _NonceRegistry()
 
 # ── Utilidades ──────────────────────────────────────────────────────────────
 
-def is_signed_format(body: dict) -> bool:
-    """¿El cuerpo pretende el formato firmado del 3.2?"""
-    return any(marker in body for marker in SIGNED_FORMAT_MARKERS)
+def issue_payment_token(mandate_id: str, digest: str) -> dict:
+    """El payment_token lo emite SIEMPRE el servidor, después de verificar (o sellar),
+    atado a ESTE mandato y a ESTOS bytes firmados. El cliente nunca lo aporta."""
+    return {
+        "token_id": f"vtok_{uuid.uuid4().hex[:12]}",
+        "token_type": "SCOPED_VIRTUAL_TOKEN",
+        "masked_card": "•••• 4242",
+        "bank_issuer": "Galicia AI Payments",
+        "bound_mandate_id": mandate_id,
+        "bound_message_hash": digest,
+    }
 
 
 def message_hash(message: bytes) -> str:
@@ -271,14 +275,7 @@ def build_signed_mandate(body: Any, owner_email: str) -> Tuple[dict, dict, str]:
         "key_id": payload["key_id"],
         "signature": signature.lower(),
         # Lo emite el servidor DESPUÉS de verificar, atado a los bytes firmados.
-        "payment_token": {
-            "token_id": f"vtok_{uuid.uuid4().hex[:12]}",
-            "token_type": "SCOPED_VIRTUAL_TOKEN",
-            "masked_card": "•••• 4242",
-            "bank_issuer": "Galicia AI Payments",
-            "bound_mandate_id": mandate_id,
-            "bound_message_hash": digest,
-        },
+        "payment_token": issue_payment_token(mandate_id, digest),
     }
     # Defensa en profundidad: lo guardado reconstruye EXACTAMENTE lo firmado.
     if mandate_signing_message(**signing_inputs(mandate, owner, key["public_key"])) != message:
@@ -317,6 +314,14 @@ def verify_signed_mandate(mandate: dict, owner: Optional[str], signer: dict) -> 
     return True, "Firma humana Ed25519 válida (llave registrada del titular)."
 
 
+def verify_signing_key_active(signer: dict) -> Tuple[bool, str]:
+    """P-01 (a): una llave revocada deja sin efecto lo que firmó (el titular re-firma)."""
+    found = find_key(signer.get("key_id") or "")
+    if found is None or found[1]["revoked_at"] is not None:
+        return False, "La llave que firmó este mandato fue revocada: el titular debe firmarlo de nuevo."
+    return True, "La llave que firmó el mandato sigue activa."
+
+
 def verify_payment_token_binding(mandate: dict, signer: dict) -> Tuple[bool, str]:
     """El payment_token debe estar atado a ESTE mandato y a ESTOS bytes firmados."""
     token = mandate.get("payment_token")
@@ -325,3 +330,16 @@ def verify_payment_token_binding(mandate: dict, signer: dict) -> Tuple[bool, str
     if token.get("bound_mandate_id") != mandate.get("mandate_id") or token.get("bound_message_hash") != signer.get("message_hash"):
         return False, "El token de pago no está atado a este mandato firmado."
     return True, "Token de pago atado al mandato firmado."
+
+
+def missing_signature_detail(body: Any) -> Optional[str]:
+    """Si `body` no trae el formato firmado completo, el motivo (422); si lo trae, None."""
+    if not isinstance(body, dict):
+        return "The mandate must be a JSON object."
+    missing = [field for field in SIGNED_FORMAT_REQUIRED if field not in body]
+    if missing:
+        return (
+            "A cardholder signature is required: sign the mandate with your registered device key "
+            f"(missing: {', '.join(missing)})."
+        )
+    return None

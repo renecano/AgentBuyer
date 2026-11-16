@@ -28,7 +28,13 @@ from core.mandate_store import (
     get_mandate_signer,
     apply_approved_purchase,
 )
-from core.signed_mandates import KIND_HUMAN, verify_payment_token_binding, verify_signed_mandate
+from core.signed_mandates import (
+    KIND_HUMAN,
+    KIND_SYSTEM_SEAL,
+    verify_payment_token_binding,
+    verify_signed_mandate,
+    verify_signing_key_active,
+)
 from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.evaluator import evaluate_mandate_constraints
 from engine.state import state_manager
@@ -382,6 +388,10 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         checks.append(_check("human_signature_valid", human_ok, human_detail))
         if not human_ok:
             return reject(mandate.mandate_id, f"403 Forbidden: {human_detail}")
+        key_ok, key_detail = verify_signing_key_active(signer)
+        checks.append(_check("signing_key_active", key_ok, key_detail))
+        if not key_ok:
+            return reject(mandate.mandate_id, f"403 Forbidden: {key_detail}")
         binding_ok, binding_detail = verify_payment_token_binding(stored_mandate, signer)
         checks.append(_check("payment_token_binding", binding_ok, binding_detail))
         if not binding_ok:
@@ -392,6 +402,12 @@ def verify_purchase(attempt: PurchaseAttempt) -> VerificationResult:
         if not currency_ok:
             return reject(mandate.mandate_id, f"Currency {attempt.currency} is not the one authorized by the signed mandate ({signed_currency}).")
         return _verify_agent_and_constraints(attempt, mandate, checks, now_iso, reject)
+
+    # 3.5: fuera del titular, solo el sello del seed; y esta línea solo entiende el
+    # formato estricto (scope + payment_token). Cualquier otra cosa se rechaza.
+    if signer is None or signer.get("kind") != KIND_SYSTEM_SEAL or mandate.scope is None or mandate.payment_token is None:
+        checks.append(_check("human_signature_valid", False, "Mandate has no registered signature this line can verify."))
+        return reject(mandate.mandate_id, "403 Forbidden: Mandate has no registered signature this line can verify.")
 
     unsigned_mandate_payload = {
         "mandate_id": mandate.mandate_id,

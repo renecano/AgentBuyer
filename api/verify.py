@@ -20,6 +20,7 @@ from core.signed_mandates import (
     KIND_SYSTEM_SEAL,
     verify_payment_token_binding,
     verify_signed_mandate,
+    verify_signing_key_active,
 )
 from engine.evaluator import evaluate
 from mandate.sign import verify_signature
@@ -109,15 +110,15 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         # verifica con su llave registrada, que debe seguir siendo suya.
         human_ok, human_detail = verify_signed_mandate(mandate, get_mandate_owner(mandate_id), signer)
         signature_check = {"rule": "signature", "pass": human_ok, "detail": human_detail}
+    elif kind != KIND_SYSTEM_SEAL:
+        # 3.5: sin firmante registrado (ni titular ni sello del seed) no hay mandato válido.
+        signature_check = {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
     elif not isinstance(signature, str) or not signature.strip():
         signature_check = {"rule": "signature", "pass": False, "detail": "Firma ausente o vacía."}
     elif verify_signature(pubkey, mandate.get("scope", mandate.get("constraints", {})), signature):
         # El detail dice QUÉ verificó: un sello del servidor no es una firma del titular.
-        signature_check = {"rule": "signature", "pass": True, "detail": (
-            "Sello de sistema Ed25519 válido (llave del servidor; no es una firma del titular)."
-            if kind == KIND_SYSTEM_SEAL
-            else "Firma de cliente Ed25519 válida (llave no registrada; no identifica al titular)."
-        )}
+        signature_check = {"rule": "signature", "pass": True,
+                           "detail": "Sello de sistema Ed25519 válido (llave del servidor; no es una firma del titular)."}
     else:
         # Incluye la firma sin llave pública: lo que no se puede verificar no es válido.
         signature_check = {"rule": "signature", "pass": False, "detail": "Firma digital inválida."}
@@ -132,19 +133,31 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
             "Compra rechazada: la firma del mandato no es válida.",
         )
 
-    # 2a'. Mandato firmado por el titular: el payment_token lo emitió el servidor
-    # atado a ESTOS bytes firmados; uno de otro mandato (o reemitido) no sirve.
+    # 2a'. P-01 (a): revocar la llave que firmó deja sin efecto el mandato.
     if kind == KIND_HUMAN:
-        binding_ok, binding_detail = verify_payment_token_binding(mandate, signer)
-        security_checks.append({"rule": "payment_token_binding", "pass": binding_ok, "detail": binding_detail})
-        if not binding_ok:
+        key_ok, key_detail = verify_signing_key_active(signer)
+        security_checks.append({"rule": "signing_key_active", "pass": key_ok, "detail": key_detail})
+        if not key_ok:
             return _finish(
                 mandate_id,
                 attempt_id,
                 "REJECT",
                 security_checks,
-                "Compra rechazada: el token de pago no corresponde a este mandato.",
+                "Compra rechazada: la llave que firmó el mandato fue revocada.",
             )
+
+    # 2a''. El payment_token lo emitió el servidor atado a ESTOS bytes firmados (o
+    # sellados, para el seed); uno de otro mandato, o aportado por un cliente, no sirve.
+    binding_ok, binding_detail = verify_payment_token_binding(mandate, signer)
+    security_checks.append({"rule": "payment_token_binding", "pass": binding_ok, "detail": binding_detail})
+    if not binding_ok:
+        return _finish(
+            mandate_id,
+            attempt_id,
+            "REJECT",
+            security_checks,
+            "Compra rechazada: el token de pago no corresponde a este mandato.",
+        )
 
     # 2b. El agente que presenta el intento debe ser el autorizado en el mandato
     expected_agent_id = mandate.get("agent", {}).get("id") or mandate.get("agent_id")

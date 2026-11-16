@@ -32,6 +32,7 @@ from core.key_challenges import (
     verify_proof_of_possession,
 )
 from core.notifications import OTP_PURPOSE_REGISTER_KEY, enviar_token_otp
+from core.mandate_store import count_mandates_signed_with
 from core.owner_keys import (
     InvalidPublicKey,
     KeyConflict,
@@ -216,6 +217,7 @@ def issue_key_challenge(payload: ChallengeRequest, principal: Principal = Depend
 def revoke_public_key(key_id: str, principal: Principal = Depends(require_principal)):
     """Revoca una llave PROPIA (p. ej. la de un navegador cuyos datos se borraron).
     Libera cupo del tope de llaves activas y la llave no puede volver a registrarse.
+    Los mandatos firmados con ella quedan sin efecto (P-01 a): mandates_affected.
 
     404 si no existe o ya estaba revocada; 403 si es de otra cuenta."""
     owner = _owner(principal)
@@ -228,4 +230,11 @@ def revoke_public_key(key_id: str, principal: Principal = Depends(require_princi
     if not revoke_key(owner, key_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Key not found or already revoked.")
     _, record = find_key(key_id)
-    return {"key_id": key_id, "revoked_at": record["revoked_at"]}
+    # P-01 (a): lo firmado con esta llave deja de verificar (/verify: signing_key_active).
+    # Se informa cuántos mandatos vigentes quedan sin efecto, para que el titular sepa
+    # qué tiene que volver a firmar.
+    return {
+        "key_id": key_id,
+        "revoked_at": record["revoked_at"],
+        "mandates_affected": count_mandates_signed_with(owner, key_id),
+    }
