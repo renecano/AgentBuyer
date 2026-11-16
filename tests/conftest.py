@@ -390,3 +390,22 @@ def signed_poster(client, key_registrar):
     owner_keys.clear()
     yield SignedMandatePoster(client, key_registrar)
     owner_keys.clear()
+
+
+# ── /verify es la verificación del comercio/agente (4.2, P-03) ───────────────
+
+@pytest.fixture()
+def service_key(monkeypatch):
+    """Configura SERVICE_API_KEY para los módulos que verifican como el comercio/agente
+    (se activa con `pytestmark = pytest.mark.usefixtures("service_key")`)."""
+    monkeypatch.setenv("SERVICE_API_KEY", TEST_SERVICE_KEY)
+
+
+def verify_as_service(client, attempt: dict, nonce: str | None = None):
+    """POST /verify COMO SERVICIO (X-Service-Key), con un nonce único por intento si el
+    test no fija uno: así verifica el comercio o el agente desde el 4.2."""
+    import secrets
+
+    body = dict(attempt)
+    body.setdefault("nonce", nonce or secrets.token_hex(16))
+    return client.post("/verify", json=body, headers={"X-Service-Key": TEST_SERVICE_KEY})

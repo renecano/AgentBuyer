@@ -15,7 +15,10 @@ from audit.log import append_entry, get_trail_events, get_trail_for, reset_trail
 from core import mandate_store, merchant_search, owner_keys
 from core.auth_tokens import create_access_token
 from core.quotas import PerSubjectQuota
-from tests.conftest import FakeClock, TEST_ADMIN_EMAIL, TEST_USER_EMAIL
+from tests.conftest import FakeClock, TEST_ADMIN_EMAIL, TEST_USER_EMAIL, verify_as_service
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 OTHER = "otra.persona@example.com"
 
@@ -68,7 +71,7 @@ def two_users(signed_poster):
 
 
 def verify(client, mandate_id: str, attempt_id: str, amount: float = 100.0) -> dict:
-    return client.post("/verify", json={
+    return verify_as_service(client, {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": amount,
                      "currency": "USD", "metadata": {"price": amount}},

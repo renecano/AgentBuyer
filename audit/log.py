@@ -12,6 +12,8 @@ from mandate.sign import canonical_json
 _EVENT_TYPES = {
     "mandate_created",
     "verification",
+    # 4.2: verificación de un escenario de demostración (nunca es una compra).
+    "scenario_verification",
     "revocation",
     "purchase_completed",
     "agent_run",

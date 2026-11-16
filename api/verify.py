@@ -1,12 +1,24 @@
-"""Endpoint que orquesta la verificación segura de un intento de compra.
-Integra Criptografía Asimétrica (Ed25519/JWT), DLP (Scoped Virtual Tokens) y Auditoría Cognitiva.
+"""Verificación de un intento de compra (comercio/agente).
+
+4.2 (P-03): POST /verify es la verificación del COMERCIO o del AGENTE, no de una
+persona: exige credencial `service`. React ya no la llama; el agente de la
+plataforma verifica por dentro (verify_attempt) y la demo usa /agent/run con un
+escenario explícito. Cada intento trae un nonce único (anti-replay); si declara la
+firma del agente, se verifica con la llave del agente que lo presenta; y la moneda
+del intento debe ser la del mandato.
 """
 
+import functools
+import threading
+import time
 from datetime import datetime, timezone
 from numbers import Real
-from typing import Any
+from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from api.security import Principal, require_service
+from core.agent_keys import AGENT_SIGNATURE_FIELD, verify_attempt_signature
 
 from audit.log import append_entry
 from core.mandate_store import (
@@ -34,6 +46,41 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── Anti-replay de intentos (4.2) ───────────────────────────────────────────
+
+NONCE_TTL_SECONDS = 24 * 60 * 60
+NONCE_MIN_LENGTH, NONCE_MAX_LENGTH = 16, 128
+
+
+class AttemptNonceGuard:
+    """Nonces de intento ya vistos. Un nonce sirve UNA vez (aunque el intento se
+    rechace): un intento capturado no se puede volver a presentar. En memoria; los
+    vencidos se purgan (la persistencia durable llega en el 6.3)."""
+
+    def __init__(self, ttl_seconds: int = NONCE_TTL_SECONDS, clock: Callable[[], float] = time.time):
+        self.ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def claim(self, nonce: str) -> bool:
+        with self._lock:
+            now = self._clock()
+            for stale in [key for key, seen_at in self._seen.items() if now - seen_at >= self.ttl_seconds]:
+                del self._seen[stale]
+            if nonce in self._seen:
+                return False
+            self._seen[nonce] = now
+            return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
+attempt_nonces = AttemptNonceGuard()
+
+
 def _finish(
     mandate_id: str,
     attempt_id: str,
@@ -41,12 +88,16 @@ def _finish(
     checks: list[dict],
     human_readable: str,
     amount: int | float | None = None,
+    scenario: Optional[str] = None,
 ) -> dict:
-    """Registra toda decisión antes de devolverla al comercio."""
+    """Registra toda decisión antes de devolverla al comercio.
+
+    Un escenario de demostración (4.2) se registra como "scenario_verification": no
+    es una compra, así que ni las escalaciones ni las disputas lo toman por una."""
     decided_at = _timestamp()
     append_entry(
         {
-            "type": "verification",
+            "type": "scenario_verification" if scenario else "verification",
             "mandate_id": mandate_id,
             "attempt_id": attempt_id,
             "verdict": verdict,
@@ -54,6 +105,7 @@ def _finish(
             # Datos para la revisión humana de escalaciones (api/escalations.py):
             "amount": amount,
             "failed_rules": [c["rule"] for c in checks if not c.get("pass")],
+            **({"scenario": scenario} if scenario else {}),
         }
     )
     return {
@@ -67,10 +119,19 @@ def _finish(
 
 
 @router.post("/verify")
-def verify_purchase(attempt_purchase: dict[str, Any]):
+def verify_purchase(attempt_purchase: dict[str, Any], principal: Principal = Depends(require_service)):
+    """Verificación del comercio/agente (P-03): solo con credencial `service`."""
+    return verify_attempt(attempt_purchase)
+
+
+def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] = None) -> dict:
     """
     Verifica seguridad criptográfica, DLP y delega restricciones al Engine Simbólico + Semantic Firewall.
+
+    `scenario` (demo de /agent/run, 4.2): se verifica igual que una compra real, pero
+    NUNCA compra: no consume usos ni gasto, y queda registrado como escenario.
     """
+    finish = functools.partial(_finish, scenario=scenario)
     if "purchase" in attempt_purchase and not isinstance(attempt_purchase["purchase"], dict):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -83,7 +144,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     # 1. Consulta el registro en vivo; ZERO CACHING.
     record = get_mandate(mandate_id)
     if record is None:
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -125,7 +186,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
 
     security_checks.append(signature_check)
     if not signature_check["pass"]:
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -138,7 +199,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         key_ok, key_detail = verify_signing_key_active(signer)
         security_checks.append({"rule": "signing_key_active", "pass": key_ok, "detail": key_detail})
         if not key_ok:
-            return _finish(
+            return finish(
                 mandate_id,
                 attempt_id,
                 "REJECT",
@@ -151,7 +212,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     binding_ok, binding_detail = verify_payment_token_binding(mandate, signer)
     security_checks.append({"rule": "payment_token_binding", "pass": binding_ok, "detail": binding_detail})
     if not binding_ok:
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -170,7 +231,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
                 "detail": "El agente que presenta el intento no está autorizado.",
             }
         )
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -181,12 +242,50 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         {"rule": "agent_identity", "pass": True, "detail": "Agente autorizado."}
     )
 
+    # 2b'. Si el intento declara la firma del agente, debe ser del agente que lo
+    # presenta y sobre ESTE intento (4.2). Declarada y falsa → REJECT.
+    if AGENT_SIGNATURE_FIELD in attempt_purchase:
+        signed_ok = verify_attempt_signature(presented_agent_id or expected_agent_id, attempt_purchase)
+        security_checks.append({
+            "rule": "agent_signature",
+            "pass": signed_ok,
+            "detail": "Firma del agente válida sobre este intento." if signed_ok
+            else "La firma del agente no corresponde a este intento o a este agente.",
+        })
+        if not signed_ok:
+            return finish(
+                mandate_id,
+                attempt_id,
+                "REJECT",
+                security_checks,
+                "Compra rechazada: la firma del agente no es válida.",
+            )
+
+    # 2b''. Anti-replay (4.2): cada intento trae un nonce único; un intento ya
+    # presentado (aprobado o no) no se acepta otra vez.
+    nonce = attempt_purchase.get("nonce")
+    nonce_ok = isinstance(nonce, str) and NONCE_MIN_LENGTH <= len(nonce) <= NONCE_MAX_LENGTH and attempt_nonces.claim(nonce)
+    security_checks.append({
+        "rule": "nonce_fresh",
+        "pass": nonce_ok,
+        "detail": "Intento nuevo (nonce no visto)." if nonce_ok
+        else "Intento sin nonce válido, o ya presentado antes (replay).",
+    })
+    if not nonce_ok:
+        return finish(
+            mandate_id,
+            attempt_id,
+            "REJECT",
+            security_checks,
+            "Compra rechazada: el intento ya fue presentado o no trae un nonce válido.",
+        )
+
     # 2c. Kill Switch en Vivo (Lectura fresca en memoria)
     if live_state["status"] == "revoked":
         security_checks.append(
             {"rule": "status", "pass": False, "detail": "mandato revocado"}
         )
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -197,7 +296,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         security_checks.append(
             {"rule": "status", "pass": False, "detail": "mandato expirado"}
         )
-        return _finish(
+        return finish(
             mandate_id,
             attempt_id,
             "REJECT",
@@ -206,26 +305,30 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         )
     security_checks.append({"rule": "status", "pass": True, "detail": "Mandato activo."})
 
-    # 2d. Moneda firmada (mandato del titular): otra moneda, o ninguna, es REJECT.
-    if kind == KIND_HUMAN:
-        purchase_view = attempt_purchase.get("purchase", attempt_purchase)
-        signed_currency = (mandate.get("constraints") or {}).get("currency")
-        presented_currency = purchase_view.get("currency") if isinstance(purchase_view, dict) else None
-        currency_ok = isinstance(presented_currency, str) and presented_currency.strip().upper() == signed_currency
-        security_checks.append({
-            "rule": "currency",
-            "pass": currency_ok,
-            "detail": f"{presented_currency} = {signed_currency}" if currency_ok
-            else f"La compra es en {presented_currency}; el mandato firmado autoriza solo {signed_currency}.",
-        })
-        if not currency_ok:
-            return _finish(
-                mandate_id,
-                attempt_id,
-                "REJECT",
-                security_checks,
-                "Compra rechazada: la moneda no es la autorizada en el mandato.",
-            )
+    # 2d. Moneda (4.2: en TODO mandato; en los del titular va firmada, D-15): otra
+    # moneda, o ninguna, es REJECT. Un mandato sin moneda no autoriza nada.
+    purchase_view = attempt_purchase.get("purchase", attempt_purchase)
+    constraints_view = mandate.get("constraints") or mandate.get("scope") or {}
+    signed_currency = constraints_view.get("currency") if isinstance(constraints_view, dict) else None
+    presented_currency = purchase_view.get("currency") if isinstance(purchase_view, dict) else None
+    currency_ok = (
+        isinstance(signed_currency, str) and isinstance(presented_currency, str)
+        and presented_currency.strip().upper() == signed_currency.strip().upper()
+    )
+    security_checks.append({
+        "rule": "currency",
+        "pass": currency_ok,
+        "detail": f"{presented_currency} = {signed_currency}" if currency_ok
+        else f"La compra es en {presented_currency}; el mandato autoriza solo {signed_currency}.",
+    })
+    if not currency_ok:
+        return finish(
+            mandate_id,
+            attempt_id,
+            "REJECT",
+            security_checks,
+            "Compra rechazada: la moneda no es la autorizada en el mandato.",
+        )
 
     # 3. Evaluación en el Engine Simbólico
     engine_attempt = attempt_purchase.get("purchase", attempt_purchase)
@@ -273,7 +376,7 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
                     "pass": False,
                     "detail": audit_res.get("resumen_para_humano", "Hidden fine-print risk detected.")
                 })
-                return _finish(
+                return finish(
                     mandate_id,
                     attempt_id,
                     "REJECT",
@@ -292,10 +395,14 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="purchase.amount debe ser un número.",
             )
-        apply_approved_purchase(mandate_id, amount)
-        human_readable = "Compra aprobada por el mandato."
+        if scenario:
+            # Un escenario de demostración nunca compra (4.2).
+            human_readable = "Escenario de demostración: el mandato lo aprobaría, pero no se realizó ninguna compra."
+        else:
+            apply_approved_purchase(mandate_id, amount)
+            human_readable = "Compra aprobada por el mandato."
     else:
         human_readable = "La compra requiere aprobación humana."
 
     # 4 y 6. El veredicto final es el del engine y combina todos los checks.
-    return _finish(mandate_id, attempt_id, verdict, checks, human_readable, amount=amount)
+    return finish(mandate_id, attempt_id, verdict, checks, human_readable, amount=amount)

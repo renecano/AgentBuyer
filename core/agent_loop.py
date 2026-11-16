@@ -182,6 +182,53 @@ class SignedSearchFieldsMismatch(ValueError):
     """El llamador pidió buscar otra cosa que lo que el titular firmó."""
 
 
+# ── Escenarios de demostración (4.2) ────────────────────────────────────────
+#
+# La demo de React ya no llama /verify directo (P-03): pide a /agent/run un escenario
+# EXPLÍCITO y visible. El servidor construye una oferta sintética, rotulada como tal,
+# y la verifica por el mismo camino que una compra real, pero un escenario NUNCA
+# compra (sin usos, sin gasto, sin recibo) y queda registrado como escenario.
+SCENARIO_TRAP_OFFER = "trap_offer"
+SCENARIO_AFTER_REVOCATION = "after_revocation"
+SCENARIOS = (SCENARIO_TRAP_OFFER, SCENARIO_AFTER_REVOCATION)
+
+
+class ScenarioNotApplicable(ValueError):
+    """El escenario no aplica al estado del mandato (p. ej. "after_revocation" sin revocar)."""
+
+
+def _scenario_offer(scenario: str, mandate: dict, live_status: str, category_key: str, limit) -> dict:
+    constraints = mandate.get("constraints", {}) or {}
+    merchant_id = (constraints.get("allowed_merchants") or ["mch_vuelaya"])[0]
+    category = (constraints.get("allowed_categories") or ["travel.flights"])[0]
+    cap = constraints.get("max_amount_per_purchase")
+    ceiling = min(value for value in (limit, cap) if isinstance(value, Real) and not isinstance(value, bool)) if any(
+        isinstance(value, Real) and not isinstance(value, bool) for value in (limit, cap)) else 100
+    price = max(1, int(ceiling) - 30)
+    fields = mandate.get("search_fields") or {}
+    route = (f"{fields.get('origin', '?')}->{fields.get('destination', '?')}" if category_key != "hotels"
+             else str(fields.get("destination", "?")))
+    if scenario == SCENARIO_TRAP_OFFER:
+        # Activo líquido empaquetado con el pasaje: una de las trampas que el firewall
+        # semántico debe atrapar (gift cards, vouchers, crypto).
+        details = "Demo scenario — fare bundled with a $20 travel gift card charged separately within 48h (fine print)"
+    else:
+        if live_status != "revoked":
+            raise ScenarioNotApplicable("The 'after_revocation' scenario needs a revoked mandate. Revoke it first.")
+        details = "Demo scenario — a clean, in-limit offer presented after the mandate was revoked"
+    return {
+        "id": f"scenario_{scenario}",
+        "route": route,
+        "price": price,
+        "category": category,
+        "merchant_id": merchant_id,
+        "merchant": merchant_id.removeprefix("mch_").replace("_", " ").title(),
+        "details": details,
+        "url": "",
+        "source": "scenario",
+    }
+
+
 def bind_search_fields(mandate_id: str, mandate: dict, search_fields: dict | None) -> dict | None:
     """search_fields con los que puede buscar el agente.
 
@@ -206,7 +253,7 @@ def bind_search_fields(mandate_id: str, mandate: dict, search_fields: dict | Non
     return stored
 
 
-def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
+def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str | None = None) -> dict:
     """Descubre, decide, intenta y registra el resultado de una compra.
 
     Descubre ofertas REALES vía web search con search_fields ({origin,
@@ -216,6 +263,8 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
     """
     record = get_mandate(mandate_id)
     mandate = record["mandate"] if record is not None else {}
+    if scenario is not None and scenario not in SCENARIOS:
+        raise ScenarioNotApplicable(f"Unknown scenario. Allowed: {', '.join(SCENARIOS)}.")
     search_fields = bind_search_fields(mandate_id, mandate, search_fields)
     if not search_fields:
         stored_fields = mandate.get("search_fields")
@@ -223,8 +272,13 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
             search_fields = stored_fields
 
     category_key = _category_key(mandate)
-    flights_seen, discovery_source = _discover_offers(category_key, search_fields)
     limit = _price_limit(mandate)
+    if scenario:
+        # Sin búsqueda web (no gasta OpenAI): la oferta del escenario es sintética.
+        live_status = record["live_state"]["status"] if record is not None else "missing"
+        flights_seen, discovery_source = [_scenario_offer(scenario, mandate, live_status, category_key, limit)], "scenario"
+    else:
+        flights_seen, discovery_source = _discover_offers(category_key, search_fields)
 
     if not flights_seen:
         message = (
@@ -258,6 +312,8 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
         "attempt_id": attempt_id,
         "mandate_id": mandate_id,
         "presented_by_agent": agent_id,
+        # 4.2: nonce único (anti-replay) y firma del agente sobre el intento.
+        "nonce": secrets.token_hex(16),
         "purchase": {
             "merchant_id": selected_flight["merchant_id"],
             "category": selected_flight["category"],
@@ -273,12 +329,21 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
         },
     }
 
-    from api.verify import verify_purchase as api_verify_purchase
-    verification = api_verify_purchase(attempt)
+    from core.agent_keys import AGENT_SIGNATURE_FIELD, sign_attempt
+    attempt[AGENT_SIGNATURE_FIELD] = sign_attempt(agent_id, attempt)
+
+    from api.verify import verify_attempt
+    verification = verify_attempt(attempt, scenario=scenario)
     verdict = verification.get("verdict", "REJECT")
-    completed = verdict == "APPROVE"
+    # Un escenario de demostración nunca es una compra, aunque el veredicto fuera APPROVE.
+    completed = verdict == "APPROVE" and not scenario
 
     story = (
+        # R12: un escenario no es una búsqueda real ni una compra; se dice tal cual.
+        f"Escenario de demostración '{scenario}': oferta sintética (no salió de una búsqueda real) "
+        f"de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {selected_flight['price']} USD. "
+        f"Verify devolvió {verdict}; en un escenario nunca se compra. {verification.get('human_readable', '')}"
+    ) if scenario else (
         f"Encontró {len(flights_seen)} {'hoteles' if category_key == 'hotels' else 'vuelos'} en la web (búsqueda real). "
         + (f"Aplicó el límite price_below de {limit} USD y " if limit is not None else "No encontró un límite price_below utilizable y ")
         + f"eligió {selected_flight['route']} de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {selected_flight['price']} USD. "
