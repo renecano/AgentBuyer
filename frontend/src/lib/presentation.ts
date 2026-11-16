@@ -138,13 +138,12 @@ const BACKEND_PHRASES: Array<[RegExp, string]> = [
   [/Usos agotados/g, "Uses exhausted"],
   [/Entrada inválida/g, "Invalid input"],
   [/Error interno del motor de restricciones — rechazado por seguridad/g, "Internal constraint-engine error — rejected for safety"],
-  // Firma / agente / estado (core/verify.py + api/verify.py)
+  // Firma / agente / estado (api/verify.py)
   [/Firma presente y estructurada\./g, "Signature present and well-formed."],
   [/Firma presente y verificada\./g, "Signature present and verified."],
   [/Firma digital Ed25519 válida\./g, "Valid Ed25519 digital signature."],
   // Paso 3.3: qué se verificó (firma del titular, sello del servidor o firma legada).
   [/Firma humana Ed25519 válida \(llave registrada del titular\)\./g, "Valid Ed25519 cardholder signature (registered key)."],
-  [/Sello de sistema Ed25519 válido \(llave del servidor; no es una firma del titular\)\./g, "Valid Ed25519 system seal (server-held key; not a cardholder signature)."],
   [/El mandato no tiene una firma registrada\./g, "The mandate has no registered signature."],
   [/La llave que firmó este mandato fue revocada: el titular debe firmarlo de nuevo\./g, "The key that signed this mandate was revoked: the cardholder must sign it again."],
   [/La llave que firmó el mandato sigue activa\./g, "The key that signed the mandate is still active."],
@@ -197,7 +196,7 @@ const BACKEND_PHRASES: Array<[RegExp, string]> = [
   [/La evidencia criptográfica del registro confirma que la compra fue verificada y aprobada dentro de un mandato activo y firmado por el titular\. La disputa se desestima\./g, "The ledger's cryptographic evidence confirms the purchase was verified and approved under an active mandate signed by the cardholder. The dispute is dismissed."],
   [/El comercio aceptó la compra \((.+?)\) DESPUÉS de que el mandato fue revocado \((.+?)\)\. El titular queda protegido\./g, "The merchant accepted the purchase ($1) AFTER the mandate was revoked ($2). The cardholder is protected."],
   [/El comercio procesó un pago contra un mandato que no existe en el registro\. El titular queda protegido\./g, "The merchant processed a payment against a mandate that does not exist in the registry. The cardholder is protected."],
-  [/No existe registro de verificación ni de aprobación para esta compra en el trail auditable\. El titular queda protegido\./g, "There is no verification or approval record for this purchase in the auditable trail. The cardholder is protected."],
+  [/No existe una aprobación registrada para esta compra en el trail auditable \(no se verificó, o se rechazó, o quedó escalada sin aprobar\)\. El titular queda protegido\./g, "There is no approval for this purchase in the auditable trail (it was never verified, was rejected, or was escalated and never approved). The cardholder is protected."],
   [/El titular queda protegido\./g, "The cardholder is protected."],
   // OTP / errores HTTP frecuentes
   [/Código email OTP incorrecto o expirado\./g, "Incorrect or expired email OTP code."],

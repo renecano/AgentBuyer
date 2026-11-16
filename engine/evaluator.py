@@ -205,30 +205,3 @@ def _cents_or_none(value: Any) -> Any:
         return to_cents(value)
     except MoneyError:
         return None
-
-
-def evaluate_mandate_constraints(mandate, attempt, live_state: dict) -> Tuple[bool, str, List[Dict[str, Any]], bool]:
-    """Adaptador para core/verify.py. La línea estricta guarda montos en UNIDADES
-    (scope.max_amount_per_tx, attempt.amount): aquí, y solo aquí, se convierten a
-    centavos exactos. Un monto no representable queda como inválido → REJECT."""
-    mandate_dict = mandate.model_dump() if hasattr(mandate, "model_dump") else dict(mandate)
-    attempt_dict = attempt.model_dump() if hasattr(attempt, "model_dump") else dict(attempt)
-
-    if not mandate_dict.get("constraints"):
-        scope = mandate_dict.get("scope") or {}
-        mandate_dict = {**mandate_dict, "constraints": {
-            "currency": scope.get("currency"),
-            "max_amount_per_purchase_cents": _cents_or_none(scope.get("max_amount_per_tx")),
-            "monthly_budget_cents": _cents_or_none(scope.get("monthly_budget")),
-            "allowed_categories": scope.get("allowed_categories"),
-            "allowed_merchants": scope.get("allowed_merchants"),
-            "max_executions_per_month": scope.get("max_executions_per_month"),
-            "conditions_expression": scope.get("conditions_expression"),
-        }}
-    metadata = dict(attempt_dict.get("metadata") or {})
-    if "price" in metadata and "price_cents" not in metadata:
-        metadata["price_cents"] = _cents_or_none(metadata.pop("price"))
-    attempt_dict = {**attempt_dict, "amount_cents": _cents_or_none(attempt_dict.get("amount")), "metadata": metadata}
-
-    result = evaluate(mandate_dict, live_state, attempt_dict)
-    return result["verdict"] == "APPROVE", result["reason"], result["checks"], result["verdict"] == "ESCALATE"

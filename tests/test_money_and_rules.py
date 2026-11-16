@@ -88,14 +88,6 @@ def test_apply_approved_purchase_refuses_anything_but_positive_cents(client, min
     assert live_state(mine) == {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None}
 
 
-def test_seed_is_loaded_in_cents(client, active_seed):
-    with TestClient(app):
-        constraints = stored_document(active_seed["mandate_id"])["constraints"]
-    assert constraints["max_amount_per_purchase_cents"] == 15000
-    assert constraints["monthly_budget_cents"] == 50000
-    assert constraints["conditions"] == [{"type": "price_below", "value_cents": 15000}]
-    assert "max_amount_per_tx" not in constraints
-
 
 # ── Solo un mandato ACTIVO compra (ambas líneas) ────────────────────────────
 
@@ -109,27 +101,6 @@ def test_paused_mandate_is_rejected_on_the_react_line(client, mine):
 
     assert client.post(f"/mandates/{mine}/resume", headers=headers()).status_code == 200
     assert verify_as_service(client, attempt(mine, "att_resumed", 10000)).json()["verdict"] == "APPROVE"
-
-
-@pytest.mark.parametrize("action", ["pause", "revoke"])
-def test_non_active_mandate_is_rejected_on_the_strict_line(client, action):
-    from core.agent_loop import PurchasingAgent
-    from core.merchant import vuelaya_merchant
-    from mandate.issue import create_mandate
-    from mandate.sign import generate_keypair
-    from shared.schemas import VerificationStatus
-
-    h_priv, h_pub = generate_keypair()
-    a_priv, a_pub = generate_keypair()
-    strict = create_mandate(human_id="hum_s", human_privkey=h_priv, human_pubkey=h_pub, agent_id="agent_s",
-                            agent_pubkey=a_pub, max_amount_per_tx=150.0, allowed_categories=["travel.flights"])
-    mandate_store.mandate_store.save_mandate(strict)
-    getattr(mandate_store.mandate_store, f"{action}_mandate")(strict.mandate_id)
-
-    agent = PurchasingAgent("agent_s", a_priv, a_pub)
-    _, result = agent.attempt_purchase(mandate_store.mandate_store.get_mandate(strict.mandate_id),
-                                       vuelaya_merchant.get_item("FLIGHT_COR_130"), merchant=vuelaya_merchant)
-    assert result.status == VerificationStatus.REJECTED
 
 
 # ── El agente no intenta lo que no cabe ─────────────────────────────────────

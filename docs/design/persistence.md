@@ -48,7 +48,7 @@ Hoy **todo** el estado vive en diccionarios del proceso. Un reinicio borra manda
 
 **Con varios procesos esto deja de ser opcional.** Un OTP emitido por un worker no lo ve otro. Mientras la app corra en un solo proceso, la memoria es correcta. El despliegue del 9.1 debe correr un solo worker o traer Redis; queda anotado como requisito de ese paso.
 
-### 2.3 No se persiste: es legado y se retira en el 7.2 (P-08)
+### 2.3 No se persiste: es legado y se retiró en el 7.2 (P-08)
 
 | Estado | Dónde | Destino |
 |---|---|---|

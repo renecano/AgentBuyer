@@ -2,8 +2,8 @@
 
 Desde el 3.5 es el ÚNICO camino para que un usuario cree un mandato: POST /mandates
 exige el formato del 3.2 (key_id + nonce + created_at + signature) firmado con SU
-llave registrada, y el servidor ya no firma por nadie. El sello de sistema solo
-existe para el mandato semilla que se carga al arrancar (hasta el 7.2).
+llave registrada, y el servidor ya no firma por nadie. Desde el 7.2 tampoco existe
+el sello de sistema del mandato semilla: no hay mandatos precargados.
 
 Al crear (create_signed_mandate), en este orden:
     1. forma del cuerpo                                         → 422 (SignedMandateError)
@@ -49,10 +49,8 @@ from mandate.sign import verify_ed25519_bytes
 MAX_CLOCK_SKEW = timedelta(minutes=2)
 MAX_AGE = timedelta(minutes=10)
 
+# El único firmante válido desde el 7.2 (P-11: el sello de sistema se fue con el seed).
 KIND_HUMAN = "human"
-# Solo el mandato semilla cargado al arrancar (core/mandate_store.seal_seed_mandate):
-# ningún endpoint puede crearlo. Desaparece con el seed en el 7.2 (P-11).
-KIND_SYSTEM_SEAL = "system_seal"
 
 SIGNED_FORMAT_REQUIRED = ("signature", "key_id", "created_at", "nonce")
 SIGNED_BODY_KEYS = frozenset({

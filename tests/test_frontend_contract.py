@@ -6,8 +6,10 @@ AccountView.tsx y AuditView.tsx hoy. No validan que la lógica de negocio sea
 correcta: cuando un test fija un veredicto o un estado es solo para garantizar
 que se ejerce la rama cuya forma se quiere congelar.
 
-Datos: el mandato semilla shared/seed_mandates.json (mnd_marta_001), cargado por
-el lifespan de la app. La búsqueda web SIEMPRE va mockeada (sin red).
+Datos: un mandato (mnd_marta_001) FIRMADO por su titular por el camino real (llave
+registrada con prueba de posesión, POST /mandates). Hasta el 7.2 era el mandato
+semilla que el servidor sellaba al arrancar (P-11: retirado). La búsqueda web SIEMPRE
+va mockeada (sin red).
 """
 import json
 from datetime import datetime
@@ -19,13 +21,22 @@ from fastapi.testclient import TestClient
 from api.main import app
 from core import mandate_store, merchant_search
 from core.mandate_store import get_mandate_signer
-from tests.conftest import MandateSigner, verify_as_service
+from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner, SignedMandatePoster, verify_as_service
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
 
-SEED_MANDATE_ID = "mnd_marta_001"
+SEED_MANDATE_ID = "mnd_marta_001"   # (nombre histórico: ya no es un seed, ver docstring)
 SEED_AGENT_ID = "agt_saturday"
+CONTRACT_MANDATE = {
+    "mandate_id": SEED_MANDATE_ID,
+    "human": {"id": "hum_marta", "name": "Test User", "display_name": "Test User"},
+    "agent": {"id": SEED_AGENT_ID, "display_name": "Saturday"},
+    "search_fields": {"origin": "BUE", "destination": "COR", "departure_date": "2026-12-05"},
+    "constraints": {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
+                    "allowed_merchants": ["mch_vuelaya"], "max_uses": 3,
+                    "conditions": [{"type": "price_below", "value": 150}]},
+}
 VERDICTS = {"APPROVE", "ESCALATE", "REJECT"}
 LIVE_STATUSES = {"active", "revoked", "expired"}
 LIABLE_PARTIES = {"HUMAN", "MERCHANT", "FRAUDSTER", "AGENT"}
@@ -53,14 +64,13 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture()
-def client(active_seed, seed_owner_headers):
-    # active_seed (tests/conftest.py): el seed expira relativo a "ahora", así cada
-    # test ejerce la rama que dice congelar sin depender de la fecha del sistema.
-    # seed_owner_headers: React inicia sesión por OTP y manda el token en todas sus
-    # llamadas. Se autentica como el DUEÑO del seed porque los endpoints por-mandato
-    # exigen propiedad: es la misma persona que en el navegador abre SU mandato.
+def client(monkeypatch):
+    # React inicia sesión por OTP y manda el token en todas sus llamadas. El cliente se
+    # autentica como el TITULAR del mandato porque los endpoints por-mandato exigen
+    # propiedad: es la misma persona que en el navegador abre SU mandato.
     _clear_backend_state()
-    with TestClient(app, headers=seed_owner_headers) as test_client:  # el lifespan carga el seed
+    with TestClient(app, headers=KeyRegistrar.bearer(TEST_USER_EMAIL)) as test_client:
+        SignedMandatePoster(test_client, KeyRegistrar(test_client, monkeypatch)).create(CONTRACT_MANDATE)
         yield test_client
     _clear_backend_state()
 
@@ -257,7 +267,7 @@ def test_get_mandate_returns_mandate_record(client):
 
 # ── POST /mandates (MandateCreator.tsx:404) ─────────────────────────────────
 
-def test_create_mandate_from_mandate_creator_shape(client, key_registrar, active_seed):
+def test_create_mandate_from_mandate_creator_shape(client, key_registrar):
     """Forma ACTUAL (3.4): el wizard FIRMA el mandato con la llave registrada del
     dispositivo y lo envía en el formato del 3.2. 201 y el registro {mandate, live_state}:
     lo firmado, normalizado, más el payment_token que el servidor emite después.
@@ -268,7 +278,7 @@ def test_create_mandate_from_mandate_creator_shape(client, key_registrar, active
     created_at, signature y expires_at (que se hace cumplir), los montos como texto
     decimal, y el mandato queda kind=human. React sigue ignorando el body: solo mira
     response.ok y navega con el mandate_id que generó él mismo."""
-    signer = MandateSigner(client, key_registrar, active_seed["human"]["email"])
+    signer = MandateSigner(client, key_registrar, TEST_USER_EMAIL)
     signer.register()
     payload = mandate_creator_payload(signer)
     response = client.post("/mandates", json=payload)
@@ -396,17 +406,10 @@ def test_verify_returns_verification_shape(client, attempt, expected_verdict):
     assert verification["verdict"] == expected_verdict  # garantiza que se ejerce cada rama
 
 
-# ── POST /mandates/{id}/revoke y /reset ──────────────────────────────────────
+# ── POST /mandates/{id}/revoke (P-17: /reset se retiró en el 7.2) ─────────────
 
 def test_revoke_returns_mandate_record(client):
     response = client.post(f"/mandates/{SEED_MANDATE_ID}/revoke")
-    assert response.status_code == 200
-    assert_mandate_record(response.json())
-
-
-def test_reset_returns_mandate_record(client):
-    client.post(f"/mandates/{SEED_MANDATE_ID}/revoke")
-    response = client.post(f"/mandates/{SEED_MANDATE_ID}/reset")
     assert response.status_code == 200
     assert_mandate_record(response.json())
 

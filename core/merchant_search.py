@@ -1,6 +1,6 @@
 """Búsqueda real de ofertas en comercios vía OpenAI web search.
 
-Reemplaza el feed de precios mockeado (core/merchant.py) en el paso de
+Reemplazó al feed de precios mockeado (core/merchant.py, retirado en el 7.2) en el paso de
 descubrimiento del agente (core/agent_loop.py):
 
     ofertas = search_merchant_offers("flights", {...})        # web real

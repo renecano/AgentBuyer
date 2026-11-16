@@ -143,14 +143,14 @@ def test_revoked_key_stays_revoked_after_restart(monkeypatch):
         assert next(c for c in result["checks"] if c["rule"] == "signing_key_active")["pass"] is False
 
 
-def test_the_seed_is_not_reset_or_duplicated_by_a_restart(active_seed):
+def test_a_revoked_mandate_stays_revoked_after_a_restart(monkeypatch):
+    """(7.2: antes se probaba con el seed, que se re-creaba ACTIVO en cada arranque.)"""
     with TestClient(app) as client:
-        seed_id = active_seed["mandate_id"]
-        assert client.post(f"/mandates/{seed_id}/revoke", headers=KeyRegistrar.bearer(active_seed["human"]["email"])).status_code == 200
+        SignedMandatePoster(client, KeyRegistrar(client, monkeypatch)).create(MANDATE)
+        assert client.post("/mandates/mnd_persist/revoke", headers=KeyRegistrar.bearer(TEST_USER_EMAIL)).status_code == 200
     restart()
     with TestClient(app):
-        # Antes del 6.2 el seed se re-creaba ACTIVO en cada arranque.
-        assert get_mandate(seed_id)["live_state"]["status"] == "revoked"
+        assert get_mandate("mnd_persist")["live_state"]["status"] == "revoked"
 
 
 # ── Las invariantes viven en la base ────────────────────────────────────────

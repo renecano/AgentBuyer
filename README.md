@@ -117,44 +117,18 @@ Open your browser at `http://localhost:5173`.
 pytest tests/ -v
 ```
 
-### Run the 8-Vector Adversarial Attack Simulator
+### Run the end-to-end walkthrough
 ```bash
-python mandate/adversarial_tests.py
+python run_demo.py
 ```
+Runs the real API in-process on a temporary database (development mode, no network):
+a person registers a device key, signs a mandate, a merchant verifies purchases, the
+person revokes it, and the audit chain is verified. It prints what the API actually
+answered and exits non-zero if any step does not match what is expected.
 
-```
-======================================================================
-🔒 RUNNING AGENTBUYER ADVERSARIAL ATTACK TEST SUITE (8 VECTORS)
-======================================================================
-
-[ATTACK 1] Simulating Replay Attack (Re-submitting used nonce)...
-  ✅ BLOCKED: Replay attack intercepted via nonce verification.
-
-[ATTACK 2] Simulating In-Flight Payload Tampering (Signature Mismatch)...
-  ✅ BLOCKED: Tampered amount detected via agent cryptographic signature check.
-
-[ATTACK 3] Simulating Category Constraint Violation (Buying Rolex under Flight mandate)...
-  ✅ BLOCKED: Category mismatch caught by fail-closed evaluator.
-
-[ATTACK 4] Simulating Live Revocation (The Trial by Fire)...
-  ✅ BLOCKED: Live revocation immediately terminated purchasing ability.
-
-[ATTACK 5] Simulating Agent Impersonation Attack...
-  ✅ BLOCKED: Unregistered agent identity rejected.
-
-[ATTACK 6] Simulating Forged Mandate Signature Attack...
-  ✅ BLOCKED: Forged human mandate signature detected and rejected.
-
-[ATTACK 7] Simulating Frequency & Budget Limit Exhaustion...
-  ✅ BLOCKED: Budget and execution counter limits strictly enforced.
-
-[ATTACK 8] Simulating AST Sandbox Escape & Prompt Injection Attack...
-  ✅ BLOCKED: Malicious AST code construct safely rejected (fail-closed sandbox).
-
-======================================================================
-🏆 ALL 8 ADVERSARIAL ATTACKS SUCCESSFULLY BLOCKED WITH ZERO BREACHES!
-======================================================================
-```
+The attacks on mandate signatures (replay, tampering, stolen tokens, foreign keys…)
+are permanent regression tests: `pytest tests/test_mandate_signature_attacks.py`.
+(The old `mandate/adversarial_tests.py` simulator was retired in step 7.2.)
 
 ---
 

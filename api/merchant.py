@@ -5,17 +5,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.security import Principal, require_principal
-from core.merchant import get_flights
 from core.merchant_search import CATEGORY_SPECS, search_merchant_offers
 
 
 router = APIRouter()
 
 
-@router.get("/merchant/flights")
-def list_flights():
-    """Devuelve el catálogo actual de vuelos inventados de VuelaYa."""
-    return get_flights()
+# 7.2 (P-08): GET /merchant/flights (catálogo de vuelos inventados de VuelaYa) se
+# retiró con core/merchant.py. Las ofertas son las de la búsqueda real.
 
 
 @router.post("/merchant/search")

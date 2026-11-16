@@ -13,7 +13,7 @@ Cambios deliberados de contrato (R4), cada uno con su test:
 """
 import pytest
 
-from engine.evaluator import evaluate, evaluate_mandate_constraints
+from engine.evaluator import evaluate
 from engine.grammar import MAX_SEQUENCE_LENGTH, parse_and_evaluate
 
 CAP = 15000
@@ -246,39 +246,6 @@ def test_verdict_is_always_one_of_the_three_contract_values():
         result = evaluate(mandate, live_state, attempt)
         assert result["verdict"] in ("APPROVE", "REJECT", "ESCALATE")
         assert isinstance(result["checks"], list) and isinstance(result["reason"], str)
-
-
-# ── Borde de la línea estricta (unidades → centavos) ────────────────────────
-
-class _Model:
-    def __init__(self, data):
-        self._data = data
-
-    def model_dump(self):
-        return dict(self._data)
-
-
-def strict(scope: dict, amount, category="travel.flights"):
-    mandate = _Model({"scope": {"currency": "USD", "allowed_categories": ["travel.flights"], "allowed_merchants": ["*"],
-                                "max_executions_per_month": 5, **scope}, "constraints": None})
-    attempt = _Model({"amount": amount, "currency": "USD", "category": category, "merchant_id": "mch_vuelaya", "metadata": {}})
-    return evaluate_mandate_constraints(mandate, attempt, {"uses_count": 0})
-
-
-def test_strict_line_amounts_are_converted_exactly_at_its_edge():
-    authorized, _, checks, _ = strict({"max_amount_per_tx": 150.0}, 149.99)
-    assert authorized and next(c for c in checks if c["rule"] == "amount")["detail"] == "149.99 <= 150"
-    assert strict({"max_amount_per_tx": 150.0}, 150.01)[3] is True       # escala (sobre el tope)
-    assert strict({"max_amount_per_tx": 150.0}, 0.1 + 0.2)[0] is False   # no representable → REJECT
-    assert strict({"max_amount_per_tx": 150.0}, 0.1 + 0.2)[3] is False
-    assert strict({"max_amount_per_tx": 150.0}, -5.0)[3] is False        # negativo → REJECT, no escala
-
-
-def test_strict_line_category_is_exact_too():
-    """La línea estricta antes aprobaba "travel.flights" con allowed ["travel", "flights"]."""
-    authorized, _, checks, can_escalate = strict({"max_amount_per_tx": 150.0, "allowed_categories": ["travel", "flights"]}, 100.0)
-    assert not authorized and can_escalate
-    assert next(c for c in checks if c["rule"] == "category")["pass"] is False
 
 
 # ── Gramática de expresiones (5.1) ──────────────────────────────────────────

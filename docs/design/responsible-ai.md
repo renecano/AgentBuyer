@@ -6,7 +6,7 @@
 
 **El LLM nunca puede aprobar lo que el código determinista rechazó.** Al firewall semántico solo se le pregunta por compras que el engine ya aprobó. Puede **bajar** el veredicto (a ESCALATE o REJECT), nunca subirlo.
 
-- Código: `api/verify.py` (paso 4, "Firewall semántico") y `core/verify.py` (`_run_semantic_firewall`).
+- Código: `api/verify.py` (paso 4, "Firewall semántico"). La línea estricta (`core/verify.py`) se retiró en el 7.2.
 - Test: `tests/test_llm_layer.py::test_the_llm_cannot_approve_what_the_engine_did_not`. El engine escala una compra sobre el tope, un LLM simulado dice "APPROVE", y el veredicto sigue en ESCALATE: al LLM ni siquiera se le pregunta.
 
 ## Quién decide qué

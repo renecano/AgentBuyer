@@ -1,14 +1,14 @@
 """Resolución de disputas sobre el modelo de datos que usa el flujo React/API.
 
-El árbitro forense de core/dispute.py opera sobre objetos Mandate (Ed25519,
-flujo adversarial). Los mandatos creados por la UI tienen otra forma (dict con
-human/agent/constraints), así que aquí se resuelve la responsabilidad sobre los
-MISMOS datos que ve la app: el registro vivo del mandato + el trail auditable.
+La responsabilidad se resuelve sobre los MISMOS datos que ve la app: el registro
+vivo del mandato + el trail auditable. (7.2: el árbitro de la línea estricta,
+core/dispute.py, se retiró con ella.)
 
-Reglas de responsabilidad (mismo espíritu que el árbitro):
+Reglas de responsabilidad:
   - Sin mandato en el registro        -> COMERCIO responsable + reembolso
   - Compra tras la revocación         -> COMERCIO responsable + reembolso
-  - Sin verificación/aprobación en el trail -> COMERCIO responsable + reembolso
+  - Sin APROBACIÓN en el trail (no verificada, rechazada o escalada sin aprobar)
+                                      -> COMERCIO responsable + reembolso
   - Compra válida, verificada y aprobada    -> TITULAR responsable, sin reembolso
 El veredicto se apoya en la evidencia del trail append-only (tamper-evident).
 
@@ -57,8 +57,6 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
         }
 
     live = record["live_state"]
-    # Evento de verificación de este intento.
-    verifications = [e for e in evidence if e.get("attempt_id") == attempt_id and e.get("type") == "verification"]
     approvals = [
         e for e in evidence
         if e.get("attempt_id") == attempt_id
@@ -79,11 +77,13 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
         except (ValueError, KeyError):
             pass
 
-    # No hay verificación ni aprobación registrada para este intento.
-    if not verifications and not approvals:
+    # No hay APROBACIÓN registrada para este intento. 7.2: antes bastaba un evento de
+    # verificación, así que un intento RECHAZADO (o escalado y nunca aprobado) se
+    # resolvía como "compra verificada y aprobada" a cargo del titular.
+    if not approvals:
         return {
             "verdict": "MERCHANT_LIABLE_UNVERIFIED", "liable_party": "MERCHANT", "refund_issued": True,
-            "explanation": "No existe registro de verificación ni de aprobación para esta compra en el trail auditable. El titular queda protegido.",
+            "explanation": "No existe una aprobación registrada para esta compra en el trail auditable (no se verificó, o se rechazó, o quedó escalada sin aprobar). El titular queda protegido.",
         }
 
     # Compra válida, verificada y aprobada dentro del mandato.

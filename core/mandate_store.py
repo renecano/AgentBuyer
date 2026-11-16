@@ -10,8 +10,8 @@ ambas líneas de verificación y para lo que expone GET /mandates/{id}.
 Tablas (core/db_schema.py):
 - mandates: documento (JSON exacto de lo guardado: lo firmado se vuelve a verificar
   sobre esos mismos bytes), dueño, estado y contadores de por vida.
-- mandate_signers: quién firmó (kind human | system_seal). Dato INTERNO de
-  verificación: no sale en ninguna respuesta, igual que el dueño.
+- mandate_signers: quién firmó (el titular, con su llave registrada). Dato INTERNO
+  de verificación: no sale en ninguna respuesta, igual que el dueño.
 - mandate_periods: uso por mes calendario UTC (5.2). Una fila por mes: queda historial.
 - mandate_creation_nonces: anti-replay de la creación de mandatos firmados.
 
@@ -23,10 +23,9 @@ Expiración: se DERIVA al leer (un mandato activo cuyo expires_at pasó se ve
 "expired") y no se escribe. Así restaurar un backup no "des-expira" nada y el
 resultado es el mismo que cuando se guardaba en memoria.
 """
-import hashlib
 import json
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple, Union
+from typing import Optional
 
 from sqlalchemy import and_, delete, func, insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -36,7 +35,6 @@ from core.db_schema import mandate_creation_nonces as NONCES
 from core.db_schema import mandate_periods as PERIODS
 from core.db_schema import mandate_signers as SIGNERS
 from core.db_schema import mandates as MANDATES_TABLE
-from shared.schemas import Mandate, MandateStatus
 
 # Por qué UTC en los periodos: un mandato firmado no declara zona horaria y el servidor
 # no debe adivinarla; el corte es el mismo para todos y es verificable.
@@ -141,16 +139,6 @@ def get_mandate_signer(mandate_id: str) -> Optional[dict]:
             "message_hash": row.message_hash, "signed_at": row.signed_at}
 
 
-def _sealed_signer(public_key: Optional[str], sealed_bytes: Optional[bytes], kind: str) -> dict:
-    return {
-        "kind": kind,
-        "key_id": None,
-        "public_key": public_key,
-        "message_hash": hashlib.sha256(sealed_bytes).hexdigest() if sealed_bytes is not None else None,
-        "signed_at": _utcnow().isoformat(),
-    }
-
-
 def mandate_ids_owned_by(owner_email: Optional[str]) -> set:
     """Ids de los mandatos cuyo dueño es `owner_email` (vacío si no hay dueño)."""
     owner = _normalize_owner(owner_email)
@@ -170,99 +158,26 @@ def get_mandate_owner(mandate_id: str) -> Optional[str]:
         ).scalar_one_or_none()
 
 
+def _set_status(mandate_id: str, status: str) -> bool:
+    with write_tx() as connection:
+        result = connection.execute(
+            update(MANDATES_TABLE).where(MANDATES_TABLE.c.mandate_id == mandate_id).values(status=status)
+        )
+        return result.rowcount == 1
+
+
 class MandateStore:
-    """Fachada de la línea estricta (modelo Mandate) y de pausar/reanudar.
-    CRITICAL RULE: NO CACHING. Cada consulta lee el estado vivo de la base."""
+    """Pausar y reanudar (el dueño, desde React) y la limpieza de los tests.
 
-    def save_mandate(self, mandate: Union[Mandate, dict], owner_email: Optional[str] = None) -> Mandate:
-        m_obj = Mandate(**mandate) if isinstance(mandate, dict) else mandate.model_copy(deep=True)
-        mandate_id = m_obj.mandate_id
-        document = m_obj.model_dump(mode="json")
-        # mandate/issue.py firma con llaves que guarda el SERVIDOR (_key_registry):
-        # es un sello de sistema, no una firma del titular.
-        signer = _sealed_signer(m_obj.human_pubkey or None, None, "system_seal")
-        values = {
-            "owner_email": _normalize_owner(owner_email), "document": _dump(document),
-            "status": m_obj.status.value.lower(), "uses_count": 0, "amount_spent_cents": 0,
-            "revoked_at": m_obj.revoked_at, "created_at": _stamp(_utcnow()),
-        }
-        with write_tx() as connection:
-            # Guardar de nuevo el mismo id lo reemplaza (comportamiento histórico de la
-            # línea estricta); el uso mensual se conserva, como antes.
-            statement = sqlite_insert(MANDATES_TABLE).values(mandate_id=mandate_id, **values)
-            connection.execute(statement.on_conflict_do_update(index_elements=["mandate_id"], set_=values))
-            signer_values = _signer_columns(signer)
-            statement = sqlite_insert(SIGNERS).values(mandate_id=mandate_id, **signer_values)
-            connection.execute(statement.on_conflict_do_update(index_elements=["mandate_id"], set_=signer_values))
-        try:
-            from audit.log import audit_ledger
-            audit_ledger.append_entry(
-                event_type="MANDATE_CREATED",
-                actor_type="HUMAN",
-                actor_id=m_obj.human_id,
-                mandate_id=mandate_id,
-                details={"scope": m_obj.scope.model_dump() if m_obj.scope else {}},
-            )
-        except Exception:
-            pass
-        return m_obj
-
-    def get_mandate(self, mandate_id: str) -> Optional[Mandate]:
-        record = get_mandate(mandate_id)
-        if record is None:
-            return None
-        live_state = record["live_state"]
-        # status y revoked_at salen de live_state (única fuente de verdad), no del
-        # documento, que puede quedar desactualizado.
-        return Mandate(**{**record["mandate"], "status": live_state["status"].upper(),
-                          "revoked_at": live_state.get("revoked_at")})
-
-    def list_mandates(self, human_id: Optional[str] = None) -> List[Mandate]:
-        with read_tx() as connection:
-            ids = list(connection.execute(select(MANDATES_TABLE.c.mandate_id).order_by(MANDATES_TABLE.c.created_at)).scalars())
-        mandates = []
-        for mandate_id in ids:
-            m = self.get_mandate(mandate_id)
-            if m and (human_id is None or m.human_id == human_id):
-                mandates.append(m)
-        return mandates
-
-    def _update_document_and_status(self, mandate_id: str, status: str, document_changes) -> bool:
-        with write_tx() as connection:
-            row = connection.execute(select(MANDATES_TABLE).where(MANDATES_TABLE.c.mandate_id == mandate_id)).first()
-            if row is None:
-                return False
-            document = json.loads(row.document)
-            extra = document_changes(document) or {}
-            connection.execute(update(MANDATES_TABLE).where(MANDATES_TABLE.c.mandate_id == mandate_id)
-                               .values(status=status, document=_dump(document), **extra))
-            return True
-
-    def revoke_mandate(self, mandate_id: str, reason: str = "Revoked by cardholder") -> bool:
-        """Live Revocation Kill Switch."""
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        def changes(document: dict) -> dict:
-            if "status" in document:
-                document["status"] = "REVOKED"
-            if "revoked_at" in document:
-                document["revoked_at"] = now_iso
-            if "revocation_reason" in document:
-                document["revocation_reason"] = reason
-            return {"revoked_at": now_iso}
-        return self._update_document_and_status(mandate_id, "revoked", changes)
+    7.2 (P-08, P-11): la fachada de la línea estricta (modelo Mandate, save_mandate,
+    list_mandates…) y el seed sellado por el servidor se retiraron. Solo se escribe el
+    estado: el documento firmado no se toca (antes pausar le agregaba "status")."""
 
     def pause_mandate(self, mandate_id: str) -> bool:
-        return self._update_document_and_status(mandate_id, "paused", lambda document: document.__setitem__("status", "PAUSED"))
+        return _set_status(mandate_id, "paused")
 
     def resume_mandate(self, mandate_id: str) -> bool:
-        return self._update_document_and_status(mandate_id, "active", lambda document: document.__setitem__("status", "ACTIVE"))
-
-    def get_live_status(self, mandate_id: str) -> Tuple[Optional[MandateStatus], Optional[str]]:
-        m = self.get_mandate(mandate_id)
-        if not m:
-            return None, "Mandate not found"
-        return m.status, m.revocation_reason
+        return _set_status(mandate_id, "active")
 
     def clear(self) -> None:
         """Borra todos los mandatos (y, en cascada, firmantes y periodos), sus decisiones
@@ -275,68 +190,17 @@ class MandateStore:
             connection.execute(delete(NONCES))
 
 
-# Global singleton instance
 mandate_store = MandateStore()
 
 
-# Funciones funcionales para frontend y routers
-def seal_seed_mandate(mandate: dict, owner_email: Optional[str] = None) -> dict:
-    """Sella el mandato SEMILLA al arrancar (api/main.load_seed_mandates): el único
-    mandato que el servidor firma con una llave suya (kind=system_seal, D-12). No lo
-    llama ningún endpoint: los usuarios crean mandatos firmados por ellos (3.5).
-
-    El payment_token lo emite el servidor atado a los bytes sellados (también aquí):
-    uno que venga en el seed se descarta. Una firma que venga en el seed es un error,
-    no un "sello del cliente": ese camino legado ya no existe.
-
-    Con persistencia (6.2) el seed sobrevive al reinicio: volver a cargarlo levanta
-    ValueError ("ya existe"), que load_seed_mandates ignora. No se duplica ni se resetea."""
-    from core.signed_mandates import issue_payment_token
-    from mandate.sign import canonical_json, generate_keypair, sign_payload
-
-    mandate_id = mandate.get("mandate_id")
-    if not mandate_id:
-        raise ValueError("El mandate_id es obligatorio")
-    if "signature" in mandate or "human_signature" in mandate:
-        raise ValueError("El seed no puede traer firma: el servidor lo sella al cargarlo.")
-
-    m_copy = json.loads(json.dumps(mandate))
-    if isinstance(m_copy.get("constraints"), dict):
-        # El seed es un archivo de config en UNIDADES: su borde a centavos es aquí (5.1).
-        m_copy["constraints"] = _seed_constraints_to_cents(m_copy["constraints"])
-    sealed = m_copy.get("constraints", m_copy.get("scope", {}))
-    sealed_bytes = canonical_json(sealed)
-    h_priv, h_pub = generate_keypair()
-    m_copy["human_pubkey"] = h_pub
-    m_copy["signature"] = sign_payload(h_priv, sealed)
-    signer = _sealed_signer(h_pub, sealed_bytes, "system_seal")
-    m_copy["payment_token"] = issue_payment_token(mandate_id, signer["message_hash"])
-
-    with write_tx() as connection:
-        if _load(connection, mandate_id) is not None:
-            raise ValueError("El mandate_id ya existe")
-        _insert_mandate(connection, mandate_id, m_copy, _normalize_owner(owner_email), signer)
-        return _load(connection, mandate_id)
-
-
-def _seed_constraints_to_cents(constraints: dict) -> dict:
-    """Constraints del seed (unidades) → la forma del engine (centavos enteros).
-    max_amount_per_tx era un duplicado de max_amount_per_purchase: se descarta."""
-    from core.money import to_cents
-
-    converted = {key: value for key, value in constraints.items()
-                 if key not in ("max_amount_per_purchase", "max_amount_per_tx", "monthly_budget", "conditions")}
-    cap = constraints.get("max_amount_per_purchase", constraints.get("max_amount_per_tx"))
-    if cap is not None:
-        converted["max_amount_per_purchase_cents"] = to_cents(cap, "max_amount_per_purchase")
-    if constraints.get("monthly_budget") is not None:
-        converted["monthly_budget_cents"] = to_cents(constraints["monthly_budget"], "monthly_budget")
-    converted["conditions"] = [
-        {"type": condition["type"], "value_cents": to_cents(condition["value"], f"conditions.{condition['type']}")}
-        if isinstance(condition, dict) and "value" in condition else condition
-        for condition in constraints.get("conditions", [])
-    ]
-    return converted
+def list_mandates(owner_email: Optional[str]) -> list:
+    """Registros {mandate, live_state} de los mandatos de `owner_email`, en orden de
+    alta. None = todos (solo para un admin; lo decide quien llama)."""
+    query = select(MANDATES_TABLE).order_by(MANDATES_TABLE.c.created_at, MANDATES_TABLE.c.mandate_id)
+    if owner_email is not None:
+        query = query.where(MANDATES_TABLE.c.owner_email == _normalize_owner(owner_email))
+    with read_tx() as connection:
+        return [_record(row) for row in connection.execute(query)]
 
 
 def count_mandates_signed_with(owner_email: str, key_id: str) -> int:
@@ -397,19 +261,6 @@ def revoke_mandate(mandate_id: str) -> dict | None:
             .where(and_(MANDATES_TABLE.c.mandate_id == mandate_id, MANDATES_TABLE.c.status != "revoked"))
             .values(status="revoked", revoked_at=datetime.now(timezone.utc).isoformat())
         )
-        return _load(connection, mandate_id)
-
-
-def reset_mandate(mandate_id: str) -> dict | None:
-    """Restaura el estado vivo inicial de un mandato para reiniciar una demo.
-    Decisión pendiente P-17 (docs/design/persistence.md, H3): se conserva el
-    comportamiento de antes del 6.2, incluido borrar el uso mensual."""
-    with write_tx() as connection:
-        if _load(connection, mandate_id) is None:
-            return None
-        live_state = _new_live_state()
-        connection.execute(update(MANDATES_TABLE).where(MANDATES_TABLE.c.mandate_id == mandate_id).values(**live_state))
-        connection.execute(delete(PERIODS).where(PERIODS.c.mandate_id == mandate_id))
         return _load(connection, mandate_id)
 
 

@@ -49,12 +49,12 @@ mandate_signers = Table(
     metadata,
     Column("mandate_id", Text, ForeignKey("mandates.mandate_id", ondelete="CASCADE"), primary_key=True),
     Column("kind", Text, nullable=False),
-    Column("key_id", Text, ForeignKey("owner_keys.key_id"), nullable=True),
+    # 7.2 (P-11, migración 0003): solo el titular firma; siempre con su llave registrada.
+    Column("key_id", Text, ForeignKey("owner_keys.key_id"), nullable=False),
     Column("public_key", Text, nullable=True),
     Column("message_hash", Text, nullable=True),
     Column("signed_at", Text, nullable=False),
-    CheckConstraint("kind IN ('human', 'system_seal')", name="ck_mandate_signers_kind"),
-    CheckConstraint("kind <> 'human' OR key_id IS NOT NULL", name="ck_mandate_signers_human_has_key"),
+    CheckConstraint("kind = 'human'", name="ck_mandate_signers_kind"),
 )
 Index("ix_mandate_signers_key_id", mandate_signers.c.key_id)
 

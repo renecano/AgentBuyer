@@ -3,16 +3,12 @@
 Antes, sign_payload con una llave que no medía 64 hex (o si Ed25519 fallaba)
 devolvía EN SILENCIO un JWT HMAC firmado con un secreto de desarrollo. Ahora es
 un SignatureError explícito, y verify_signature es fail-closed."""
-import base64
-import hashlib
-import hmac
 
 import pytest
 
 from mandate.sign import (
     SignatureError,
     generate_keypair,
-    sign_hmac_token,
     sign_payload,
     verify_ed25519_bytes,
     verify_signature,
@@ -102,25 +98,6 @@ def test_malformed_inputs_never_verify(pubkey, signature):
 def test_non_serializable_payload_never_verifies(keys):
     _, pub = keys
     assert verify_signature(pub, {"when": object()}, "ab" * 64) is False
-
-
-# ── sign_hmac_token: explícito, sin secreto por defecto ─────────────────────
-
-def test_hmac_token_is_a_valid_hs256_jwt_with_an_explicit_secret():
-    secret = b"explicit-test-secret"
-    token = sign_hmac_token({"mandate_id": "m1"}, secret)
-
-    header, body, signature = token.split(".")
-    expected = base64.urlsafe_b64encode(
-        hmac.new(secret, f"{header}.{body}".encode(), hashlib.sha256).digest()
-    ).decode().rstrip("=")
-    assert signature == expected
-
-
-@pytest.mark.parametrize("secret", [b"", "a-string-secret", None], ids=["empty", "str", "none"])
-def test_hmac_token_requires_an_explicit_bytes_secret(secret):
-    with pytest.raises(SignatureError):
-        sign_hmac_token({"mandate_id": "m1"}, secret)
 
 
 # ── verify_ed25519_bytes: la primitiva para firmas hechas fuera del servidor ──

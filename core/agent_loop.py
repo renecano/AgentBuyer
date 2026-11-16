@@ -1,114 +1,16 @@
 import uuid
 import secrets
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Tuple, List
 
-from shared.schemas import (
-    Mandate,
-    CatalogItem,
-    PurchaseAttempt,
-    VerificationResult,
-)
-from mandate.sign import sign_payload
-from core.merchant import vuelaya_merchant, VuelaYaMerchant
 from core.mandate_store import get_mandate, get_mandate_signer
 from core.money import format_money, is_cents
 from audit.log import append_entry
 from core.merchant_identity import merchant_id_from_url
 from core.merchant_search import search_merchant_offers
 
-
-class PurchasingAgent:
-    """
-    Autonomous purchasing agent that discovers deals, evaluates them against active mandates,
-    signs purchase attempts cryptographically, and submits them to merchants.
-    """
-
-    def __init__(self, agent_id: str, agent_privkey: str, agent_pubkey: str):
-        self.agent_id = agent_id
-        self.agent_privkey = agent_privkey
-        self.agent_pubkey = agent_pubkey
-        self.purchase_history: List[Dict[str, Any]] = []
-
-    def create_signed_attempt(
-        self,
-        mandate: Mandate,
-        item: CatalogItem,
-        merchant_id: str,
-        override_amount: Optional[float] = None,
-        tampered_nonce: Optional[str] = None,
-        tampered_agent_id: Optional[str] = None,
-        forge_signature: bool = False,
-    ) -> PurchaseAttempt:
-        attempt_id = f"att_{uuid.uuid4().hex[:10]}"
-        timestamp = datetime.now(timezone.utc).isoformat()
-        nonce = tampered_nonce if tampered_nonce else secrets.token_hex(16)
-        active_agent_id = tampered_agent_id if tampered_agent_id else self.agent_id
-        amount = override_amount if override_amount is not None else item.price
-
-        unsigned_dict: Dict[str, Any] = {
-            "attempt_id": attempt_id,
-            "mandate_id": mandate.mandate_id,
-            "agent_id": active_agent_id,
-            "merchant_id": merchant_id,
-            "category": item.category,
-            "amount": amount,
-            "currency": item.currency,
-            "timestamp": timestamp,
-            "nonce": nonce,
-            "item_description": getattr(item, "description", getattr(item, "title", "Vuelo")),
-            "metadata": item.metadata,
-        }
-
-        if forge_signature:
-            signature = "forged_signature_000000000000000000000000000000000000000000000000"
-        else:
-            signature = sign_payload(self.agent_privkey, unsigned_dict)
-
-        return PurchaseAttempt(
-            **unsigned_dict,
-            signature=signature,
-            agent_signature=signature,
-        )
-
-
-    def attempt_purchase(
-        self,
-        mandate: Mandate,
-        item: CatalogItem,
-        merchant: Optional[VuelaYaMerchant] = None,
-        override_amount: Optional[float] = None,
-        tampered_nonce: Optional[str] = None,
-        tampered_agent_id: Optional[str] = None,
-        forge_signature: bool = False,
-    ) -> Tuple[PurchaseAttempt, VerificationResult]:
-        actual_merchant = merchant if merchant is not None else vuelaya_merchant
-        attempt = self.create_signed_attempt(
-            mandate=mandate,
-            item=item,
-            merchant_id=actual_merchant.merchant_id,
-            override_amount=override_amount,
-            tampered_nonce=tampered_nonce,
-            tampered_agent_id=tampered_agent_id,
-            forge_signature=forge_signature,
-        )
-
-        from core.verify import gateway
-        result = gateway.verify_and_authorize(attempt, mandate, merchant_pubkey=actual_merchant.pubkey)
-
-        if result.authorized:
-            actual_merchant.record_settlement(
-                attempt_id=attempt.attempt_id,
-                settlement_token=result.settlement_token,
-                amount=attempt.amount,
-            )
-
-        self.purchase_history.append({
-            "attempt": attempt.model_dump(),
-            "result": result.model_dump(),
-        })
-
-        return attempt, result
+# 7.2 (P-08): la clase PurchasingAgent (agente de consola de la línea estricta, que
+# compraba en el catálogo inventado de VuelaYa) se retiró con esa línea. El agente del
+# producto es run_agent: busca, elige lo que cabe, firma el intento y lo presenta a
+# /verify (api/verify.verify_attempt).
 
 
 def _category_key(mandate: dict) -> str:

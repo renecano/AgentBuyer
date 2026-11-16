@@ -161,10 +161,9 @@ def test_agent_runs_sign_their_attempts(client, mine, monkeypatch):
 
 # ── Moneda (en todo mandato) ────────────────────────────────────────────────
 
-def test_currency_must_match_on_every_mandate(client, active_seed):
-    """También en el mandato semilla (sello de sistema): moneda distinta → REJECT."""
-    seed_id = active_seed["mandate_id"]
-    result = verify_as_service(client, {**attempt(seed_id, currency="EUR"), "presented_by_agent": active_seed["agent"]["id"]}).json()
+def test_currency_must_match_on_every_mandate(client, mine):
+    """Moneda distinta → REJECT. (7.2: antes también se probaba sobre el seed sellado.)"""
+    result = verify_as_service(client, attempt(mine, currency="EUR")).json()
     assert result["verdict"] == "REJECT"
     assert check(result, "currency")["pass"] is False
 

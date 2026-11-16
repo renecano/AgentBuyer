@@ -42,7 +42,6 @@ ENDPOINTS = {
     ("POST", "/mandates/mnd_x/pause"): (None, USER),
     ("POST", "/mandates/mnd_x/resume"): (None, USER),
     ("GET", "/mandates/mnd_x/activity"): (None, USER),
-    ("POST", "/purchases/execute"): ({}, USER),
     ("POST", SERVICE_PROBE): (None, SERVICE),
     ("GET", "/disputes"): (None, USER),
     ("POST", "/merchant/search"): ({}, USER),
@@ -289,7 +288,6 @@ EXPECTED_SECURITY = {
     # Por-mandato: token + ser dueño o admin (require_mandate_access).
     ("GET", "/mandates/{mandate_id}"): "bearer",
     ("POST", "/mandates/{mandate_id}/revoke"): "bearer",
-    ("POST", "/mandates/{mandate_id}/reset"): "bearer",
     ("POST", "/mandates/{mandate_id}/approve_escalation"): "bearer",
     ("GET", "/audit/{mandate_id}"): "bearer",
     # Registro de llaves públicas: el dueño sale del token (require_principal).
@@ -303,7 +301,6 @@ EXPECTED_SECURITY = {
     ("POST", "/mandates/{mandate_id}/pause"): "bearer",
     ("POST", "/mandates/{mandate_id}/resume"): "bearer",
     ("GET", "/mandates/{mandate_id}/activity"): "bearer",
-    ("POST", "/purchases/execute"): "bearer",
     ("GET", "/disputes"): "bearer",
     ("POST", "/merchant/search"): "bearer",
     # 4.1: las rutas de React que seguían abiertas exigen sesión (P-04, P-05).

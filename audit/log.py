@@ -182,7 +182,7 @@ audit_ledger = CryptographicAuditLedger()
 
 # Actor con el que append_entry escribe en el ledger. Identifica los eventos del
 # "trail" (los que ve la UI) frente a los que la línea estricta escribe directo
-# en el ledger (core/verify, core/dispute, mandate_store.save_mandate).
+# en el ledger. (7.2: la línea estricta que escribía directo se retiró.)
 TRAIL_ACTOR_TYPE = "GATEWAY"
 TRAIL_ACTOR_ID = "system_gateway"
 

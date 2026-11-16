@@ -12,7 +12,6 @@ ya reproduce byte a byte (mandateMessage.test.ts).
 import copy
 import hashlib
 import json
-import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,12 +26,10 @@ from api.main import app
 from core import mandate_store, owner_keys
 from core.auth_tokens import create_access_token
 from core.mandate_store import get_mandate_signer
-from core.verify import verify_purchase as strict_verify_purchase
 from mandate.mandate_message import mandate_signing_message
-from shared.schemas import PurchaseAttempt
 from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner, verify_as_service
 from sqlalchemy.exc import IntegrityError
-from tests.storage import (insert_mandate_without_signer, live_state, mandate_exists, move_keys_of_owner,
+from tests.storage import (all_mandate_ids, insert_mandate_without_signer, live_state, mandate_exists, move_keys_of_owner,
                            set_owner, stored_document, tamper_document)
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -383,15 +380,27 @@ def test_firma_propia_del_cliente_ya_no_crea_el_mandato(client, auth_headers):
     assert not mandate_exists("mnd_legacy")
 
 
-def test_el_seed_es_el_unico_sello_y_su_token_lo_emite_el_servidor(client, active_seed):
-    """El sello de sistema solo existe para el seed cargado al arrancar (D-12), y su
-    payment_token ya no es el del archivo: lo emite el servidor atado a lo sellado."""
-    with TestClient(app):
-        signer = get_mandate_signer(active_seed["mandate_id"])
-        token = stored_document(active_seed["mandate_id"])["payment_token"]
-    assert signer["kind"] == "system_seal"
-    assert token["bound_message_hash"] == signer["message_hash"]
-    assert token["token_id"] != active_seed["payment_token"]["token_id"]
+def test_no_hay_mandatos_precargados_ni_sello_de_sistema(client):
+    """7.2 (P-11): el seed sellado por el servidor se retiró. La app arranca vacía y la
+    base solo admite firmantes humanos (migración 0003)."""
+    from sqlalchemy import insert
+    from sqlalchemy.exc import IntegrityError
+    from core.db import write_tx
+    from core.db_schema import mandate_signers, mandates, owner_keys as keys_table
+
+    assert all_mandate_ids() == set()
+    with write_tx() as connection:
+        connection.execute(insert(keys_table).values(
+            key_id="key_seal", owner_email="x@example.com", public_key="ab" * 32, alg="ed25519",
+            created_at="2026-01-01T00:00:00+00:00", revoked_at=None))
+        connection.execute(insert(mandates).values(
+            mandate_id="mnd_sealed", owner_email=None, document="{}", status="active", uses_count=0,
+            amount_spent_cents=0, revoked_at=None, created_at="2026-01-01T00:00:00.000000+00:00"))
+    # Con una llave real, lo único que puede rechazar la fila es el tipo de firmante.
+    with pytest.raises(IntegrityError, match="ck_mandate_signers_kind|CHECK"):
+        with write_tx() as connection:
+            connection.execute(insert(mandate_signers).values(
+                mandate_id="mnd_sealed", kind="system_seal", key_id="key_seal", signed_at="2026-01-01"))
 
 
 # ── /verify sobre lo guardado ───────────────────────────────────────────────
@@ -570,43 +579,8 @@ def test_con_consentimiento_el_flujo_es_el_normal(signer, client):
     assert over["verdict"] == "ESCALATE"  # fuera de límites: escala como siempre
 
 
-# ── Línea estricta (core/verify) ────────────────────────────────────────────
-
-def strict_attempt(mandate_id: str, currency: str = "USD") -> PurchaseAttempt:
-    return PurchaseAttempt(
-        attempt_id="att_strict", mandate_id=mandate_id, agent_id="agt_saturday", merchant_id="mch_vuelaya",
-        category="travel.flights", amount=100.0, currency=currency, timestamp=stamp(NOW),  # modelo legado: unidades
-        nonce=secrets.token_hex(16), signature="", agent_signature="",
-    )
-
-
-def test_linea_estricta_verifica_la_firma_humana(signer):
-    body = signer.create()
-    valid = strict_verify_purchase(strict_attempt(body["mandate_id"]))
-    human = next(item for item in valid.checks if item["rule"] == "human_signature_valid")
-    assert human["pass"] is True and "Firma humana Ed25519 válida" in human["detail"]
-    assert next(item for item in valid.checks if item["rule"] == "payment_token_binding")["pass"] is True
-    # Sin firma de agente válida no hay compra (igual que cualquier mandato de esta línea).
-    assert valid.authorized is False
-    assert next(item for item in valid.checks if item["rule"] == "agent_signature_valid")["pass"] is False
-
-    tamper_document(body["mandate_id"], lambda document: document["constraints"].__setitem__("max_amount_per_purchase_cents", 999900))
-    tampered = strict_verify_purchase(strict_attempt(body["mandate_id"]))
-    assert tampered.authorized is False
-    assert next(item for item in tampered.checks if item["rule"] == "human_signature_valid")["pass"] is False
-
-
-def test_linea_estricta_rechaza_token_ajeno_y_otra_moneda(signer):
-    first = signer.create()
-    second = signer.create()
-    stolen = copy.deepcopy(stored_document(second["mandate_id"])["payment_token"])
-    tamper_document(first["mandate_id"], lambda document: document.__setitem__("payment_token", stolen))
-    stolen = strict_verify_purchase(strict_attempt(first["mandate_id"]))
-    assert next(item for item in stolen.checks if item["rule"] == "payment_token_binding")["pass"] is False
-
-    eur = strict_verify_purchase(strict_attempt(second["mandate_id"], currency="EUR"))
-    assert next(item for item in eur.checks if item["rule"] == "currency")["pass"] is False
-    assert eur.authorized is False
+# (7.2: los tests de la línea estricta, core/verify, se retiraron con ella; la línea
+# del producto ya cubre firma humana, token ajeno, otra moneda y llave revocada.)
 
 
 # ── El agente queda atado a lo firmado ──────────────────────────────────────
@@ -669,19 +643,6 @@ def test_retry_after_del_challenge_se_expone_por_cors(client, key_registrar, mon
 
 # ── 3.5: huecos que señaló la prueba de mutación ────────────────────────────
 
-def test_linea_estricta_rechaza_mandato_con_llave_revocada(signer):
-    """P-01 (a) también en core/verify: revocar la llave deja sin efecto el mandato."""
-    body = signer.create()
-    assert signer.client.delete(f"/keys/{signer.key_id}", headers=signer.headers).status_code == 200
-
-    result = strict_verify_purchase(strict_attempt(body["mandate_id"]))
-    assert result.authorized is False
-    assert next(item for item in result.checks if item["rule"] == "signing_key_active")["pass"] is False
-    # Corta AHÍ, por la revocación: no sigue evaluando (ni token, ni moneda, ni agente).
-    assert "revocada" in result.reason
-    assert [item["rule"] for item in result.checks][-1] == "signing_key_active"
-
-
 def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verifique(client):
     """Un mandato que llegue al registro sin firmante (ni titular ni sello del seed) se
     rechaza: aunque traiga una firma Ed25519 legada que SÍ verificaría con su propia
@@ -699,12 +660,3 @@ def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verif
     result = verify(client, "mnd_no_signer")
     assert result["verdict"] == "REJECT"
     assert check(result, "signature") == {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
-
-
-def test_el_seed_no_puede_traer_firma_propia(client):
-    from core.mandate_store import seal_seed_mandate
-    seed = {"mandate_id": "mnd_seed_signed", "constraints": {"max_amount_per_purchase": 150},
-            "human_pubkey": "ab" * 32, "signature": "cd" * 64}
-    with pytest.raises(ValueError, match="no puede traer firma"):
-        seal_seed_mandate(seed)
-    assert not mandate_exists("mnd_seed_signed")

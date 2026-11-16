@@ -166,7 +166,7 @@ def assert_can_access_mandate(principal: Principal, mandate_id: str) -> None:
     - Un admin degradado (fuera de ADMIN_EMAILS) cae al camino de dueño: conserva
       sus propios mandatos, pierde los ajenos.
 
-    Devuelve None; lanza HTTPException. No se aplica aún a revoke/reset/get/etc.
+    Devuelve None; lanza HTTPException.
     """
     if not mandate_exists(mandate_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mandate not found")

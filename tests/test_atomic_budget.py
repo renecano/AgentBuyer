@@ -3,8 +3,13 @@
 - max_uses y el presupuesto se re-chequean y consumen en UNA operación atómica
   (core/mandate_store.reserve_purchase): 50 compras simultáneas no superan el límite.
 - monthly_budget_cents se aplica por mes calendario UTC y se reinicia al cambiar de
-  mes (reloj inyectado, sin esperas). En la spec firmada v1 no existe (D-17): lo
-  declaran el seed y la línea estricta.
+  mes (reloj inyectado, sin esperas).
+
+7.2 (P-11): el seed y la línea estricta eran los únicos que DECLARABAN un presupuesto
+mensual (la spec firmada v1 no lo incluye, D-17), y se retiraron. El mecanismo sigue
+en el almacén (reserve_purchase) y en el engine, y aquí se prueba a ese nivel, sobre
+un registro de mandato con monthly_budget_cents. Ningún mandato firmado puede
+declararlo hasta una spec v2: límite documentado en docs/PLAN.md.
 """
 import secrets
 import threading
@@ -19,11 +24,10 @@ import core.mandate_store as store_module
 from api.main import app
 from api.verify import verify_attempt
 from core import mandate_store
-from core.auth_tokens import create_access_token
-from core.mandate_store import period_usage, seal_seed_mandate
+from core.mandate_store import apply_approved_purchase, period_usage, reserve_purchase
 from engine.evaluator import evaluate
 from tests.conftest import TEST_USER_EMAIL
-from tests.storage import live_state
+from tests.storage import insert_mandate_without_signer, live_state
 
 
 @pytest.fixture()
@@ -53,14 +57,37 @@ def attempt(mandate_id: str, cents: int = 10000) -> dict:
     }
 
 
-def sealed(mandate_id: str, **constraints) -> str:
-    """Mandato con presupuesto mensual (camino del seed: el único que lo declara en v1)."""
-    seal_seed_mandate({
-        "mandate_id": mandate_id, "human": {"id": "hum_x", "display_name": "X"}, "agent": {"id": "agt_saturday"},
-        "constraints": {"max_amount_per_purchase": 150, "currency": "USD", "allowed_categories": ["travel.flights"],
-                        "allowed_merchants": ["mch_vuelaya"], "max_uses": 50, **constraints},
-    }, owner_email=TEST_USER_EMAIL)
-    return mandate_id
+BUDGETED = {"max_amount_per_purchase_cents": 15000, "currency": "USD", "allowed_categories": ["travel.flights"],
+            "allowed_merchants": ["mch_vuelaya"], "max_uses": 50}
+
+
+def budgeted(mandate_id: str, monthly_budget_cents: int) -> dict:
+    """Registro de mandato con presupuesto mensual, directo en el almacén (ver docstring)."""
+    constraints = {**BUDGETED, "monthly_budget_cents": monthly_budget_cents}
+    insert_mandate_without_signer(mandate_id, {"mandate_id": mandate_id, "constraints": constraints}, TEST_USER_EMAIL)
+    return constraints
+
+
+def reserve_race(mandate_id: str, constraints: dict, n: int, monkeypatch, cents: int = 10000) -> list:
+    """`n` reservas a la vez sobre el almacén (la misma costura que race())."""
+    monkeypatch.setattr(store_module, "_reservation_pause", lambda: time.sleep(0.002))
+    barrier = threading.Barrier(n)
+    outcomes: list = []
+    lock = threading.Lock()
+
+    def reserve():
+        barrier.wait()
+        outcome = reserve_purchase(mandate_id, cents, constraints)
+        with lock:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=reserve) for _ in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(outcomes) == n, f"{n - len(outcomes)} reservas simultáneas terminaron en error"
+    return outcomes
 
 
 def race(mandate_id: str, n: int, monkeypatch, cents: int = 10000) -> list[str]:
@@ -107,10 +134,11 @@ def test_fifty_concurrent_purchases_against_max_uses_3_approve_exactly_3(client,
 
 
 def test_concurrent_purchases_never_exceed_the_monthly_budget(client, clock, monkeypatch):
-    sealed("mnd_budget_race", monthly_budget=250)  # caben exactamente 2 de 100
-    verdicts = race("mnd_budget_race", 30, monkeypatch)
+    constraints = budgeted("mnd_budget_race", 25000)  # caben exactamente 2 de 100
+    outcomes = reserve_race("mnd_budget_race", constraints, 30, monkeypatch)
 
-    assert verdicts.count("APPROVE") == 2
+    assert outcomes.count(None) == 2
+    assert set(outcomes) == {None, "monthly_budget"}
     assert period_usage("mnd_budget_race")["spent_cents"] == 20000
     assert live_state("mnd_budget_race")["amount_spent_cents"] == 20000
 
@@ -118,42 +146,45 @@ def test_concurrent_purchases_never_exceed_the_monthly_budget(client, clock, mon
 # ── Presupuesto mensual ─────────────────────────────────────────────────────
 
 def test_monthly_budget_is_applied_and_resets_with_the_calendar_month(client, clock):
-    mandate_id = sealed("mnd_budget", monthly_budget=200)
-    first = verify_attempt(attempt(mandate_id, 12000))
-    assert first["verdict"] == "APPROVE"
-    second = verify_attempt(attempt(mandate_id, 12000))  # 120 + 120 > 200
-    assert second["verdict"] == "ESCALATE"
-    assert next(c for c in second["checks"] if c["rule"] == "monthly_budget")["pass"] is False
-    assert live_state(mandate_id)["uses_count"] == 1
+    constraints = budgeted("mnd_budget", 20000)
+    assert reserve_purchase("mnd_budget", 12000, constraints) is None
+    assert reserve_purchase("mnd_budget", 12000, constraints) == "monthly_budget"  # 120 + 120 > 200
+    assert live_state("mnd_budget")["uses_count"] == 1
 
     clock.now = datetime(2026, 12, 1, 0, 0, 1, tzinfo=timezone.utc)  # cambia el mes (UTC)
-    assert verify_attempt(attempt(mandate_id, 12000))["verdict"] == "APPROVE"
-    assert period_usage(mandate_id) == {"month": "2026-12", "uses": 1, "spent_cents": 12000}
+    assert reserve_purchase("mnd_budget", 12000, constraints) is None
+    assert period_usage("mnd_budget") == {"month": "2026-12", "uses": 1, "spent_cents": 12000}
     # El total de por vida no se reinicia: max_uses es de por vida.
-    assert live_state(mandate_id)["uses_count"] == 2
-    assert live_state(mandate_id)["amount_spent_cents"] == 24000
+    assert live_state("mnd_budget")["uses_count"] == 2
+    assert live_state("mnd_budget")["amount_spent_cents"] == 24000
+
+
+def test_the_engine_escalates_over_the_monthly_budget():
+    """El engine (la decisión que ve /verify) marca el check monthly_budget."""
+    mandate = {"constraints": {**BUDGETED, "monthly_budget_cents": 20000}}
+    attempt_ = {"category": "travel.flights", "merchant_id": "mch_vuelaya", "amount_cents": 12000, "currency": "USD"}
+    result = evaluate(mandate, {"uses_count": 1, "amount_spent_cents": 12000, "month_uses": 1, "month_spent_cents": 12000}, attempt_)
+    assert result["verdict"] == "ESCALATE"
+    assert next(c for c in result["checks"] if c["rule"] == "monthly_budget")["pass"] is False
 
 
 def test_month_boundary_is_utc(client, clock):
-    mandate_id = sealed("mnd_utc", monthly_budget=100)
+    constraints = budgeted("mnd_utc", 10000)
     clock.now = datetime(2026, 11, 30, 23, 59, 59, tzinfo=timezone.utc)
-    assert verify_attempt(attempt(mandate_id, 10000))["verdict"] == "APPROVE"
-    assert verify_attempt(attempt(mandate_id, 10000))["verdict"] == "ESCALATE"
+    assert reserve_purchase("mnd_utc", 10000, constraints) is None
+    assert reserve_purchase("mnd_utc", 10000, constraints) == "monthly_budget"
     clock.now = datetime(2026, 12, 1, 0, 0, 0, tzinfo=timezone.utc)
-    assert verify_attempt(attempt(mandate_id, 10000))["verdict"] == "APPROVE"
+    assert reserve_purchase("mnd_utc", 10000, constraints) is None
 
 
 def test_human_override_can_exceed_the_monthly_budget_on_purpose(client, clock):
-    """Una escalación aprobada por la persona autoriza lo que el mandato no cubría."""
-    mandate_id = sealed("mnd_override", monthly_budget=100)
-    assert verify_attempt(attempt(mandate_id, 10000))["verdict"] == "APPROVE"
-    escalated = verify_attempt(attempt(mandate_id, 5000))
-    assert escalated["verdict"] == "ESCALATE"
-    response = client.post(f"/mandates/{mandate_id}/approve_escalation",
-                           json={"purchase_attempt_id": escalated["attempt_id"], "decision": "approve"},
-                           headers={"Authorization": f"Bearer {create_access_token(TEST_USER_EMAIL)}"})
-    assert response.status_code == 200 and response.json()["verdict"] == "APPROVE"
-    assert period_usage(mandate_id)["spent_cents"] == 15000
+    """Una escalación aprobada por la persona autoriza lo que el mandato no cubría:
+    apply_approved_purchase consume sin re-chequear límites."""
+    constraints = budgeted("mnd_override", 10000)
+    assert reserve_purchase("mnd_override", 10000, constraints) is None
+    assert reserve_purchase("mnd_override", 5000, constraints) == "monthly_budget"
+    apply_approved_purchase("mnd_override", 5000)
+    assert period_usage("mnd_override")["spent_cents"] == 15000
 
 
 # ── Usos de por vida vs. del mes (engine) ───────────────────────────────────
