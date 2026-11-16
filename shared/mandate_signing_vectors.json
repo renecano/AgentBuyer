@@ -1,0 +1,1326 @@
+{
+  "description": "Contrato del mensaje que firma el HUMANO al crear un mandato (agentbuyer:mandate:v1). mandate/mandate_message.py y frontend/src/lib/mandateMessage.ts construyen el payload normalizado a partir de `inputs` y firman canonical(payload) (shared/canonical_vectors.json) con Ed25519. Los montos se leen como DECIMALES exactos (Python: json con parse_float=Decimal) y se firman en centavos enteros. Las firmas usan la llave del RFC 8032 §7.1 TEST 1 (Ed25519 es determinista). `invalid`: ambos lados deben rechazar con MandateMessageError en `error_field`. `trim_code_points`: lo que recorta el trim de textos en ambos lados (el de String.prototype.trim). `amount_cases`: conversión a centavos (cents) o rechazo (error).",
+  "purpose": "agentbuyer:mandate:v1",
+  "rfc8032_test1": {
+    "secret_key_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "trim_code_points": [
+    "U+0009",
+    "U+000A",
+    "U+000B",
+    "U+000C",
+    "U+000D",
+    "U+0020",
+    "U+00A0",
+    "U+1680",
+    "U+2000",
+    "U+2001",
+    "U+2002",
+    "U+2003",
+    "U+2004",
+    "U+2005",
+    "U+2006",
+    "U+2007",
+    "U+2008",
+    "U+2009",
+    "U+200A",
+    "U+2028",
+    "U+2029",
+    "U+202F",
+    "U+205F",
+    "U+3000",
+    "U+FEFF"
+  ],
+  "amount_cases": [
+    {
+      "input": 150,
+      "cents": 15000
+    },
+    {
+      "input": 150.1,
+      "cents": 15010
+    },
+    {
+      "input": 150.25,
+      "cents": 15025
+    },
+    {
+      "input": "150.10",
+      "cents": 15010
+    },
+    {
+      "input": "150",
+      "cents": 15000
+    },
+    {
+      "input": 0.29,
+      "cents": 29
+    },
+    {
+      "input": "0.29",
+      "cents": 29
+    },
+    {
+      "input": 0,
+      "cents": 0
+    },
+    {
+      "input": "0",
+      "cents": 0
+    },
+    {
+      "input": 1234.5,
+      "cents": 123450
+    },
+    {
+      "input": "90071992547409.91",
+      "cents": 9007199254740991
+    },
+    {
+      "input": 150.125,
+      "error": true
+    },
+    {
+      "input": "150.125",
+      "error": true
+    },
+    {
+      "input": 0.30000000000000004,
+      "error": true
+    },
+    {
+      "input": -5,
+      "error": true
+    },
+    {
+      "input": -0.01,
+      "error": true
+    },
+    {
+      "input": "-5",
+      "error": true
+    },
+    {
+      "input": "+5",
+      "error": true
+    },
+    {
+      "input": " 5",
+      "error": true
+    },
+    {
+      "input": "5 ",
+      "error": true
+    },
+    {
+      "input": "5.",
+      "error": true
+    },
+    {
+      "input": ".5",
+      "error": true
+    },
+    {
+      "input": "05",
+      "error": true
+    },
+    {
+      "input": "1e2",
+      "error": true
+    },
+    {
+      "input": "",
+      "error": true
+    },
+    {
+      "input": 1e-07,
+      "error": true
+    },
+    {
+      "input": 1e+21,
+      "error": true
+    },
+    {
+      "input": "90071992547409.92",
+      "error": true
+    },
+    {
+      "input": 100000000000000,
+      "error": true
+    },
+    {
+      "input": true,
+      "error": true
+    },
+    {
+      "input": null,
+      "error": true
+    },
+    {
+      "input": [
+        150
+      ],
+      "error": true
+    }
+  ],
+  "vectors": [
+    {
+      "name": "caso_base",
+      "tests": "El mandato que hoy arma el wizard para un vuelo (montos enteros).",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_vuelaya\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":14000}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"departure_date\":\"2026-12-05\",\"destination\":\"COR\",\"origin\":\"MEX\"}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f7675656c617961225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a31343030307d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31322d3035222c2264657374696e6174696f6e223a22434f52222c226f726967696e223a224d4558227d7d",
+      "expected_signature_hex": "c1c98992aa0d4e894cafa8ad28b6e716908d90b6a299c0ac9e61369f48e2de533cb14fec592e67490fe7488cef65d1b207a5806ff5fbbf6bbe2d94147e5f3104"
+    },
+    {
+      "name": "montos_con_decimales",
+      "tests": "150.1 (número) → 15010 y \"89.99\" (texto) → 8999: centavos sin flotantes.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150.1,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": "89.99"
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_vuelaya\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":8999}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15010,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"departure_date\":\"2026-12-05\",\"destination\":\"COR\",\"origin\":\"MEX\"}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f7675656c617961225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a383939397d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353031302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31322d3035222c2264657374696e6174696f6e223a22434f52222c226f726967696e223a224d4558227d7d",
+      "expected_signature_hex": "f2f8ae0b14becdb7fed2270057b7dceff43a34328ba88fff15f6d85cb980087327bc17e5820b05f189c998393afe9899947df0470f2dffeec10aa54e4d670006"
+    },
+    {
+      "name": "acentos_en_search_fields",
+      "tests": "Hotel con acentos: viajan en UTF-8 crudo; los textos se recortan (trim).",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.hotels"
+          ],
+          "allowed_merchants": [
+            "mch_hoteles_córdoba"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "destination": "  Córdoba ",
+          "check_in": "2026-12-05",
+          "check_out": "2026-12-08",
+          "nights": 3
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.hotels\"],\"allowed_merchants\":[\"mch_hoteles_córdoba\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":14000}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"check_in\":\"2026-12-05\",\"check_out\":\"2026-12-08\",\"destination\":\"Córdoba\",\"nights\":3}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e686f74656c73225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f686f74656c65735f63c3b372646f6261225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a31343030307d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b22636865636b5f696e223a22323032362d31322d3035222c22636865636b5f6f7574223a22323032362d31322d3038222c2264657374696e6174696f6e223a2243c3b372646f6261222c226e6967687473223a337d7d",
+      "expected_signature_hex": "cfea8d9d2bcd389191fb59d7e103b71e8e6b1ae63f33e51c71875bfb5d4ea797bedb90cbb6bf1418d984f072af2df622ae98510a1405f27f2842f6208716b50e"
+    },
+    {
+      "name": "listas_desordenadas_con_duplicados",
+      "tests": "Categorías y comercios: trim + minúsculas, sin duplicados, ordenados.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.hotels",
+            " Travel.Flights",
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_zeta",
+            "MCH_alpha",
+            "mch_zeta ",
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\",\"travel.hotels\"],\"allowed_merchants\":[\"mch_alpha\",\"mch_vuelaya\",\"mch_zeta\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":14000}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"departure_date\":\"2026-12-05\",\"destination\":\"COR\",\"origin\":\"MEX\"}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473222c2274726176656c2e686f74656c73225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f616c706861222c226d63685f7675656c617961222c226d63685f7a657461225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a31343030307d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31322d3035222c2264657374696e6174696f6e223a22434f52222c226f726967696e223a224d4558227d7d",
+      "expected_signature_hex": "7a0ecac096e269cde9549e2acbdc0c6d08aea84fee4a00951dac85c22ad35a99c6151318a57acfe716d4f0398c2fac4d219c0cb92b66011daa41d3d43aff700f"
+    },
+    {
+      "name": "orden_utf16_de_listas",
+      "tests": "Orden por unidades de código UTF-16 (sort() de JS), no por code point ni por idioma: el emoji (surrogates D83D…) va ANTES que U+FF5E, y 'é' va después de 'z'.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_～",
+            "mch_😀",
+            "mch_é",
+            "mch_z",
+            "MCH_A"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_a\",\"mch_z\",\"mch_é\",\"mch_😀\",\"mch_～\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":14000}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"departure_date\":\"2026-12-05\",\"destination\":\"COR\",\"origin\":\"MEX\"}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f61222c226d63685f7a222c226d63685fc3a9222c226d63685ff09f9880222c226d63685fefbd9e225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a31343030307d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31322d3035222c2264657374696e6174696f6e223a22434f52222c226f726967696e223a224d4558227d7d",
+      "expected_signature_hex": "272160f05181a32f62458f2c99b1d4628771ee4dfa05f7324a05fe26e7f07e6d79c5e044a2e6143028c0ee003da2c347413d0b3d11f8282bcb7b700c2e167407"
+    },
+    {
+      "name": "email_mayusculas_y_espacios",
+      "tests": "owner = email trim + minúsculas; pubkey y nonce en hex mayúsculas pasan a minúsculas.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "  Marta.Lopez@Example.COM ",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899AABBCCDDEEFF"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_vuelaya\"],\"conditions\":[{\"type\":\"price_below\",\"value_cents\":14000}],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":true},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta.lopez@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{\"departure_date\":\"2026-12-05\",\"destination\":\"COR\",\"origin\":\"MEX\"}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f7675656c617961225d2c22636f6e646974696f6e73223a5b7b2274797065223a2270726963655f62656c6f77222c2276616c75655f63656e7473223a31343030307d5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a747275657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d617274612e6c6f70657a406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b226465706172747572655f64617465223a22323032362d31322d3035222c2264657374696e6174696f6e223a22434f52222c226f726967696e223a224d4558227d7d",
+      "expected_signature_hex": "30dd4eb43f409542bae22325722595fcb672c404335330fa0069dbfb4257a7d6c6bb07afe9b17b5f90660d5758d638f79b6a6d1a113a82981e5894a89f13f607"
+    },
+    {
+      "name": "sin_condiciones_ni_busqueda",
+      "tests": "Sin conditions ni search_fields: se firman [] y {} (ausente = vacío); consentimiento false.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "off_session_consent": false
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "expected_message": "{\"agent_id\":\"agt_saturday\",\"constraints\":{\"allowed_categories\":[\"travel.flights\"],\"allowed_merchants\":[\"mch_vuelaya\"],\"conditions\":[],\"currency\":\"USD\",\"max_amount_per_purchase_cents\":15000,\"max_uses\":3,\"off_session_consent\":false},\"created_at\":\"2026-11-16T10:00:00Z\",\"expires_at\":\"2026-11-30T23:59:59Z\",\"key_id\":\"key_00112233445566778899aabbccddeeff\",\"mandate_id\":\"mnd_marta_mbx3k2\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"owner\":\"marta@example.com\",\"public_key\":\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\",\"purpose\":\"agentbuyer:mandate:v1\",\"search_fields\":{}}",
+      "expected_message_utf8_hex": "7b226167656e745f6964223a226167745f7361747572646179222c22636f6e73747261696e7473223a7b22616c6c6f7765645f63617465676f72696573223a5b2274726176656c2e666c6967687473225d2c22616c6c6f7765645f6d65726368616e7473223a5b226d63685f7675656c617961225d2c22636f6e646974696f6e73223a5b5d2c2263757272656e6379223a22555344222c226d61785f616d6f756e745f7065725f70757263686173655f63656e7473223a31353030302c226d61785f75736573223a332c226f66665f73657373696f6e5f636f6e73656e74223a66616c73657d2c22637265617465645f6174223a22323032362d31312d31365431303a30303a30305a222c22657870697265735f6174223a22323032362d31312d33305432333a35393a35395a222c226b65795f6964223a226b65795f3030313132323333343435353636373738383939616162626363646465656666222c226d616e646174655f6964223a226d6e645f6d617274615f6d6278336b32222c226e6f6e6365223a223030313132323333343435353636373738383939616162626363646465656666222c226f776e6572223a226d61727461406578616d706c652e636f6d222c227075626c69635f6b6579223a2264373561393830313832623130616237643534626665643363393634303733613065653137326633646161363233323561663032316136386637303735313161222c22707572706f7365223a226167656e7462757965723a6d616e646174653a7631222c227365617263685f6669656c6473223a7b7d7d",
+      "expected_signature_hex": "4c89195f9c31ed1dc482d8f9e8112be8450731a75a9161d7df395bb938852c9c105c67ab05c8f6d5f9df86f727f232fce9883db9e9053f66d635f51598156b04"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "tres_decimales",
+      "tests": "150.125 tiene 3 decimales.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150.125,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "tres_decimales_texto",
+      "tests": "\"150.125\" como texto tampoco.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": "150.125",
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "flotante_impreciso",
+      "tests": "0.1 + 0.2 = 0.30000000000000004: no son exactamente 2 decimales.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 0.30000000000000004,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "monto_negativo",
+      "tests": "Un monto negativo.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": -5,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "monto_texto_con_signo",
+      "tests": "\"+150\": la gramática de texto no admite signo.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": "+150",
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "precio_cero",
+      "tests": "Una condición price_below de 0.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 0
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.conditions.price_below"
+    },
+    {
+      "name": "monto_fuera_de_rango",
+      "tests": "Más de 2^53−1 centavos.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 100000000000000,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_amount_per_purchase"
+    },
+    {
+      "name": "fecha_sin_zona",
+      "tests": "expires_at sin Z.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "expires_at"
+    },
+    {
+      "name": "fecha_con_offset",
+      "tests": "+00:00 en vez de Z.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59+00:00",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "expires_at"
+    },
+    {
+      "name": "fecha_con_milisegundos",
+      "tests": "Precisión de segundos, sin fracción.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00.000Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "created_at"
+    },
+    {
+      "name": "fecha_inexistente",
+      "tests": "30 de febrero.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2027-02-30T00:00:00Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "expires_at"
+    },
+    {
+      "name": "vence_antes_de_crearse",
+      "tests": "expires_at debe ser posterior a created_at.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-16T10:00:00Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "expires_at"
+    },
+    {
+      "name": "constraint_desconocida",
+      "tests": "monthly_budget no existe en v1: sería autorización sin firmar.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true,
+          "monthly_budget": 1000
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints"
+    },
+    {
+      "name": "condicion_desconocida",
+      "tests": "Solo price_below en v1.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "destination_is",
+              "value": "COR"
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.conditions"
+    },
+    {
+      "name": "condicion_repetida",
+      "tests": "Una condición por tipo.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            },
+            {
+              "type": "price_below",
+              "value": 120
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.conditions"
+    },
+    {
+      "name": "moneda_no_soportada",
+      "tests": "v1 solo USD.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "EUR",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.currency"
+    },
+    {
+      "name": "categorias_vacias",
+      "tests": "Sin categorías no hay autorización.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.allowed_categories"
+    },
+    {
+      "name": "max_uses_cero",
+      "tests": "max_uses ≥ 1.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 0,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "constraints.max_uses"
+    },
+    {
+      "name": "search_field_decimal",
+      "tests": "Sin decimales en search_fields (D-11).",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "destination": "COR",
+          "nights": 2.5
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "search_fields.nights"
+    },
+    {
+      "name": "owner_sin_arroba",
+      "tests": "owner debe ser un email.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta.example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "owner"
+    },
+    {
+      "name": "nonce_corto",
+      "tests": "nonce de 32 hex.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "0011223344"
+      },
+      "error_field": "nonce"
+    },
+    {
+      "name": "public_key_corta",
+      "tests": "pubkey de 64 hex.",
+      "inputs": {
+        "mandate_id": "mnd_marta_mbx3k2",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f70751",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "public_key"
+    },
+    {
+      "name": "mandate_id_con_espacios",
+      "tests": "Identificador sin espacios.",
+      "inputs": {
+        "mandate_id": "mnd marta",
+        "owner_email": "marta@example.com",
+        "key_id": "key_00112233445566778899aabbccddeeff",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "agent_id": "agt_saturday",
+        "constraints": {
+          "currency": "USD",
+          "max_amount_per_purchase": 150,
+          "allowed_categories": [
+            "travel.flights"
+          ],
+          "allowed_merchants": [
+            "mch_vuelaya"
+          ],
+          "max_uses": 3,
+          "conditions": [
+            {
+              "type": "price_below",
+              "value": 140
+            }
+          ],
+          "off_session_consent": true
+        },
+        "search_fields": {
+          "origin": "MEX",
+          "destination": "COR",
+          "departure_date": "2026-12-05"
+        },
+        "expires_at": "2026-11-30T23:59:59Z",
+        "created_at": "2026-11-16T10:00:00Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "error_field": "mandate_id"
+    }
+  ]
+}
