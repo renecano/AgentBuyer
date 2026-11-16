@@ -39,8 +39,9 @@ _EVENT_TYPES = {
     "agent_run",
     "human_override_approved",
     "human_override_declined",
-    "hitl_approved",
-    "settlement_completed",
+    # 7.1: "hitl_approved" y "settlement_completed" solo los escribían approve-exception
+    # y los webhooks (retirados, P-06). Una base vieja que los tenga sigue verificando:
+    # la cadena no depende del tipo.
 }
 
 
@@ -181,7 +182,7 @@ audit_ledger = CryptographicAuditLedger()
 
 # Actor con el que append_entry escribe en el ledger. Identifica los eventos del
 # "trail" (los que ve la UI) frente a los que la línea estricta escribe directo
-# en el ledger (core/verify, core/dispute, mandate_store.save_mandate).
+# en el ledger. (7.2: la línea estricta que escribía directo se retiró.)
 TRAIL_ACTOR_TYPE = "GATEWAY"
 TRAIL_ACTOR_ID = "system_gateway"
 
@@ -220,9 +221,9 @@ def append_entry(event: dict, *, connection=None) -> dict:
     """
     event_type = event.get("type")
     if event_type not in _EVENT_TYPES and event_type not in [e.value for e in EventType]:
-        raise ValueError(f"Tipo de evento de auditoría inválido: {event_type!r}")
+        raise ValueError(f"Invalid audit event type: {event_type!r}")
     if "mandate_id" not in event or "summary" not in event:
-        raise ValueError("Todo evento requiere mandate_id y summary.")
+        raise ValueError("Every event requires mandate_id and summary.")
 
     entry = audit_ledger.append_entry(
         event_type=event_type,

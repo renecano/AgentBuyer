@@ -21,7 +21,7 @@ from core.owner_keys import (
     register_key,
     revoke_key,
 )
-from mandate.sign import generate_keypair, sign_payload
+from tests.legacy_signing import generate_keypair, sign_payload
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_USER_EMAIL
 from tests.storage import key_records
 
@@ -245,15 +245,6 @@ def test_active_keys_per_owner_are_capped():
 
 
 # ── Decisión del seed y carácter ADITIVO (el paso 3 cambiará esto) ──────────
-
-def test_seed_sealing_key_is_not_registered_as_a_human_key(client, active_seed, seed_owner_headers):
-    """El seed es "sistema/legado": lo sella el servidor con una llave efímera que
-    nadie conserva. Registrarla como llave del humano afirmaría algo falso."""
-    seed_owner = active_seed["human"]["email"]
-
-    assert get_active_keys(seed_owner) == []
-    sealed = client.get("/mandates/mnd_marta_001", headers=seed_owner_headers).json()["mandate"]
-    assert is_key_active(seed_owner, sealed["human_pubkey"]) is False
 
 
 def test_only_a_registered_key_of_the_owner_can_create_a_mandate(client, auth_headers):

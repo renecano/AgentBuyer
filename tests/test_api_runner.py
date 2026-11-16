@@ -45,11 +45,8 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
     resp = poster.post(mandate_payload, headers=auth_headers)
     assert resp.status_code == 201, resp.text
 
-    # 3. Get flights
-    resp = client.get("/merchant/flights")
-    assert resp.status_code == 200
-    flights = resp.json()
-    assert len(flights) > 0
+    # 3. (7.2: GET /merchant/flights, el catálogo inventado de VuelaYa, se retiró.)
+    assert client.get("/merchant/flights").status_code == 404
 
     # 4. Run agent (descubrimiento web real, mockeado arriba)
     resp = client.post("/agent/run", json={"mandate_id": "mandate_test_001", "search_fields": SEARCH_FIELDS}, headers=auth_headers)

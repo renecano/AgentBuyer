@@ -6,10 +6,10 @@ import AccountView from "./components/AccountView";
 import AuditView from "./components/AuditView";
 import { request, requestWithTimeout } from "./lib/api";
 import { useAuth } from "./lib/AuthProvider";
-import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayStateLabel, verdictLabel } from "./lib/presentation";
+import { checkDetailLabel, checkRuleLabel, displayName, localizedText, mandateStatusLabel, saturdayStateLabel, verdictLabel, type MandateStatus } from "./lib/presentation";
 
 type LiveState = {
-  status: "active" | "revoked" | "expired";
+  status: MandateStatus;
   uses_count: number;
   amount_spent_cents: number;
   revoked_at: string | null;
@@ -104,20 +104,22 @@ function toastFor(run: AgentRun, result: Verification): Omit<Toast, "id"> {
 type MissionControlProps = {
   mandateId: string;
   onCreateNew: () => void;
+  /** P-17: la demo empieza con un mandato NUEVO firmado en el wizard (acto 1). */
+  onRestartDemo: () => void;
   onNavigate: (view: AppView) => void;
   autoStartDemoAt?: DemoAct;
   onDemoAutostarted?: () => void;
   onDemoFinished?: () => void;
 };
 
-function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, onDemoAutostarted, onDemoFinished }: MissionControlProps) {
+function MissionControl({ mandateId, onCreateNew, onRestartDemo, onNavigate, autoStartDemoAt, onDemoAutostarted, onDemoFinished }: MissionControlProps) {
   const [mandate, setMandate] = useState<MandateRecord | null>(null);
   const [flights, setFlights] = useState<Flight[]>([]);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [pendingVerification, setPendingVerification] = useState<Verification | null>(null);
   const [activity, setActivity] = useState<AgentRun | null>(null);
   const [saturdayState, setSaturdayState] = useState<SaturdayState>("idle");
-  const [busy, setBusy] = useState<"loading" | "running" | "revoking" | "resetting" | "reviewing" | null>("loading");
+  const [busy, setBusy] = useState<"loading" | "running" | "revoking" | "refreshing" | "reviewing" | null>("loading");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [phase, setPhase] = useState<DecisionPhase>("idle");
@@ -294,7 +296,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
       setEscalatedAttemptId(null);
       setPhase("idle");
       setSaturdayState("reject");
-      setToast({ id: Date.now(), tone: "reject", message: "🔒 Mandato revocado — Saturday ya no puede comprar" });
+      setToast({ id: Date.now(), tone: "reject", message: "🔒 Mandate revoked — Saturday can no longer buy" });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No connection to the system.");
     } finally {
@@ -318,7 +320,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
       setToast({
         id: Date.now(),
         tone: decision === "approve" ? "approve" : "reject",
-        message: decision === "approve" ? "✅ Aprobaste la compra — registrada" : "🚫 Rechazaste la compra",
+        message: decision === "approve" ? "✅ You approved the purchase — recorded" : "🚫 You declined the purchase",
       });
       const mandateData = await request<MandateRecord>(`/mandates/${mandateId}`);
       setMandate(mandateData);
@@ -330,12 +332,13 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     }
   }
 
-  async function resetMission() {
-    setBusy("resetting");
+  async function clearView() {
+    setBusy("refreshing");
     setError(null);
     try {
-      // Solo el estado vivo de este mandato; el ledger es append-only (P-05).
-      const record = await request<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" });
+      // P-17: limpia SOLO la vista y relee el mandato. Ya no hay un "reset" que borre
+      // los usos: un mandato agotado se renueva firmando otro.
+      const record = await request<MandateRecord>(`/mandates/${mandateId}`);
       setMandate(record);
       setVerification(null);
       setPendingVerification(null);
@@ -383,17 +386,9 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     // never gets here, which also protects development Strict Mode remounts.
     if (demoExecutedActs.current.has(act)) return;
     demoExecutedActs.current.add(act);
-    if (act === 1) {
-      // El ledger es append-only (P-05): la demo empieza limpia reseteando SOLO el
-      // estado vivo de este mandato (endpoint del dueño); el historial se conserva.
-      const record = await requestWithTimeout<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" }, 8000, signal);
-      if (record && !signal?.aborted) {
-        setMandate(record);
-        setVerification(null); setPendingVerification(null); setActivity(null); setFlights([]); setNoOffers(false);
-        setRevealedChecks(0); setEscalatedAttemptId(null); setSaturdayState("idle");
-      }
-      return;
-    }
+    // El acto 1 (emisión) ocurre en el wizard: crea y firma un mandato NUEVO (P-17).
+    // Mission Control arranca siempre en el acto 2 sobre ese mandato recién firmado.
+    if (act === 1) return;
     if (act === 2) {
       // Mismo camino que el botón "RUN AGENT": runAgent() puebla el estado
       // `flights` que lee el panel izquierdo. La búsqueda web real tarda hasta
@@ -451,7 +446,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     scheduleDemoPause();
   }
 
-  async function startDemo(initialAct: DemoAct = 1) {
+  async function startDemo(initialAct: DemoAct = 2) {
     if (demoRunningRef.current || busy !== null) return;
     clearDemoTimer();
     demoExecutedActs.current.clear();
@@ -520,17 +515,22 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     void startDemo(autoStartDemoAt);
   }, [autoStartDemoAt, mandate, busy, onDemoAutostarted]);
 
+  // 7.3: el listener llama SIEMPRE a la versión más reciente del handler (ref). Antes
+  // capturaba la de su último registro y, si cambiaba demoViewAct sin que cambiara
+  // demoAct, la barra espaciadora usaba un estado viejo.
+  const advanceDemoRef = useRef(advanceDemoPresentation);
+  advanceDemoRef.current = advanceDemoPresentation;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!demoRunning || demoExecuting) return;
       if (event.key === " " || event.key === "ArrowRight") {
         event.preventDefault();
-        advanceDemoPresentation();
+        advanceDemoRef.current();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [demoRunning, demoExecuting, demoAct]);
+  }, [demoRunning, demoExecuting]);
 
   useEffect(() => {
     // Al desmontar de verdad: corta los timers de la demo y cualquier petición
@@ -543,7 +543,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
   }, []);
 
   const status = mandate?.live_state.status ?? "loading";
-  const statusLabel = status === "active" ? "ACTIVE" : status === "revoked" ? "REVOKED" : status === "expired" ? "EXPIRED" : "LOADING";
+  const statusLabel = mandateStatusLabel(status);
   const displayedVerification = verification ?? pendingVerification;
   const displayedChecks = verification
     ? verification.checks
@@ -556,17 +556,17 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
         <header className="mission-header">
           <div>
             <p className="mission-kicker">AGENTBUYER / MISSION CONTROL</p>
-            <h1>Centro de confianza para agentes</h1>
+            <h1>Agent trust center</h1>
           </div>
           <div className="mission-header-actions">
             <button className="new-mandate-button" onClick={() => { if (window.confirm("Leave and create a new permission? The current view will be cleared.")) onCreateNew(); }} disabled={busy !== null || demoRunning} type="button">+ START OVER</button>
-            <button className="refresh-button" onClick={() => void resetMission()} disabled={busy !== null || demoRunning} type="button">
-              {busy === "resetting" ? "RESETTING…" : "↻ RESET VIEW"}
+            <button className="refresh-button" onClick={() => void clearView()} disabled={busy !== null || demoRunning} type="button">
+              {busy === "refreshing" ? "REFRESHING…" : "↻ CLEAR VIEW"}
             </button>
             {demoRunning ? (
               <button className="demo-stop-button" onClick={stopDemo} type="button">STOP DEMO</button>
             ) : (
-              <button className="demo-start-button" onClick={() => void startDemo()} disabled={busy !== null} type="button">▶ START DEMO</button>
+              <button className="demo-start-button" onClick={onRestartDemo} disabled={busy !== null} type="button" title="Signs a new permission on this device and runs the guided demo with it">▶ START DEMO</button>
             )}
           </div>
         </header>
@@ -805,6 +805,8 @@ function App() {
   const [activeMandateId, setActiveMandateId] = useState<string | null>(null);
   const [view, setView] = useState<AppView>("mission");
   const [continueDemoAfterEmission, setContinueDemoAfterEmission] = useState(false);
+  // P-17: "START DEMO" desde Mission Control vuelve al wizard y emite un mandato nuevo.
+  const [autoStartWizardDemo, setAutoStartWizardDemo] = useState(false);
   const [demoTourStop, setDemoTourStop] = useState<DemoTourStop | null>(null);
   const demoAutostartConsumed = useRef(false);
 
@@ -816,6 +818,7 @@ function App() {
     setActiveMandateId(null);
     setView("mission");
     setContinueDemoAfterEmission(false);
+    setAutoStartWizardDemo(false);
     setDemoTourStop(null);
     demoAutostartConsumed.current = false;
   }, [isAuthenticated]);
@@ -835,6 +838,8 @@ function App() {
   // dispararía sus llamadas (ahora 401) antes de desmontarse.
   if (!isAuthenticated || !activeMandateId) {
     return <MandateCreator
+      autoStartDemo={autoStartWizardDemo}
+      onAutoStartDemoConsumed={() => setAutoStartWizardDemo(false)}
       onCreated={(mandateId) => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(false); setDemoTourStop(null); setActiveMandateId(mandateId); setView("mission"); }}
       onDemoCreated={(mandateId) => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(true); setDemoTourStop(null); setActiveMandateId(mandateId); setView("mission"); }}
     />;
@@ -851,7 +856,7 @@ function App() {
         </div>
       </nav>
       {demoTourStop && <DemoTourOverlay stop={demoTourStop} onNext={advanceDemoTour} />}
-      {view === "mission" && <MissionControl mandateId={activeMandateId} onCreateNew={() => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(false); setDemoTourStop(null); setActiveMandateId(null); }} onNavigate={setView} autoStartDemoAt={continueDemoAfterEmission && !demoAutostartConsumed.current ? 2 : undefined} onDemoAutostarted={() => { demoAutostartConsumed.current = true; setContinueDemoAfterEmission(false); }} onDemoFinished={() => { setDemoTourStop("purchases"); setView("account"); }} />}
+      {view === "mission" && <MissionControl mandateId={activeMandateId} onCreateNew={() => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(false); setDemoTourStop(null); setActiveMandateId(null); }} onRestartDemo={() => { demoAutostartConsumed.current = false; setContinueDemoAfterEmission(false); setDemoTourStop(null); setAutoStartWizardDemo(true); setActiveMandateId(null); }} onNavigate={setView} autoStartDemoAt={continueDemoAfterEmission && !demoAutostartConsumed.current ? 2 : undefined} onDemoAutostarted={() => { demoAutostartConsumed.current = true; setContinueDemoAfterEmission(false); }} onDemoFinished={() => { setDemoTourStop("purchases"); setView("account"); }} />}
       {view === "account" && <AccountView mandateId={activeMandateId} />}
       {view === "audit" && <AuditView />}
     </>

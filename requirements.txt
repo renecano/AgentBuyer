@@ -20,6 +20,7 @@ python-dotenv==1.2.3
 openai==3.14.1             # búsqueda real de ofertas (core/merchant_search.py)
 SQLAlchemy==2.1.6          # persistencia (core/db.py, P-10); 2.1.7/2.1.8 tenían < 2 semanas al fijarla
 alembic==1.20.1            # migraciones (migrations/)
+Jinja2==3.1.6              # plantillas de correo con autoescape (core/notifications.py)
 
 # ── Transitivas ──────────────────────────────────────────────────────────────
 annotated-doc==0.0.5

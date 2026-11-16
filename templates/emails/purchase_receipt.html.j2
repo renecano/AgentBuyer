@@ -1,0 +1,38 @@
+{#- Recibo de una compra autorizada (7.1). Autoescape ACTIVADO (core/notifications.py):
+    todo lo que viene de la oferta o del mandato se escapa; nada se marca |safe.
+    Sin textos inventados: solo datos de la compra y del ledger. -#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Purchase authorized</title>
+</head>
+<body style="margin:0;padding:24px;background:#f5f6f8;font-family:Arial,Helvetica,sans-serif;color:#1f2933;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #d9dee5;border-radius:8px;padding:24px;">
+    <h1 style="font-size:20px;margin:0 0 4px;">Purchase authorized</h1>
+    <p style="margin:0 0 16px;color:#52606d;">
+      {% if holder_name %}{{ holder_name }}, Saturday{% else %}Saturday{% endif %} authorized this purchase under a permission you signed on your device.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      <tr><td style="padding:6px 0;color:#52606d;width:40%;">Item</td><td style="padding:6px 0;"><strong>{{ description }}</strong></td></tr>
+      <tr><td style="padding:6px 0;color:#52606d;">Amount</td><td style="padding:6px 0;"><strong>{{ amount }} {{ currency }}</strong></td></tr>
+      <tr><td style="padding:6px 0;color:#52606d;">Merchant</td><td style="padding:6px 0;">{{ merchant_name }} <span style="color:#52606d;">({{ merchant_id }}, from the offer's web address)</span></td></tr>
+      {% if offer_url %}<tr><td style="padding:6px 0;color:#52606d;">Offer</td><td style="padding:6px 0;"><a href="{{ offer_url }}">{{ offer_url }}</a></td></tr>{% endif %}
+      <tr><td style="padding:6px 0;color:#52606d;">Authorized at</td><td style="padding:6px 0;">{{ authorized_at }}</td></tr>
+      <tr><td style="padding:6px 0;color:#52606d;">Permission</td><td style="padding:6px 0;"><code>{{ mandate_id }}</code></td></tr>
+      <tr><td style="padding:6px 0;color:#52606d;">Purchase attempt</td><td style="padding:6px 0;"><code>{{ attempt_id }}</code></td></tr>
+      {% if ledger_event_id %}<tr><td style="padding:6px 0;color:#52606d;">Audit record</td><td style="padding:6px 0;"><code>{{ ledger_event_id }}</code></td></tr>{% endif %}
+    </table>
+
+    <p style="margin:16px 0 0;padding:12px;background:#fff8e6;border:1px solid #f0d58c;border-radius:6px;font-size:13px;">
+      AgentBuyer does not move money yet: this email records the authorization, not a payment.
+      No booking was made with the merchant on your behalf.
+    </p>
+    <p style="margin:16px 0 0;font-size:12px;color:#52606d;">
+      Before approving, AgentBuyer checked your signature, the permission's limits and the purchase attempt.
+      The decision is in your audit history with the IDs above. If you didn't expect this purchase, revoke the permission from your account.
+    </p>
+  </div>
+</body>
+</html>

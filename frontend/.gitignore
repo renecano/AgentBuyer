@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 .env.local
 .env.*.local
+
+# Caché de Vite (7.3): se regenera sola; nunca al repo.
+.vite/

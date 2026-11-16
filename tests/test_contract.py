@@ -33,7 +33,7 @@ def test_case_a_approve(base_mandate):
     result = evaluate(base_mandate, live_state, attempt)
 
     assert result["verdict"] == "APPROVE"
-    assert result["reason"] == "Todas las restricciones satisfechas"
+    assert result["reason"] == "All constraints satisfied"
     assert all(c["pass"] is True for c in result["checks"])
     assert len(result["checks"]) >= 5
 
@@ -53,7 +53,7 @@ def test_case_b_escalate_amount(base_mandate):
 
     assert result["verdict"] == "ESCALATE"
     assert any(c["rule"] == "amount" and c["pass"] is False for c in result["checks"])
-    assert "Monto" in result["reason"]
+    assert "Amount" in result["reason"]
 
 
 def test_case_c_escalate_category(base_mandate):
@@ -71,7 +71,7 @@ def test_case_c_escalate_category(base_mandate):
 
     assert result["verdict"] == "ESCALATE"
     assert any(c["rule"] == "category" and c["pass"] is False for c in result["checks"])
-    assert "Categoría" in result["reason"]
+    assert "Category" in result["reason"]
 
 
 def test_case_d_escalate_uses_exhausted(base_mandate):
@@ -89,7 +89,7 @@ def test_case_d_escalate_uses_exhausted(base_mandate):
 
     assert result["verdict"] == "ESCALATE"
     assert any(c["rule"] == "uses" and c["pass"] is False for c in result["checks"])
-    assert "Usos agotados" in result["reason"]
+    assert "Uses exhausted" in result["reason"]
 
 
 def test_case_e_escalate_merchant_disallowed(base_mandate):
@@ -107,7 +107,7 @@ def test_case_e_escalate_merchant_disallowed(base_mandate):
 
     assert result["verdict"] == "ESCALATE"
     assert any(c["rule"] == "merchant" and c["pass"] is False for c in result["checks"])
-    assert "Comercio" in result["reason"]
+    assert "Merchant" in result["reason"]
 
 
 def test_fail_closed_on_corrupt_input():

@@ -252,7 +252,7 @@ def test_step_up_email_says_what_the_code_authorizes(monkeypatch):
     delivered = []
 
     class FakeSMTP:
-        def __init__(self, host, port): pass
+        def __init__(self, host, port, timeout=None): assert timeout == 10  # 7.1: con timeout
         def __enter__(self): return self
         def __exit__(self, *exc): return False
         def login(self, user, password): pass

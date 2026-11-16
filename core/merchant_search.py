@@ -1,6 +1,6 @@
 """Búsqueda real de ofertas en comercios vía OpenAI web search.
 
-Reemplaza el feed de precios mockeado (core/merchant.py) en el paso de
+Reemplazó al feed de precios mockeado (core/merchant.py, retirado en el 7.2) en el paso de
 descubrimiento del agente (core/agent_loop.py):
 
     ofertas = search_merchant_offers("flights", {...})        # web real
@@ -92,10 +92,10 @@ def _validate_fields(category: str, fields: dict) -> str | None:
     """Devuelve un mensaje de error o None si los campos alcanzan para buscar."""
     spec = CATEGORY_SPECS.get(category)
     if spec is None:
-        return f"categoría desconocida: {category!r} (válidas: {sorted(CATEGORY_SPECS)})"
+        return f"unknown category: {category!r} (valid: {sorted(CATEGORY_SPECS)})"
     missing = [f for f in spec["required"] if not fields.get(f)]
     if missing:
-        return f"faltan campos requeridos para {category}: {missing}"
+        return f"missing required fields for {category}: {missing}"
     if category == "tickets" and not (fields.get("artist") or fields.get("event_date")):
         return "tickets requiere al menos artist o event_date"
     return None
@@ -165,33 +165,33 @@ def _parse_offers(raw: str, max_results: int) -> list[dict]:
     if not text.startswith("["):
         start, end = text.find("["), text.rfind("]")
         if start == -1 or end <= start:
-            logger.warning("merchant_search: la respuesta no contiene un array JSON: %.200s", raw)
+            logger.warning("merchant_search: the answer contains no JSON array: %.200s", raw)
             return []
         text = text[start : end + 1]
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        logger.warning("merchant_search: JSON inválido (%s): %.200s", exc, raw)
+        logger.warning("merchant_search: invalid JSON (%s): %.200s", exc, raw)
         return []
     if not isinstance(data, list):
-        logger.warning("merchant_search: se esperaba una lista, llegó %s", type(data).__name__)
+        logger.warning("merchant_search: expected a list, got %s", type(data).__name__)
         return []
 
     offers: list[dict] = []
     for item in data:
         if not isinstance(item, dict) or not OFFER_KEYS.issubset(item):
-            logger.warning("merchant_search: oferta descartada por shape inválido: %r", item)
+            logger.warning("merchant_search: offer dropped, invalid shape: %r", item)
             continue
         # Borde (5.1, P-09): el precio que devuelve la web pasa a CENTAVOS exactos. Un
         # precio negativo, con más de 2 decimales o no numérico se descarta: no se redondea.
         try:
             price_cents = to_cents(item["price"], "price")
         except MoneyError:
-            logger.warning("merchant_search: precio no representable en centavos descartado: %r", item.get("price"))
+            logger.warning("merchant_search: offer dropped, price not exact in cents: %r", item.get("price"))
             continue
         if price_cents <= 0:
-            logger.warning("merchant_search: precio no positivo descartado: %r", item.get("price"))
+            logger.warning("merchant_search: offer dropped, non-positive price: %r", item.get("price"))
             continue
         offers.append(
             {
@@ -213,7 +213,7 @@ def search_merchant_offers(category: str, fields: dict, max_results: int = 3) ->
     """
     try:
         if not isinstance(fields, dict):
-            logger.warning("merchant_search: fields debe ser dict, llegó %s", type(fields).__name__)
+            logger.warning("merchant_search: fields must be a dict, got %s", type(fields).__name__)
             return []
         error = _validate_fields(category, fields)
         if error:
@@ -224,7 +224,7 @@ def search_merchant_offers(category: str, fields: dict, max_results: int = 3) ->
         raw = _call_web_search(_build_prompt(category, fields, effective_max))
         return _parse_offers(raw, effective_max)
     except Exception:  # frontera del sistema: jamás romper el loop del agente
-        logger.exception("merchant_search: búsqueda falló para %r", category)
+        logger.exception("merchant_search: search failed for %r", category)
         return []
 
 

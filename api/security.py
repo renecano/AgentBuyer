@@ -79,16 +79,6 @@ def owner_email_for(principal: Optional[Principal]) -> Optional[str]:
     return principal.subject.strip().lower()
 
 
-def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
-    """Exige un JWT válido (401 si no) con role="admin" (403 si no).
-
-    Además el email debe SEGUIR en ADMIN_EMAILS: quitarlo de la lista retira el
-    acceso de inmediato, sin esperar a que caduque un token admin ya emitido."""
-    if principal.role != ROLE_ADMIN or principal.subject.lower() not in admin_emails():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
-    return principal
-
-
 def _service_key_matches(provided_key: str) -> bool:
     """Compara la key contra TODAS las configuradas en tiempo constante (sin cortar
     en la primera coincidencia): el tiempo no revela cuál key ni cuántos bytes acertó.
@@ -100,10 +90,10 @@ def _service_key_matches(provided_key: str) -> bool:
     except ServiceKeyConfigError as error:
         # Config inválida (p. ej. cambiada en caliente tras arrancar): nunca se
         # acepta una key débil; se cierra como si no hubiera keys.
-        logger.error("%s Se rechaza toda llamada de servicio.", error)
+        logger.error("%s Every service call is rejected.", error)
         valid_keys = []
     if not valid_keys:
-        logger.warning("SERVICE_API_KEY no está configurada: se rechaza toda llamada de servicio.")
+        logger.warning("SERVICE_API_KEY is not configured: every service call is rejected.")
 
     candidate = provided_key.encode("utf-8")
     matched = False
@@ -145,7 +135,9 @@ def require_human_principal(
 
 def is_admin(principal: Principal) -> bool:
     """Admin efectivo: el token dice "admin" y el email SIGUE en ADMIN_EMAILS
-    (misma regla que require_admin: quitarlo de la lista retira el poder ya)."""
+    (quitarlo de la lista retira el poder ya, sin esperar a que caduque el token).
+    7.1: ya no hay rutas solo-admin (require_admin se retiró con ellas); el rol admin
+    es ver TODO en GET /audit y GET /disputes."""
     return principal.role == ROLE_ADMIN and principal.subject.strip().lower() in admin_emails()
 
 
@@ -174,7 +166,7 @@ def assert_can_access_mandate(principal: Principal, mandate_id: str) -> None:
     - Un admin degradado (fuera de ADMIN_EMAILS) cae al camino de dueño: conserva
       sus propios mandatos, pierde los ajenos.
 
-    Devuelve None; lanza HTTPException. No se aplica aún a revoke/reset/get/etc.
+    Devuelve None; lanza HTTPException.
     """
     if not mandate_exists(mandate_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mandate not found")

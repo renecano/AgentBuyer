@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 from api.main import app
 from core import mandate_store
 from core.key_challenges import registration_message
-from mandate.sign import generate_keypair, sign_payload
-from tests.conftest import KeyRegistrar, MandateSigner, verify_as_service
+from tests.legacy_signing import generate_keypair, sign_payload
+from tests.conftest import MandateSigner, verify_as_service
 from tests.storage import mandate_exists, stored_document, tamper_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.

@@ -17,7 +17,6 @@ from core.auth_tokens import create_access_token
 from core.llm import DEFAULT_MODEL, LLMConfig, LLMError, OpenAIResponsesClient, get_llm, set_llm_client
 from core.merchant_identity import merchant_id_from_url
 from core.semantic_firewall import auditoria_cognitiva_firewall
-from engine.llm_judge import verificar_semantica_con_llm
 from tests.conftest import TEST_USER_EMAIL, verify_as_service
 from tests.storage import live_state
 
@@ -281,7 +280,7 @@ def test_merchant_identity_from_url(url, expected):
     assert merchant_id_from_url(url) == expected
 
 
-# ── Búsqueda web y juez, por el cliente único ───────────────────────────────
+# ── Búsqueda web, por el cliente único ───────────────────────────────
 
 def test_web_search_goes_through_the_single_client_and_fails_closed(monkeypatch):
     fields = {"origin": "BUE", "destination": "COR", "departure_date": "2026-12-05"}
@@ -292,20 +291,3 @@ def test_web_search_goes_through_the_single_client_and_fails_closed(monkeypatch)
 
     set_llm_client(FakeLLM(error=LLMError("timeout", "slow")))
     assert merchant_search.search_merchant_offers("flights", fields) == []
-
-
-@pytest.mark.parametrize("item, category, risky", [
-    ("Vuelo a Valencia", "flight", False),             # antes: "vale" ⊂ "Valencia" → activo líquido
-    ("Vale de compra de 100", "flight", True),
-    ("Hotelería premium en la playa", "hotel", True),  # "hotel" ⊂ "Hotelería" ya no basta
-    ("Hotel Azur, 3 noches", "hotel", False),
-])
-def test_judge_uses_word_boundaries_not_substrings(item, category, risky):
-    assert verificar_semantica_con_llm(item, category, 100.0)[0] is risky
-
-
-@pytest.mark.parametrize("fake", [FakeLLM(error=LLMError("timeout", "slow")), FakeLLM(answer={"motivo": "x"})], ids=["timeout", "malformed"])
-def test_judge_fails_closed_with_the_llm(fake):
-    set_llm_client(fake)
-    risky, reason = verificar_semantica_con_llm("Vuelo BUE-COR", "flight", 100.0)
-    assert risky is True and "seguridad" in reason

@@ -133,7 +133,7 @@ def test_the_ledger_survives_a_restart_and_still_verifies(client, mine):
     restart()
     with TestClient(app) as again:
         assert [entry.model_dump() for entry in audit_ledger.get_all_entries()] == before
-        body = again.get("/audit/verify").json()
+        body = again.get("/ledger/verify", headers=owner()).json()
         assert body["valid"] is True and body["total_blocks"] == len(before)
 
 
@@ -144,7 +144,7 @@ def test_a_tampered_row_stops_the_api_from_starting(caplog):
     with pytest.raises(LedgerIntegrityError, match="Tampered entry at index 0"):
         with TestClient(app):
             pass
-    assert "no puede arrancar" in caplog.text
+    assert "cannot start" in caplog.text
 
 
 def test_removing_the_last_entries_stops_the_api_from_starting():
@@ -297,7 +297,7 @@ def test_two_approvals_that_both_passed_the_precheck_buy_once(client, mine, monk
                                  json={"purchase_attempt_id": attempt_id, "decision": "approve"}, headers=owner())
     assert decide().status_code == 200
     second = decide()
-    assert second.status_code == 409 and second.json()["detail"] == "Este intento ya fue revisado por una persona."
+    assert second.status_code == 409 and second.json()["detail"] == "This attempt was already reviewed by a person."
     assert get_mandate("mnd_ledger")["live_state"]["uses_count"] == 1
     overrides = [e for e in get_trail_events(attempt_id=attempt_id) if e["type"].startswith("human_override")]
     assert len(overrides) == 1  # el evento de la segunda se revirtió con su transacción

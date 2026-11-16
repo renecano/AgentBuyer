@@ -2,8 +2,8 @@
 
 /agent/run (dueño + cuota), GET /audit (P-04: lo suyo; admin todo), /disputes/file
 (dueño; el intento debe ser de ESE mandato; evidencia sin eventos ajenos), GET
-/disputes (lo suyo), /audit/reset (P-05: utilidad de desarrollo, admin +
-AUTH_DEV_MODE) y escalaciones sobre mandatos que ya no son válidos (409).
+/disputes (lo suyo), /audit/reset (P-05; retirado en el 6.3) y escalaciones sobre
+mandatos que ya no son válidos (409).
 Todo por HTTP con tokens reales; mandatos firmados por su titular; red simulada.
 """
 import pytest
@@ -15,7 +15,7 @@ from audit.log import append_entry, get_trail_events, get_trail_for
 from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.quotas import PerSubjectQuota
-from tests.conftest import FakeClock, TEST_ADMIN_EMAIL, TEST_USER_EMAIL, verify_as_service
+from tests.conftest import FakeClock, TEST_USER_EMAIL, verify_as_service
 from tests.storage import live_state, stored_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -242,31 +242,7 @@ def test_cannot_approve_escalation_when_the_signing_key_was_revoked(client, sign
 
     response = approve(client, "mnd_mine", attempt, headers)
     assert response.status_code == 409
-    assert "revocada" in response.json()["detail"]
+    assert "revoked" in response.json()["detail"]
     assert live_state("mnd_mine")["uses_count"] == 0
 
 
-def test_strict_line_escalation_on_revoked_mandate_is_rejected():
-    """core/verify.resolve_escalation: aprobar sobre un mandato revocado no compra."""
-    from core.agent_loop import PurchasingAgent
-    from core.merchant import vuelaya_merchant
-    from core.verify import resolve_escalation
-    from mandate.issue import create_mandate
-    from mandate.sign import generate_keypair
-    from shared.schemas import VerificationStatus
-
-    mandate_store.mandate_store.clear()
-    h_priv, h_pub = generate_keypair()
-    a_priv, a_pub = generate_keypair()
-    strict = create_mandate(human_id="hum_s", human_privkey=h_priv, human_pubkey=h_pub,
-                            agent_id="agent_s", agent_pubkey=a_pub, max_amount_per_tx=50.0)
-    mandate_store.mandate_store.save_mandate(strict)
-    agent = PurchasingAgent("agent_s", a_priv, a_pub)
-    _, result = agent.attempt_purchase(strict, vuelaya_merchant.get_item("FLIGHT_COR_130"), merchant=vuelaya_merchant)
-    assert result.escalation_id, result.reason
-
-    mandate_store.mandate_store.revoke_mandate(strict.mandate_id)
-    resolved = resolve_escalation(result.escalation_id, True, h_priv, h_pub, "approve")
-    assert resolved.status == VerificationStatus.REJECTED
-    assert mandate_store.get_mandate(strict.mandate_id)["live_state"]["uses_count"] == 0
-    mandate_store.mandate_store.clear()

@@ -2,8 +2,8 @@
 
 Desde el 3.5 es el ÚNICO camino para que un usuario cree un mandato: POST /mandates
 exige el formato del 3.2 (key_id + nonce + created_at + signature) firmado con SU
-llave registrada, y el servidor ya no firma por nadie. El sello de sistema solo
-existe para el mandato semilla que se carga al arrancar (hasta el 7.2).
+llave registrada, y el servidor ya no firma por nadie. Desde el 7.2 tampoco existe
+el sello de sistema del mandato semilla: no hay mandatos precargados.
 
 Al crear (create_signed_mandate), en este orden:
     1. forma del cuerpo                                         → 422 (SignedMandateError)
@@ -49,10 +49,8 @@ from mandate.sign import verify_ed25519_bytes
 MAX_CLOCK_SKEW = timedelta(minutes=2)
 MAX_AGE = timedelta(minutes=10)
 
+# El único firmante válido desde el 7.2 (P-11: el sello de sistema se fue con el seed).
 KIND_HUMAN = "human"
-# Solo el mandato semilla cargado al arrancar (core/mandate_store.seal_seed_mandate):
-# ningún endpoint puede crearlo. Desaparece con el seed en el 7.2 (P-11).
-KIND_SYSTEM_SEAL = "system_seal"
 
 SIGNED_FORMAT_REQUIRED = ("signature", "key_id", "created_at", "nonce")
 SIGNED_BODY_KEYS = frozenset({
@@ -269,39 +267,39 @@ def verify_signed_mandate(mandate: dict, owner: Optional[str], signer: dict) -> 
     """¿El mandato guardado sigue siendo exactamente lo que firmó su dueño con una
     llave suya? (ok, detalle legible). Fail-closed ante cualquier dato raro."""
     if not owner or signer.get("kind") != KIND_HUMAN:
-        return False, "Firma humana inválida: falta el dueño o el registro del firmante."
+        return False, "Invalid cardholder signature: the owner or signer record is missing."
     if mandate.get("key_id") != signer.get("key_id"):
-        return False, "Firma humana inválida: la llave del mandato no es la registrada al firmar."
+        return False, "Invalid cardholder signature: the mandate's key is not the one registered at signing."
     found = find_key(signer.get("key_id") or "")
     if found is None or found[0] != owner or found[1]["public_key"] != signer.get("public_key"):
-        return False, "Firma humana inválida: la llave ya no pertenece al titular."
+        return False, "Invalid cardholder signature: the key no longer belongs to the cardholder."
     try:
         message = mandate_signing_message(**signing_inputs(mandate, owner, signer["public_key"]))
     except (MandateMessageError, KeyError, TypeError, AttributeError):
-        return False, "Firma humana inválida: el mandato guardado no cumple la especificación firmada."
+        return False, "Invalid cardholder signature: the stored mandate doesn't match the signed specification."
     if message_hash(message) != signer.get("message_hash"):
-        return False, "Firma humana inválida: el mandato cambió después de firmarse."
+        return False, "Invalid cardholder signature: the mandate changed after it was signed."
     if not verify_ed25519_bytes(signer["public_key"], message, mandate.get("signature")):
-        return False, "Firma humana inválida: la firma no verifica con la llave registrada."
-    return True, "Firma humana Ed25519 válida (llave registrada del titular)."
+        return False, "Invalid cardholder signature: it doesn't verify with the registered key."
+    return True, "Valid Ed25519 cardholder signature (registered key)."
 
 
 def verify_signing_key_active(signer: dict) -> Tuple[bool, str]:
     """P-01 (a): una llave revocada deja sin efecto lo que firmó (el titular re-firma)."""
     found = find_key(signer.get("key_id") or "")
     if found is None or found[1]["revoked_at"] is not None:
-        return False, "La llave que firmó este mandato fue revocada: el titular debe firmarlo de nuevo."
-    return True, "La llave que firmó el mandato sigue activa."
+        return False, "The key that signed this mandate was revoked: the cardholder must sign it again."
+    return True, "The key that signed the mandate is still active."
 
 
 def verify_payment_token_binding(mandate: dict, signer: dict) -> Tuple[bool, str]:
     """El payment_token debe estar atado a ESTE mandato y a ESTOS bytes firmados."""
     token = mandate.get("payment_token")
     if not isinstance(token, dict):
-        return False, "El mandato no tiene un token de pago emitido por el servidor."
+        return False, "The mandate has no server-issued payment token."
     if token.get("bound_mandate_id") != mandate.get("mandate_id") or token.get("bound_message_hash") != signer.get("message_hash"):
-        return False, "El token de pago no está atado a este mandato firmado."
-    return True, "Token de pago atado al mandato firmado."
+        return False, "The payment token is not bound to this signed mandate."
+    return True, "Payment token bound to the signed mandate."
 
 
 def missing_signature_detail(body: Any) -> Optional[str]:

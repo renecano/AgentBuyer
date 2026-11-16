@@ -18,6 +18,9 @@ import {
 
 type MandateCreatorProps = {
   onCreated: (mandateId: string) => void;
+  /** P-17: arrancar la demo guiada al montar (viene de "START DEMO" en Mission Control). */
+  autoStartDemo?: boolean;
+  onAutoStartDemoConsumed?: () => void;
   /** Continúa el relato automático en Mission Control después de emitir el mandato. */
   onDemoCreated?: (mandateId: string) => void;
 };
@@ -219,7 +222,7 @@ function withTimeout<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> {
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; message: string };
 
-export default function MandateCreator({ onCreated, onDemoCreated }: MandateCreatorProps) {
+export default function MandateCreator({ onCreated, onDemoCreated, autoStartDemo, onAutoStartDemoConsumed }: MandateCreatorProps) {
   const { session, isAuthenticated, sessionNotice, startEmailLogin, verifyEmailLogin, logout } = useAuth();
 
   // Límites prellenados con valores de demo (no son datos personales).
@@ -685,11 +688,25 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     }
   }
 
+  // P-17: "START DEMO" desde Mission Control vuelve aquí para que el acto 1 emita y
+  // firme un mandato NUEVO (ya no hay "reset" de un mandato usado). Arranca una vez.
+  const autoStartedDemo = useRef(false);
+  useEffect(() => {
+    if (!autoStartDemo || autoStartedDemo.current) return;
+    autoStartedDemo.current = true;
+    onAutoStartDemoConsumed?.();
+    void runWizardDemo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al montar con la señal
+  }, [autoStartDemo]);
+
+  // 7.3: el listener usa la versión más reciente del handler (ref), no la de su registro.
+  const advanceWizardDemoRef = useRef(advanceWizardDemo);
+  advanceWizardDemoRef.current = advanceWizardDemo;
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (wizardDemoStage === "paused" && (event.key === " " || event.key === "ArrowRight")) {
         event.preventDefault();
-        advanceWizardDemo();
+        advanceWizardDemoRef.current();
       }
     }
     window.addEventListener("keydown", onKeyDown);

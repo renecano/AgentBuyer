@@ -4,35 +4,24 @@ load_dotenv()
 from datetime import datetime, timezone
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
-from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-from shared.schemas import (
-    Mandate,
-    RevokeMandateRequest,
-    ExecutePurchaseRequest,
-    CatalogItem,
-)
 from core.db import DatabaseConfigError, get_engine, validate_database_config
+from core.logging_config import configure_logging, new_request_id, request_id_var
 from core.mandate_store import (
     mandate_store,
-    seal_seed_mandate,
     create_human_signed_mandate,
     get_mandate as store_get_mandate,
+    list_mandates,
     revoke_mandate as store_revoke_mandate,
-    reset_mandate,
 )
-from core.merchant import vuelaya_merchant
-from core.agent_loop import PurchasingAgent
 from api.security import (
     Principal,
+    is_admin,
     owner_email_for,
-    require_admin,
     require_human_principal,
     require_mandate_access,
     require_principal,
@@ -40,7 +29,6 @@ from api.security import (
 from audit.log import LedgerIntegrityError, audit_ledger, append_entry, get_trail_for
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
-from core.agent_keys import get_or_create_agent_keys
 from core.signed_mandates import (
     SignedMandateError,
     build_signed_mandate,
@@ -50,44 +38,28 @@ from core.signed_mandates import (
 
 startup_logger = logging.getLogger("agentbuyer.startup")
 
-# Se lee en cada arranque (no se captura al importar), así los tests pueden
-# apuntarlo a una copia del seed con fechas relativas.
-SEED_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shared", "seed_mandates.json")
-
-
-def load_seed_mandates():
-    if os.path.exists(SEED_PATH):
-        import json
-        with open(SEED_PATH, "r", encoding="utf-8") as f:
-            seeds = json.load(f)
-            for m in seeds:
-                try:
-                    # El seed es config del servidor (no input de un cliente): su dueño
-                    # es el email de su human, igual que si ese humano lo hubiera creado.
-                    # No trae firma: al crearlo, el servidor lo SELLA con una llave
-                    # Ed25519 real (sello de sistema/legado, verificable en /verify).
-                    # Un placeholder de texto ya no pasaría: la verificación es fail-closed.
-                    seal_seed_mandate(m, owner_email=(m.get("human") or {}).get("email"))
-                except Exception:
-                    pass
+# 7.2 (P-11): sin mandatos precargados. El seed (shared/seed_mandates.json, sellado
+# por el servidor con kind=system_seal) se retiró: todo mandato lo firma su titular.
+# Para una demo local con datos: scripts/bootstrap_demo.py (solo AUTH_DEV_MODE=true).
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Reemplaza el @app.on_event("startup") deprecado.
+    configure_logging()  # 7.3: logging estructurado con request id (core/logging_config.py)
     # Fail-fast: un despliegue sin JWT_SECRET válido (fuera de AUTH_DEV_MODE) no
     # arranca, en vez de fallar en el primer login o firmar con una clave pública.
     try:
         validate_token_config()
     except TokenConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: configuración de tokens inválida. %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: invalid token configuration. %s", error)
         raise
     # SERVICE_API_KEY ausente es válido (endpoints de servicio cerrados); configurada
     # pero débil es un error de configuración y se reporta al arrancar.
     try:
         validate_service_key_config()
     except ServiceKeyConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: %s", error)
         raise
     # 6.2: la base es obligatoria fuera de desarrollo y se migra a la última versión
     # ANTES de servir (un esquema viejo no debe recibir tráfico).
@@ -95,16 +67,15 @@ async def lifespan(_app: FastAPI):
         validate_database_config()
         get_engine()
     except DatabaseConfigError as error:
-        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
+        startup_logger.critical("AgentBuyer API cannot start: %s", error)
         raise
     # 6.3: la evidencia se verifica COMPLETA antes de servir. Con la cadena rota la API
     # no arranca (no hay modo solo lectura: docs/design/persistence.md §6). Para
     # investigar sin la API: python -m scripts.verify_ledger
     chain_ok, chain_detail = audit_ledger.verify_chain_integrity()
     if not chain_ok:
-        startup_logger.critical("AgentBuyer API no puede arrancar: el ledger de auditoría no verifica. %s", chain_detail)
+        startup_logger.critical("AgentBuyer API cannot start: the audit ledger does not verify. %s", chain_detail)
         raise LedgerIntegrityError(chain_detail)
-    load_seed_mandates()
     yield
 
 
@@ -135,12 +106,24 @@ app.add_middleware(
     allow_headers=["*"],
     # Retry-After no es un header "safelisted": sin exponerlo, el navegador no deja
     # que el frontend lea el cooldown del 429 (login por email).
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """7.3: cada petición tiene un id que va en cada línea de log y en la respuesta."""
+    request_id = new_request_id(request.headers.get("X-Request-ID"))
+    token = request_id_var.set(request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 # Llaves del AGENTE: viven en core/agent_keys.py (servidor, P-02); las de las
 # personas nunca están en el servidor (cada titular firma en su dispositivo).
-_get_or_create_agent_keys = get_or_create_agent_keys
 
 
 @app.get("/")
@@ -154,43 +137,10 @@ def health():
     return {"status": "ok"}
 
 
-class TicketSendRequest(BaseModel):
-    email: str
-    pnr: Optional[str] = None
-    passenger: Optional[str] = None
-    destination: Optional[str] = None
-    merchant: Optional[str] = None
-    price: Optional[float] = None
-    currency: Optional[str] = "USD"
-
-
-@app.get("/inbox/messages")
-def api_get_inbox_messages(limit: int = Query(default=10, ge=1, le=50), principal: Principal = Depends(require_admin)):
-    """
-    Connects to saturday.agentbuyer@gmail.com via IMAP and reads the latest received emails.
-    """
-    from core.notifications import leer_correos_recibidos
-    result = leer_correos_recibidos(limite=limit)
-    return result
-
-
-@app.post("/notifications/send-ticket")
-def api_send_ticket_notification(payload: TicketSendRequest, principal: Principal = Depends(require_admin)):
-    """
-    Dispatches an official receipt/ticket with Google Calendar integration to ANY destination email.
-    """
-    from core.notifications import enviar_ticket_confirmacion
-    reserva = {
-        "pnr": payload.pnr or "PNR-VYA-849201",
-        "pasajero": payload.passenger or "Authorized Customer",
-        "destino": payload.destination or "Direct Flight Buenos Aires (AEP) -> Córdoba (COR)",
-        "proveedor": payload.merchant or "VuelaYa Travel & Logistics Inc.",
-        "precio_total": payload.price or 130.00,
-        "moneda": payload.currency or "USD",
-        "orden_id": f"ORD-{int(time.time()) % 100000}",
-    }
-    result = enviar_ticket_confirmacion(payload.email, reserva)
-    return result
+# 7.1 (P-07): GET /inbox/messages (leía el Gmail del proyecto por IMAP) y
+# POST /notifications/send-ticket (mandaba un "recibo" con datos inventados a cualquier
+# dirección) se retiraron. El recibo es un servicio interno que dispara la compra
+# (core/notifications.send_purchase_receipt).
 
 
 # Mandate Endpoints
@@ -236,15 +186,18 @@ async def create_mandate_endpoint(
         {
             "type": "mandate_created",
             "mandate_id": mandate["mandate_id"],
-            "summary": f"Mandato firmado por el titular creado para {mandate.get('human', {}).get('display_name', 'la persona autorizante')}.",
+            "summary": f"Mandate signed by the cardholder, created for {mandate.get('human', {}).get('display_name', 'the authorizing person')}.",
         }
     )
     return record
 
 
-@app.get("/mandates", response_model=List[Mandate])
-def api_list_mandates(human_id: Optional[str] = None, principal: Principal = Depends(require_principal)):
-    return mandate_store.list_mandates(human_id)
+@app.get("/mandates")
+def api_list_mandates(principal: Principal = Depends(require_principal)):
+    """Los mandatos del usuario ({mandate, live_state}, como GET /mandates/{id}); un
+    admin ve todos. 7.2: antes devolvía TODOS los mandatos del sistema a cualquier
+    usuario autenticado (con restricciones, búsquedas y payment_token ajenos)."""
+    return list_mandates(None if is_admin(principal) else owner_email_for(principal))
 
 
 @app.get("/mandates/{mandate_id}")
@@ -259,25 +212,22 @@ def api_get_mandate(mandate_id: str, principal: Principal = Depends(require_mand
 @app.post("/mandates/{mandate_id}/revoke")
 def api_revoke_mandate(
     mandate_id: str,
-    req: Optional[RevokeMandateRequest] = None,
     principal: Principal = Depends(require_mandate_access),
 ):
-    reason = req.reason if req else "Revocado por el usuario"
     previous = store_get_mandate(mandate_id)
-    success = mandate_store.revoke_mandate(mandate_id, reason)
     record = store_revoke_mandate(mandate_id)
-    
+    if record is None:
+        raise HTTPException(status_code=404, detail="Mandate not found")
+
     if previous is not None and previous.get("live_state", {}).get("status") != "revoked":
         append_entry(
             {
                 "type": "revocation",
                 "mandate_id": mandate_id,
-                "summary": "Mandato revocado por la persona autorizante.",
+                "summary": "Mandate revoked by the authorizing person.",
             }
         )
-    if not success and record is None:
-        raise HTTPException(status_code=404, detail="Mandate not found")
-    return record or {"status": "REVOKED", "mandate_id": mandate_id, "reason": reason}
+    return record
 
 
 @app.post("/mandates/{mandate_id}/pause")
@@ -288,13 +238,9 @@ def api_pause_mandate(mandate_id: str, principal: Principal = Depends(require_ma
     return {"status": "PAUSED", "mandate_id": mandate_id}
 
 
-@app.post("/mandates/{mandate_id}/reset")
-def reset_mandate_endpoint(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
-    """Restaura el mandato a un estado vivo fresco para reiniciar la demo."""
-    record = reset_mandate(mandate_id)
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mandato no encontrado.")
-    return record
+# 7.2 (P-17): POST /mandates/{id}/reset se retiró. Reiniciar los contadores de un
+# mandato agotado autorizaba más compras con solo una sesión, sin la firma del
+# dispositivo. Para seguir comprando se crea y firma un mandato nuevo.
 
 
 @app.post("/mandates/{mandate_id}/resume")
@@ -305,134 +251,44 @@ def api_resume_mandate(mandate_id: str, principal: Principal = Depends(require_m
     return {"status": "ACTIVE", "mandate_id": mandate_id}
 
 
-# Merchant & Purchasing Endpoints
-@app.get("/merchant/catalog", response_model=List[CatalogItem])
-def api_get_catalog():
-    return vuelaya_merchant.get_catalog()
-
-
-# /merchant/flights, /merchant/search y /agent/run viven en sus routers
-# (api/merchant.py, api/agent.py) — una sola dueña por ruta, sin sombras.
-
-
-@app.post("/purchases/execute")
-def api_execute_purchase(req: ExecutePurchaseRequest, principal: Principal = Depends(require_principal)):
-    mandate = mandate_store.get_mandate(req.mandate_id)
-    if not mandate:
-        raise HTTPException(status_code=404, detail="Mandate not found")
-
-    item = vuelaya_merchant.get_item(req.item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found in catalog")
-
-    a_keys = _get_or_create_agent_keys(req.agent_id)
-    agent = PurchasingAgent(req.agent_id, a_keys["priv"], a_keys["pub"])
-
-    attempt, result = agent.attempt_purchase(
-        mandate=mandate,
-        item=item,
-        merchant=vuelaya_merchant,
-        override_amount=req.override_amount,
-    )
-
-    return {
-        "attempt": attempt,
-        "verification_result": result,
-    }
+# 7.2 (P-08): GET /merchant/catalog y POST /purchases/execute se retiraron con la
+# línea estricta (core/verify.py) y el catálogo inventado de VuelaYa. Las compras
+# pasan por /agent/run (agente del servidor) o por POST /verify (comercio/agente).
+# /merchant/search y /agent/run viven en sus routers (api/merchant.py, api/agent.py).
 
 
 # Mandate Activity Trail for User
 @app.get("/mandates/{mandate_id}/activity")
 def api_get_mandate_activity(mandate_id: str, principal: Principal = Depends(require_mandate_access)):
-    mandate = mandate_store.get_mandate(mandate_id)
-    if not mandate:
-        raise HTTPException(status_code=404, detail="Mandato no encontrado")
+    record = store_get_mandate(mandate_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Mandate not found.")
     trail = get_trail_for(role="human", mandate_id=mandate_id)
     return {
         "mandate_id": mandate_id,
-        "status": mandate.status.value,
+        "status": record["live_state"]["status"].upper(),
         "activity_count": len(trail),
         "trail": trail,
     }
 
 
-# HITL Exception Approval
-class ApproveExceptionRequest(BaseModel):
-    user_passkey_signature: Optional[str] = None
-    notes: Optional[str] = None
-
-
-@app.post("/purchases/{purchase_id}/approve-exception")
-def api_approve_purchase_exception(purchase_id: str, req: Optional[ApproveExceptionRequest] = None, principal: Principal = Depends(require_admin)):
-    # Procesa excepción HITL firmada con Passkey
-    append_entry({
-        "type": "hitl_approved",
-        "attempt_id": purchase_id,
-        "mandate_id": "mnd_delegated",
-        "summary": f"Excepción autorizada manualmente por el titular con Passkey para intento {purchase_id}.",
-    })
-    return {
-        "ok": True,
-        "purchase_id": purchase_id,
-        "status": "APPROVED_BY_HUMAN_OVERRIDE",
-        "message": "Compra fuera de mandato autorizada mediante verificación step-up.",
-    }
-
-
-# Stripe Off-Session Webhook
-@app.post("/webhooks/stripe")
-def api_webhook_stripe(payload: dict):
-    event_type = payload.get("type", "payment_intent.succeeded")
-    mandate_id = payload.get("data", {}).get("object", {}).get("metadata", {}).get("mandate_id", "mnd_live")
-    amount = payload.get("data", {}).get("object", {}).get("amount", 13000) / 100.0
-
-    append_entry({
-        "type": "settlement_completed",
-        "mandate_id": mandate_id,
-        "summary": f"Cobro off-session de ${amount:.2f} USD confirmado por webhook de Stripe.",
-    })
-    return {"received": True, "event": event_type}
-
-
-# Travel Provider (Amadeus / VuelaYa) Webhook
-@app.post("/webhooks/travel-provider")
-def api_webhook_travel_provider(payload: dict):
-    pnr = payload.get("pnr", "PNR-VYA-849201")
-    flight_id = payload.get("flight_id", "FLIGHT_COR_130")
-    status_str = payload.get("status", "TICKET_ISSUED")
-    # Sin correo en el payload no se envía nada (nunca auto-enviarse el boleto).
-    user_email = payload.get("email") or ""
-
-    append_entry({
-        "type": "settlement_completed",
-        "mandate_id": payload.get("mandate_id", "mnd_live"),
-        "summary": f"Emisión de boleto confirmada por aerolínea: PNR {pnr} ({status_str}).",
-    })
-
-    try:
-        from core.notifications import enviar_ticket_confirmacion
-        enviar_ticket_confirmacion(
-            correo_destino=user_email,
-            detalles_reserva={
-                "destino": payload.get("destination", "Córdoba (COR)"),
-                "proveedor": payload.get("merchant", "VuelaYa Travel"),
-                "pnr": pnr,
-                "precio_total": payload.get("amount", 130),
-                "moneda": "USD",
-            }
-        )
-    except Exception as notify_err:
-        print("Aviso al enviar ticket desde webhook:", notify_err)
-
-    return {"received": True, "pnr": pnr, "status": status_str}
+# 7.1 (P-06): se retiraron POST /purchases/{id}/approve-exception (escribía una
+# "aprobación con Passkey" en el ledger sin verificar nada), POST /webhooks/stripe y
+# POST /webhooks/travel-provider. Los webhooks NO tenían autenticación: cualquiera podía
+# escribir eventos settlement_completed en el ledger, y el de viajes enviaba correos a la
+# dirección que le pasaran. Los pagos reales (Stripe con verificación de firma y secretos
+# por entorno) son el siguiente paso documentado, no algo que la demo simule.
 
 
 # Audit Trail Router (POST /audit/reset vive SOLO en api/audit.py desde el 4.1: era
 # una ruta registrada dos veces, y ahora es una utilidad de desarrollo, P-05.)
 
 
-@app.get("/audit/verify")
-def api_verify_audit_integrity():
+@app.get("/ledger/verify")
+def api_verify_audit_integrity(principal: Principal = Depends(require_principal)):
+    """Integridad de la cadena del ledger. 7.3: antes era GET /audit/verify, que (a)
+    chocaba con GET /audit/{mandate_id} (un mandato llamado "verify" no podía ver su
+    historial) y (b) era anónimo, exponiendo el volumen de actividad a cualquiera."""
     is_valid, msg = audit_ledger.verify_chain_integrity()
     return {"valid": is_valid, "message": msg, "total_blocks": audit_ledger.count()}
 

@@ -51,9 +51,9 @@ def _env_non_negative_int(name: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise ValueError(f"{name} debe ser un entero ≥ 0 (recibido {raw!r}).") from None
+        raise ValueError(f"{name} must be an integer >= 0 (got {raw!r}).") from None
     if value < 0:
-        raise ValueError(f"{name} debe ser un entero ≥ 0 (recibido {raw!r}).")
+        raise ValueError(f"{name} must be an integer >= 0 (got {raw!r}).")
     return value
 
 

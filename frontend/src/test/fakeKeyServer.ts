@@ -174,7 +174,7 @@ export class FakeKeyServer {
   private async registerKey(body: Record<string, unknown> | null): Promise<Response> {
     const publicKey = typeof body?.public_key === "string" ? body.public_key.trim().toLowerCase() : "";
     if (!/^[0-9a-f]{64}$/.test(publicKey) || typeof body?.challenge_id !== "string" || typeof body?.signature !== "string") {
-      return json(422, { detail: "La llave pública Ed25519 debe tener 64 caracteres hex." });
+      return json(422, { detail: "The Ed25519 public key must have 64 hex characters." });
     }
     const challenge = this.challenges.get(body.challenge_id);
     if (!challenge || challenge.owner !== this.owner) return json(403, { detail: "Unknown challenge. Request a new one." });
@@ -200,11 +200,11 @@ export class FakeKeyServer {
 
     const holder = this.keys.find((key) => key.public_key === publicKey);
     if (holder) {
-      if (holder.owner !== this.owner) return json(409, { detail: "Esa llave pública ya está registrada por otra cuenta." });
-      if (holder.revoked_at !== null) return json(409, { detail: "Esa llave fue revocada y no puede volver a registrarse." });
+      if (holder.owner !== this.owner) return json(409, { detail: "That public key is already registered by another account." });
+      if (holder.revoked_at !== null) return json(409, { detail: "That key was revoked and cannot be registered again." });
       return json(201, this.publicView(holder)); // idempotente
     }
-    if (this.activeKeys().length >= MAX_ACTIVE_KEYS) return json(409, { detail: "Máximo 10 llaves activas por cuenta." });
+    if (this.activeKeys().length >= MAX_ACTIVE_KEYS) return json(409, { detail: "At most 10 active keys per account." });
     return json(201, this.publicView(this.seedKey(publicKey)));
   }
 

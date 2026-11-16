@@ -1,114 +1,19 @@
-import uuid
+import logging
 import secrets
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Tuple, List
+import uuid
 
-from shared.schemas import (
-    Mandate,
-    CatalogItem,
-    PurchaseAttempt,
-    VerificationResult,
-)
-from mandate.sign import sign_payload
-from core.merchant import vuelaya_merchant, VuelaYaMerchant
 from core.mandate_store import get_mandate, get_mandate_signer
 from core.money import format_money, is_cents
 from audit.log import append_entry
 from core.merchant_identity import merchant_id_from_url
 from core.merchant_search import search_merchant_offers
 
+logger = logging.getLogger(__name__)
 
-class PurchasingAgent:
-    """
-    Autonomous purchasing agent that discovers deals, evaluates them against active mandates,
-    signs purchase attempts cryptographically, and submits them to merchants.
-    """
-
-    def __init__(self, agent_id: str, agent_privkey: str, agent_pubkey: str):
-        self.agent_id = agent_id
-        self.agent_privkey = agent_privkey
-        self.agent_pubkey = agent_pubkey
-        self.purchase_history: List[Dict[str, Any]] = []
-
-    def create_signed_attempt(
-        self,
-        mandate: Mandate,
-        item: CatalogItem,
-        merchant_id: str,
-        override_amount: Optional[float] = None,
-        tampered_nonce: Optional[str] = None,
-        tampered_agent_id: Optional[str] = None,
-        forge_signature: bool = False,
-    ) -> PurchaseAttempt:
-        attempt_id = f"att_{uuid.uuid4().hex[:10]}"
-        timestamp = datetime.now(timezone.utc).isoformat()
-        nonce = tampered_nonce if tampered_nonce else secrets.token_hex(16)
-        active_agent_id = tampered_agent_id if tampered_agent_id else self.agent_id
-        amount = override_amount if override_amount is not None else item.price
-
-        unsigned_dict: Dict[str, Any] = {
-            "attempt_id": attempt_id,
-            "mandate_id": mandate.mandate_id,
-            "agent_id": active_agent_id,
-            "merchant_id": merchant_id,
-            "category": item.category,
-            "amount": amount,
-            "currency": item.currency,
-            "timestamp": timestamp,
-            "nonce": nonce,
-            "item_description": getattr(item, "description", getattr(item, "title", "Vuelo")),
-            "metadata": item.metadata,
-        }
-
-        if forge_signature:
-            signature = "forged_signature_000000000000000000000000000000000000000000000000"
-        else:
-            signature = sign_payload(self.agent_privkey, unsigned_dict)
-
-        return PurchaseAttempt(
-            **unsigned_dict,
-            signature=signature,
-            agent_signature=signature,
-        )
-
-
-    def attempt_purchase(
-        self,
-        mandate: Mandate,
-        item: CatalogItem,
-        merchant: Optional[VuelaYaMerchant] = None,
-        override_amount: Optional[float] = None,
-        tampered_nonce: Optional[str] = None,
-        tampered_agent_id: Optional[str] = None,
-        forge_signature: bool = False,
-    ) -> Tuple[PurchaseAttempt, VerificationResult]:
-        actual_merchant = merchant if merchant is not None else vuelaya_merchant
-        attempt = self.create_signed_attempt(
-            mandate=mandate,
-            item=item,
-            merchant_id=actual_merchant.merchant_id,
-            override_amount=override_amount,
-            tampered_nonce=tampered_nonce,
-            tampered_agent_id=tampered_agent_id,
-            forge_signature=forge_signature,
-        )
-
-        from core.verify import gateway
-        result = gateway.verify_and_authorize(attempt, mandate, merchant_pubkey=actual_merchant.pubkey)
-
-        if result.authorized:
-            actual_merchant.record_settlement(
-                attempt_id=attempt.attempt_id,
-                settlement_token=result.settlement_token,
-                amount=attempt.amount,
-            )
-
-        self.purchase_history.append({
-            "attempt": attempt.model_dump(),
-            "result": result.model_dump(),
-        })
-
-        return attempt, result
+# 7.2 (P-08): la clase PurchasingAgent (agente de consola de la línea estricta, que
+# compraba en el catálogo inventado de VuelaYa) se retiró con esa línea. El agente del
+# producto es run_agent: busca, elige lo que cabe, firma el intento y lo presenta a
+# /verify (api/verify.verify_attempt).
 
 
 def _category_key(mandate: dict) -> str:
@@ -283,14 +188,14 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
 
     if not flights_seen:
         message = (
-            "Saturday no encontró ofertas en este momento. "
-            "No se realizó ningún intento de compra; intenta de nuevo."
+            "Saturday couldn't find offers right now. "
+            "No purchase attempt was made; try again."
         )
         append_entry(
             {
                 "type": "agent_run",
                 "mandate_id": mandate_id,
-                "summary": "La búsqueda web no devolvió ofertas; el agente no intentó ninguna compra.",
+                "summary": "The web search returned no offers; the agent did not attempt any purchase.",
             }
         )
         return {
@@ -309,10 +214,10 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         # 5.1: si ninguna oferta cabe en el mandato, NO se intenta la más barata (antes
         # se intentaba igual y el guardián tenía que pararla). No hay compra que proponer.
         message = (
-            f"Saturday encontró {len(flights_seen)} ofertas, pero ninguna cabe en el mandato "
-            f"(tope {format_money(cap) if cap is not None else '—'} USD"
+            f"Saturday found {len(flights_seen)} offers, but none fits the mandate "
+            f"(limit {format_money(cap) if cap is not None else '—'} USD"
             + (f", price_below {format_money(below)} USD" if below is not None else "")
-            + "). No se intentó ninguna compra."
+            + "). No purchase was attempted."
         )
         append_entry({"type": "agent_run", "mandate_id": mandate_id, "summary": message})
         return {
@@ -366,14 +271,14 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
 
     story = (
         # R12: un escenario no es una búsqueda real ni una compra; se dice tal cual.
-        f"Escenario de demostración '{scenario}': oferta sintética (no salió de una búsqueda real) "
-        f"de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
-        f"Verify devolvió {verdict}; en un escenario nunca se compra. {verification.get('human_readable', '')}"
+        f"Demo scenario '{scenario}': a synthetic offer (not from a real search) "
+        f"from {selected_flight.get('merchant', selected_flight['merchant_id'])} for {format_money(selected_flight['price_cents'])} USD. "
+        f"Verify returned {verdict}; a scenario never buys anything. {verification.get('human_readable', '')}"
     ) if scenario else (
-        f"Encontró {len(flights_seen)} {'hoteles' if category_key == 'hotels' else 'vuelos'} en la web (búsqueda real). "
-        + (f"Aplicó el límite price_below de {format_money(below)} USD y " if below is not None else f"Aplicó el tope de {format_money(cap)} USD y ")
-        + f"eligió {selected_flight['route']} de {selected_flight.get('merchant', selected_flight['merchant_id'])} por {format_money(selected_flight['price_cents'])} USD. "
-        + ("La compra fue completada tras recibir APPROVE." if completed else f"La compra no procedió: verify devolvió {verdict}. {verification.get('human_readable', '')}")
+        f"Found {len(flights_seen)} {'hotels' if category_key == 'hotels' else 'flights'} on the web (real search). "
+        + (f"Applied the price_below limit of {format_money(below)} USD and " if below is not None else f"Applied the limit of {format_money(cap)} USD and ")
+        + f"chose {selected_flight['route']} from {selected_flight.get('merchant', selected_flight['merchant_id'])} for {format_money(selected_flight['price_cents'])} USD. "
+        + ("The purchase was completed after APPROVE." if completed else f"The purchase did not proceed: verify returned {verdict}. {verification.get('human_readable', '')}")
     )
     
     append_entry(
@@ -386,42 +291,48 @@ def run_agent(mandate_id: str, search_fields: dict | None = None, scenario: str 
         }
     )
     if completed:
-        append_entry(
+        completed_event = append_entry(
             {
                 "type": "purchase_completed",
                 "mandate_id": mandate_id,
                 "attempt_id": attempt_id,
                 "verdict": "APPROVE",
-                "summary": f"Compra completada por Saturday: {selected_flight['route']} por {format_money(selected_flight['price_cents'])} USD.",
+                "summary": f"Purchase completed by Saturday: {selected_flight['route']} for {format_money(selected_flight['price_cents'])} USD.",
             }
         )
+        # 7.1 (P-07): el recibo es un servicio interno que dispara la compra, con los
+        # datos REALES (los que verificó /verify y registró el ledger) y para el DUEÑO
+        # verificado del mandato (no el `human.email` que manda el cliente, sin firmar).
+        from core.mandate_store import get_mandate_owner
+        from core.notifications import PurchaseReceipt, send_purchase_receipt
+
+        purchase = attempt["purchase"]
         try:
-            from core.notifications import enviar_ticket_confirmacion
-            # Solo el correo del titular; sin él, notifications omite el envío
-            # (jamás caer a SMTP_USER: eso mandaba el recibo al propio emisor).
-            user_email = mandate.get("human", {}).get("email") or ""
-            enviar_ticket_confirmacion(
-                correo_destino=user_email,
-                detalles_reserva={
-                    "destino": selected_flight.get("route", "Buenos Aires ➔ Córdoba"),
-                    "proveedor": selected_flight.get("merchant", "VuelaYa Travel"),
-                    "pnr": f"PNR-VYA-{attempt_id[-6:].upper()}",
-                    # Borde con el correo: el recibo muestra unidades.
-                    "precio_total": selected_flight["price_cents"] / 100,
-                    "moneda": "USD",
-                    "pasajero": mandate.get("human", {}).get("display_name", "Marta"),
-                    "candidate_id": mandate_id,
-                }
-            )
-        except Exception as notify_err:
-            print("Aviso al enviar ticket de confirmación:", notify_err)
+            receipt_result = send_purchase_receipt(PurchaseReceipt(
+                recipient_email=get_mandate_owner(mandate_id) or "",
+                mandate_id=mandate_id,
+                attempt_id=attempt_id,
+                description=purchase["description"],
+                merchant_name=str(selected_flight.get("merchant") or purchase["merchant_id"]),
+                merchant_id=purchase["merchant_id"],
+                amount_cents=purchase["amount_cents"],
+                currency=purchase["currency"],
+                authorized_at=completed_event["timestamp"],
+                offer_url=purchase["metadata"].get("url"),
+                ledger_event_id=completed_event["event_id"],
+                holder_name=(mandate.get("human") or {}).get("display_name"),
+            ))
+        except Exception as error:  # el recibo nunca deshace ni rompe una compra aprobada
+            receipt_result = {"status": "failed", "reason": type(error).__name__}
+        if receipt_result["status"] != "sent":
+            logger.info("receipt for %s not sent: %s (%s)", attempt_id, receipt_result["status"], receipt_result.get("reason", ""))
     return {
         "mandate_id": mandate_id,
         "attempt_id": attempt_id,
         "discovery_source": discovery_source,
         "flights_seen": flights_seen,
         "selected_flight": selected_flight,
-        "selection_reason": "La oferta más barata que cabe en el mandato.",
+        "selection_reason": "The cheapest offer that fits the mandate.",
         "attempt": attempt,
         "verification": verification,
         "purchase_completed": completed,

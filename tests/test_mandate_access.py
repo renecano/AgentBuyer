@@ -63,7 +63,6 @@ def status_of(client, headers) -> str:
 PROTECTED = [
     ("GET", "/mandates/{id}", None),
     ("POST", "/mandates/{id}/revoke", None),
-    ("POST", "/mandates/{id}/reset", None),
     ("POST", "/mandates/{id}/pause", None),
     ("POST", "/mandates/{id}/resume", None),
     ("GET", "/mandates/{id}/activity", None),
@@ -119,14 +118,18 @@ def test_another_user_cannot_revoke_and_the_mandate_stays_active(client, owned_m
     assert status_of(client, auth_headers) == "active"  # el 403 fue antes del efecto
 
 
-def test_owner_revokes_and_admin_can_reset_it(client, owned_mandate, auth_headers, admin_headers):
+def test_admin_operates_someone_elses_mandate_and_the_owner_revokes(client, owned_mandate, auth_headers, admin_headers):
+    # Un admin opera mandatos ajenos (soporte), y el efecto sí ocurre.
+    assert client.post(f"/mandates/{MANDATE_ID}/pause", headers=admin_headers).status_code == 200
+    assert status_of(client, auth_headers) == "paused"
+    assert client.post(f"/mandates/{MANDATE_ID}/resume", headers=admin_headers).status_code == 200
+    assert status_of(client, admin_headers) == "active"
+
     revoked = client.post(f"/mandates/{MANDATE_ID}/revoke", headers=auth_headers)
     assert revoked.status_code == 200
     assert status_of(client, auth_headers) == "revoked"
-
-    # Un admin opera mandatos ajenos (soporte), y el efecto sí ocurre.
-    assert client.post(f"/mandates/{MANDATE_ID}/reset", headers=admin_headers).status_code == 200
-    assert status_of(client, admin_headers) == "active"
+    # 7.2 (P-17): ni un admin "resetea" un mandato: ya no existe la ruta.
+    assert client.post(f"/mandates/{MANDATE_ID}/reset", headers=admin_headers).status_code in (404, 405)
 
 
 def test_another_user_cannot_pause_the_mandate(client, owned_mandate, auth_headers, other_headers):
@@ -151,7 +154,7 @@ def test_unknown_mandate_is_404_for_an_authenticated_user(client, auth_headers):
 
 def test_react_flow_create_then_operate_with_the_same_token(client, signed_poster, auth_headers, other_headers):
     """Lo que hace el navegador: crear con el token de la sesión y seguir usando
-    ESE mismo token para leer, revocar y resetear. Es el flujo central de la UI."""
+    ESE mismo token para leer y revocar. Es el flujo central de la UI."""
     assert signed_poster.post(react_payload(), email=TEST_USER_EMAIL, headers=auth_headers).status_code == 201
 
     record = client.get(f"/mandates/{MANDATE_ID}", headers=auth_headers)
@@ -159,14 +162,12 @@ def test_react_flow_create_then_operate_with_the_same_token(client, signed_poste
     assert set(record.json()) == {"mandate", "live_state"}
 
     assert client.post(f"/mandates/{MANDATE_ID}/revoke", headers=auth_headers).status_code == 200
-    assert client.post(f"/mandates/{MANDATE_ID}/reset", headers=auth_headers).status_code == 200
     assert client.get(f"/audit/{MANDATE_ID}", headers=auth_headers).status_code == 200
 
     # Otra sesión, aunque esté autenticada, no ve ni toca ese mandato.
     for method, path in [
         ("GET", f"/mandates/{MANDATE_ID}"),
         ("POST", f"/mandates/{MANDATE_ID}/revoke"),
-        ("POST", f"/mandates/{MANDATE_ID}/reset"),
         ("GET", f"/audit/{MANDATE_ID}"),
     ]:
         assert client.request(method, path, headers=other_headers).status_code == 403

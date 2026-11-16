@@ -54,43 +54,43 @@ def approve_escalation(
     if not isinstance(attempt_id, str) or not attempt_id.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="purchase_attempt_id es obligatorio y debe ser un texto no vacío.",
+            detail="purchase_attempt_id is required and must be a non-empty text.",
         )
     if decision not in ("approve", "decline"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail='decision debe ser "approve" o "decline".',
+            detail='decision must be "approve" or "decline".',
         )
 
     verification = _latest_verification(attempt_id)
     if verification is None or verification.get("mandate_id") != mandate_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe una verificación registrada para ese intento en este mandato.",
+            detail="There is no recorded verification for that attempt on this mandate.",
         )
     if verification.get("verdict") != "ESCALATE":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Solo los intentos escalados admiten revisión humana; este quedó {verification.get('verdict')}.",
+            detail=f"Only escalated attempts allow human review; this one was {verification.get('verdict')}.",
         )
     if _existing_override(attempt_id) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Este intento ya fue revisado por una persona.",
+            detail="This attempt was already reviewed by a person.",
         )
 
     # Re-chequeo del estado vivo, fresco, igual que en /verify: si el mandato
     # fue revocado o expiró después de la escalación, la revisión no procede.
     record = get_mandate(mandate_id)
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mandato no encontrado.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mandate not found.")
     live_status = record["live_state"]["status"]
     if live_status != "active":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"El mandato está {live_status}: una revisión humana no puede "
-                "aprobar compras sobre un mandato que ya no es válido."
+                f"The mandate is {live_status}: a human review cannot "
+                "approve purchases on a mandate that is no longer valid."
             ),
         )
 
@@ -100,7 +100,7 @@ def approve_escalation(
     if signer is not None and signer.get("kind") == KIND_HUMAN and not verify_signing_key_active(signer)[0]:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="La llave que firmó el mandato fue revocada: una revisión humana no puede aprobar compras sobre él.",
+            detail="The key that signed the mandate was revoked: a human review cannot approve purchases on it.",
         )
 
     escalation_reason = {
@@ -112,12 +112,12 @@ def approve_escalation(
     if decision == "approve" and (not is_cents(amount_cents) or amount_cents <= 0):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="La escalación no registró un monto verificable; no se puede aprobar.",
+            detail="The escalation did not record a verifiable amount; it cannot be approved.",
         )
     verdict = "APPROVE" if decision == "approve" else "REJECT"
-    human_readable = ("Compra aprobada por revisión humana tras la escalación." if decision == "approve"
-                      else "Compra rechazada por revisión humana tras la escalación.")
-    outcome = "APROBADA" if decision == "approve" else "RECHAZADA"
+    human_readable = ("Purchase approved by human review after escalation." if decision == "approve"
+                      else "Purchase declined by human review after escalation.")
+    outcome = "APPROVED" if decision == "approve" else "DECLINED"
     decided_at = datetime.now(timezone.utc).isoformat()
 
     # 6.3 (H2): la decisión, la compra y su evento del ledger son UNA transacción, y la
@@ -140,9 +140,9 @@ def approve_escalation(
                     "verdict": verdict,
                     "escalation_reason": escalation_reason,
                     "summary": (
-                        "Escalada por "
-                        + (", ".join(escalation_reason["failed_rules"]) or "reglas no registradas")
-                        + f" — revisada y {outcome} por una persona."
+                        "Escalated for "
+                        + (", ".join(escalation_reason["failed_rules"]) or "unrecorded rules")
+                        + f" — reviewed and {outcome} by a person."
                     ),
                 },
                 connection=connection,
@@ -150,7 +150,7 @@ def approve_escalation(
     except IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Este intento ya fue revisado por una persona.",
+            detail="This attempt was already reviewed by a person.",
         ) from None
 
     # Misma forma que la respuesta de /verify para que el front la renderice igual.
@@ -163,11 +163,11 @@ def approve_escalation(
                 "rule": "human_review",
                 "pass": decision == "approve",
                 "detail": (
-                    "Aprobada por una persona." if decision == "approve"
-                    else "Rechazada por una persona."
+                    "Approved by a person." if decision == "approve"
+                    else "Declined by a person."
                 ),
             },
-            {"rule": "status", "pass": True, "detail": "Mandato activo al momento de la revisión."},
+            {"rule": "status", "pass": True, "detail": "Mandate active at the time of review."},
         ],
         "human_readable": human_readable,
         "decided_at": decided_at,

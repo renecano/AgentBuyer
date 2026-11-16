@@ -1,35 +1,50 @@
-"""Regresión: GET /mandates se colgaba por deadlock en MandateStore.
+"""GET /mandates bajo escrituras concurrentes (antes: regresión de un deadlock).
 
-list_mandates() toma el lock y luego llama a get_mandate(), que vuelve a
-tomar el mismo lock. Con threading.Lock (no reentrante) el primer request
-quedaba bloqueado para siempre y envenenaba el lock para todo el proceso.
-Se corre en un hilo con timeout para que el test falle en vez de colgarse.
+Hasta el 7.2 este test cubría un deadlock del lock de MandateStore.list_mandates(),
+que ya no existe: el listado es una lectura de la base (core/mandate_store.list_mandates)
+y las escrituras son transacciones. Lo que se sigue probando: listar mientras otro
+hilo escribe termina (sin colgarse ni fallar) y devuelve los mandatos del usuario.
 """
-
 import threading
 
 from fastapi.testclient import TestClient
 
 from api.main import app
-from core.mandate_store import mandate_store
-from tests.storage import all_mandate_ids
+from tests.conftest import KeyRegistrar, SignedMandatePoster, TEST_USER_EMAIL
+
+MANDATE = {
+    "mandate_id": "mnd_list", "human": {"id": "hum_x", "display_name": "X"}, "agent": {"id": "agt_saturday"},
+    "constraints": {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
+                    "allowed_merchants": ["mch_vuelaya"], "max_uses": 3},
+}
 
 
-def test_list_mandates_no_deadlock(auth_headers):
-    # El context manager dispara el evento de startup que carga el seed
+def test_listing_while_another_thread_writes_finishes(monkeypatch):
     with TestClient(app) as client:
-        assert all_mandate_ids(), "el seed debería cargar al menos un mandato"
+        SignedMandatePoster(client, KeyRegistrar(client, monkeypatch)).create(MANDATE)
+        headers = KeyRegistrar.bearer(TEST_USER_EMAIL)
+        listings: list = []
+        errors: list = []
 
-        result: dict = {}
+        def writer():
+            try:
+                for _ in range(20):
+                    client.post("/mandates/mnd_list/pause", headers=headers)
+                    client.post("/mandates/mnd_list/resume", headers=headers)
+            except Exception as error:  # pragma: no cover - solo si algo se rompe
+                errors.append(error)
 
-        def worker():
-            result["mandates"] = mandate_store.list_mandates()
-            result["response"] = client.get("/mandates", headers=auth_headers)
+        def reader():
+            for _ in range(20):
+                listings.append(client.get("/mandates", headers=headers))
 
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        t.join(timeout=10)
+        threads = [threading.Thread(target=writer, daemon=True), threading.Thread(target=reader, daemon=True)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
 
-        assert not t.is_alive(), "list_mandates() / GET /mandates sigue en deadlock"
-        assert result["response"].status_code == 200
-        assert len(result["response"].json()) >= 1
+        assert not any(thread.is_alive() for thread in threads), "el listado o las escrituras se colgaron"
+        assert errors == []
+        assert len(listings) == 20 and all(response.status_code == 200 for response in listings)
+        assert all([record["mandate"]["mandate_id"] for record in response.json()] == ["mnd_list"] for response in listings)

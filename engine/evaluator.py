@@ -55,7 +55,7 @@ def _hard(rule: str, detail: str) -> dict:
 def _check_amount(cap_cents: int, amount_cents: int) -> dict:
     ok = amount_cents <= cap_cents
     detail = (f"{format_money(amount_cents)} <= {format_money(cap_cents)}" if ok
-              else f"{format_money(amount_cents)} excede el máximo de {format_money(cap_cents)}")
+              else f"{format_money(amount_cents)} exceeds the maximum of {format_money(cap_cents)}")
     return {"rule": "amount", "pass": ok, "detail": detail}
 
 
@@ -64,7 +64,7 @@ def _check_label(rule: str, allowed: List[Any], presented: Any, word: str) -> di
     normalized = {_label(item) for item in allowed}
     value = _label(presented) if presented is not None else ""
     ok = WILDCARD in normalized or (bool(value) and value in normalized)
-    return {"rule": rule, "pass": ok, "detail": f"{presented} {word}" if ok else f"{presented} no está en {allowed}"}
+    return {"rule": rule, "pass": ok, "detail": f"{presented} {word}" if ok else f"{presented} is not in {allowed}"}
 
 
 def _check_uses(constraints: dict, live_state: dict) -> dict:
@@ -77,7 +77,7 @@ def _check_uses(constraints: dict, live_state: dict) -> dict:
         limit = constraints.get("max_executions_per_month")
         used = live_state.get("month_uses", live_state.get("uses_count", 0))
     ok = used < limit
-    return {"rule": "uses", "pass": ok, "detail": f"{used}/{limit}" if ok else f"usos agotados ({used}/{limit})"}
+    return {"rule": "uses", "pass": ok, "detail": f"{used}/{limit}" if ok else f"uses exhausted ({used}/{limit})"}
 
 
 def _check_monthly_budget(budget_cents: int, live_state: dict, amount_cents: int) -> dict:
@@ -85,8 +85,8 @@ def _check_monthly_budget(budget_cents: int, live_state: dict, amount_cents: int
     el gasto total, que nunca es menor (fail-closed)."""
     spent = live_state.get("month_spent_cents", live_state.get("amount_spent_cents", 0))
     ok = spent + amount_cents <= budget_cents
-    detail = (f"{format_money(spent + amount_cents)} <= {format_money(budget_cents)} este mes" if ok
-              else f"{format_money(spent)} gastado + {format_money(amount_cents)} supera el presupuesto mensual de {format_money(budget_cents)}")
+    detail = (f"{format_money(spent + amount_cents)} <= {format_money(budget_cents)} this month" if ok
+              else f"{format_money(spent)} spent + {format_money(amount_cents)} exceeds the monthly budget of {format_money(budget_cents)}")
     return {"rule": "monthly_budget", "pass": ok, "detail": detail}
 
 
@@ -94,7 +94,7 @@ def _check_price_below(condition: dict, price_cents: Any) -> dict:
     limit = condition.get("value_cents")
     ok = is_cents(price_cents) and price_cents < limit
     detail = (f"{format_money(price_cents)} < {format_money(limit)}" if ok
-              else f"{format_money(price_cents) if is_cents(price_cents) else price_cents} no es menor que {format_money(limit)}")
+              else f"{format_money(price_cents) if is_cents(price_cents) else price_cents} is not below {format_money(limit)}")
     return {"rule": "condition.price_below", "pass": ok, "detail": detail}
 
 
@@ -116,41 +116,41 @@ def _expression_context(attempt: dict) -> Dict[str, Any]:
 def _evaluate(mandate: dict, live_state: dict, attempt: dict) -> Tuple[str, List[dict], str]:
     constraints = mandate.get("constraints") or mandate.get("scope") or {}
     if not isinstance(constraints, dict):
-        return "REJECT", [_hard("input_error", "El mandato no tiene restricciones legibles.")], "Mandato ilegible"
+        return "REJECT", [_hard("input_error", "The mandate has no readable constraints.")], "Unreadable mandate"
     norm = _normalize_attempt(attempt)
     checks: List[dict] = []
 
     # ── Precondiciones duras (REJECT) ───────────────────────────────────────
     cap = constraints.get("max_amount_per_purchase_cents")
     if not is_cents(cap) or cap <= 0:
-        checks.append(_hard("amount", "El mandato no define un límite de monto válido: no autoriza ninguna compra."))
+        checks.append(_hard("amount", "The mandate has no valid amount limit, so it authorizes no purchase."))
     amount = norm.get("amount_cents")
     if not is_cents(amount) or amount <= 0:
-        checks.append(_hard("amount", f"Monto inválido ({amount!r}): debe ser un entero de centavos mayor que cero."))
+        checks.append(_hard("amount", f"Invalid amount ({amount!r}): it must be a whole number of cents above zero."))
     mandate_currency = constraints.get("currency")
     attempt_currency = norm.get("currency")
     if not isinstance(mandate_currency, str) or not isinstance(attempt_currency, str) \
             or mandate_currency.strip().upper() != attempt_currency.strip().upper():
-        checks.append(_hard("currency", f"La compra es en {attempt_currency}; el mandato autoriza solo {mandate_currency}."))
+        checks.append(_hard("currency", f"The purchase is in {attempt_currency}; the mandate only authorizes {mandate_currency}."))
     for key, rule in (("allowed_categories", "category"), ("allowed_merchants", "merchant")):
         allowed = constraints.get(key)
         if not isinstance(allowed, list) or not allowed:
-            checks.append(_hard(rule, f"El mandato no define {key}: no autoriza ninguna compra."))
+            checks.append(_hard(rule, f"The mandate doesn't define {key}, so it authorizes no purchase."))
     conditions = constraints.get("conditions", [])
     if not isinstance(conditions, list):
-        checks.append(_hard("conditions", "Las condiciones del mandato no son una lista."))
+        checks.append(_hard("conditions", "The mandate's conditions are not a list."))
         conditions = []
     for condition in conditions:
         if isinstance(condition, dict) and (condition.get("type") != "price_below" or not is_cents(condition.get("value_cents"))):
-            checks.append(_hard(f"condition.{condition.get('type')}", "Condición desconocida o mal formada: no se puede evaluar."))
+            checks.append(_hard(f"condition.{condition.get('type')}", "Unknown or malformed condition: it can't be evaluated."))
     if checks:
         reasons = "; ".join(check["detail"] for check in checks)
-        return "REJECT", checks, f"Rechazado: {reasons}"
+        return "REJECT", checks, f"Rejected: {reasons}"
 
     # ── Reglas (ESCALATE si alguna falla) ───────────────────────────────────
     checks.append(_check_amount(cap, amount))
-    checks.append(_check_label("category", constraints["allowed_categories"], norm.get("category"), "permitida"))
-    checks.append(_check_label("merchant", constraints["allowed_merchants"], norm.get("merchant_id"), "permitido"))
+    checks.append(_check_label("category", constraints["allowed_categories"], norm.get("category"), "allowed"))
+    checks.append(_check_label("merchant", constraints["allowed_merchants"], norm.get("merchant_id"), "allowed"))
     if any(key in constraints for key in ("max_uses", "max_executions_per_month")):
         checks.append(_check_uses(constraints, live_state))
     if is_cents(constraints.get("monthly_budget_cents")):
@@ -162,20 +162,20 @@ def _evaluate(mandate: dict, live_state: dict, attempt: dict) -> Tuple[str, List
             checks.append(_check_price_below(condition, price_cents))
         elif isinstance(condition, str):
             checks.append({"rule": "condition.expr", "pass": parse_and_evaluate(condition, _expression_context(norm)),
-                           "detail": f"Expresión: {condition}"})
+                           "detail": f"Expression: {condition}"})
     expression = constraints.get("conditions_expression")
     if isinstance(expression, str) and expression:
         checks.append({"rule": "condition.expression", "pass": parse_and_evaluate(expression, _expression_context(norm)),
-                       "detail": f"Expresión: {expression}"})
+                       "detail": f"Expression: {expression}"})
 
     failed = [check for check in checks if not check["pass"]]
     if not failed:
-        return "APPROVE", checks, "Todas las restricciones satisfechas"
-    names = {"amount": "Monto excede el máximo", "category": "Categoría no permitida",
-             "merchant": "Comercio no permitido", "uses": "Usos agotados",
-             "monthly_budget": "Presupuesto mensual agotado"}
+        return "APPROVE", checks, "All constraints satisfied"
+    names = {"amount": "Amount exceeds the maximum", "category": "Category not allowed",
+             "merchant": "Merchant not allowed", "uses": "Uses exhausted",
+             "monthly_budget": "Monthly budget used up"}
     reason = (
-        "Requiere aprobación humana: falló " + ", ".join(check["rule"] for check in failed)
+        "Requires human approval — failed check: " + ", ".join(check["rule"] for check in failed)
         + " (" + "; ".join(names.get(check["rule"], check["rule"]) for check in failed) + ")"
     )
     return "ESCALATE", checks, reason
@@ -185,8 +185,8 @@ def evaluate(mandate: dict, live_state: dict, attempt: dict) -> dict:
     """Punto de entrada acordado para el Engine Simbólico. Nunca lanza."""
     try:
         if not isinstance(mandate, dict) or not isinstance(attempt, dict):
-            return {"verdict": "REJECT", "checks": [{"rule": "input_error", "pass": False, "detail": "Entrada inválida"}],
-                    "reason": "Entrada inválida al evaluador"}
+            return {"verdict": "REJECT", "checks": [{"rule": "input_error", "pass": False, "detail": "Invalid input"}],
+                    "reason": "Invalid input to the evaluator"}
         verdict, checks, reason = _evaluate(mandate, live_state if isinstance(live_state, dict) else {}, attempt)
         return {"verdict": verdict, "checks": [{key: value for key, value in check.items() if key != "hard"} for check in checks],
                 "reason": reason}
@@ -194,7 +194,7 @@ def evaluate(mandate: dict, live_state: dict, attempt: dict) -> dict:
         return {
             "verdict": "REJECT",
             "checks": [{"rule": "engine.internal_error", "pass": False, "detail": f"{type(exc).__name__}: {exc}"}],
-            "reason": "Error interno del motor de restricciones — rechazado por seguridad",
+            "reason": "Internal constraint-engine error — rejected for safety",
         }
 
 
@@ -205,30 +205,3 @@ def _cents_or_none(value: Any) -> Any:
         return to_cents(value)
     except MoneyError:
         return None
-
-
-def evaluate_mandate_constraints(mandate, attempt, live_state: dict) -> Tuple[bool, str, List[Dict[str, Any]], bool]:
-    """Adaptador para core/verify.py. La línea estricta guarda montos en UNIDADES
-    (scope.max_amount_per_tx, attempt.amount): aquí, y solo aquí, se convierten a
-    centavos exactos. Un monto no representable queda como inválido → REJECT."""
-    mandate_dict = mandate.model_dump() if hasattr(mandate, "model_dump") else dict(mandate)
-    attempt_dict = attempt.model_dump() if hasattr(attempt, "model_dump") else dict(attempt)
-
-    if not mandate_dict.get("constraints"):
-        scope = mandate_dict.get("scope") or {}
-        mandate_dict = {**mandate_dict, "constraints": {
-            "currency": scope.get("currency"),
-            "max_amount_per_purchase_cents": _cents_or_none(scope.get("max_amount_per_tx")),
-            "monthly_budget_cents": _cents_or_none(scope.get("monthly_budget")),
-            "allowed_categories": scope.get("allowed_categories"),
-            "allowed_merchants": scope.get("allowed_merchants"),
-            "max_executions_per_month": scope.get("max_executions_per_month"),
-            "conditions_expression": scope.get("conditions_expression"),
-        }}
-    metadata = dict(attempt_dict.get("metadata") or {})
-    if "price" in metadata and "price_cents" not in metadata:
-        metadata["price_cents"] = _cents_or_none(metadata.pop("price"))
-    attempt_dict = {**attempt_dict, "amount_cents": _cents_or_none(attempt_dict.get("amount")), "metadata": metadata}
-
-    result = evaluate(mandate_dict, live_state, attempt_dict)
-    return result["verdict"] == "APPROVE", result["reason"], result["checks"], result["verdict"] == "ESCALATE"

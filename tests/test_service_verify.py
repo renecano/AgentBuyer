@@ -161,10 +161,9 @@ def test_agent_runs_sign_their_attempts(client, mine, monkeypatch):
 
 # ── Moneda (en todo mandato) ────────────────────────────────────────────────
 
-def test_currency_must_match_on_every_mandate(client, active_seed):
-    """También en el mandato semilla (sello de sistema): moneda distinta → REJECT."""
-    seed_id = active_seed["mandate_id"]
-    result = verify_as_service(client, {**attempt(seed_id, currency="EUR"), "presented_by_agent": active_seed["agent"]["id"]}).json()
+def test_currency_must_match_on_every_mandate(client, mine):
+    """Moneda distinta → REJECT. (7.2: antes también se probaba sobre el seed sellado.)"""
+    result = verify_as_service(client, attempt(mine, currency="EUR")).json()
     assert result["verdict"] == "REJECT"
     assert check(result, "currency")["pass"] is False
 
@@ -184,7 +183,7 @@ def test_trap_offer_is_caught_and_never_buys(client, mine):
     assert result["verification"]["verdict"] == "REJECT"
     assert check(result["verification"], "semantic_firewall")["pass"] is False
     assert result["purchase_completed"] is False
-    assert "Escenario de demostración" in result["human_readable"]
+    assert "Demo scenario" in result["human_readable"]
     assert client.searches == []  # sin búsqueda web
     assert live_state(mine)["uses_count"] == 0
     types = [event["type"] for event in get_trail_events(mandate_id=mine)]
@@ -197,7 +196,7 @@ def test_after_revocation_needs_a_revoked_mandate(client, mine):
 
     result = run(client, mine, "after_revocation").json()
     assert result["verification"]["verdict"] == "REJECT"
-    assert check(result["verification"], "status")["detail"] == "mandato revocado"
+    assert check(result["verification"], "status")["detail"] == "mandate revoked"
     assert result["purchase_completed"] is False
 
 
@@ -222,7 +221,7 @@ def test_a_scenario_that_would_approve_still_buys_nothing(client, mine, monkeypa
     assert result["verification"]["verdict"] == "APPROVE"
     assert result["purchase_completed"] is False
     assert live_state(mine)["uses_count"] == 0
-    assert "no se realizó ninguna compra" in result["verification"]["human_readable"]
+    assert "no purchase was made" in result["verification"]["human_readable"]
 
 
 def test_scenario_events_cannot_be_disputed_as_purchases(client, mine):

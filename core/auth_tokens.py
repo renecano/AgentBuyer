@@ -67,23 +67,23 @@ def _signing_secret() -> str:
         # PyJWT solo advierte con claves cortas y firma igual: aquí se falla cerrado.
         if len(secret.encode("utf-8")) < MIN_SECRET_BYTES:
             raise TokenConfigError(
-                f"JWT_SECRET tiene {len(secret.encode('utf-8'))} bytes; se requieren al menos "
-                f"{MIN_SECRET_BYTES}. Genera uno con: {_GENERATE_SECRET_HINT}"
+                f"JWT_SECRET has {len(secret.encode('utf-8'))} bytes; at least "
+                f"{MIN_SECRET_BYTES} are required. Generate one with: {_GENERATE_SECRET_HINT}"
             )
         return secret
 
     if not auth_dev_mode_enabled():
         raise TokenConfigError(
-            "JWT_SECRET no está definido. Es OBLIGATORIO fuera de desarrollo: define JWT_SECRET "
-            f"con al menos {MIN_SECRET_BYTES} bytes aleatorios (genera uno con: {_GENERATE_SECRET_HINT}). "
-            "Solo para desarrollo local puedes usar AUTH_DEV_MODE=true, que habilita una clave "
-            "de desarrollo insegura; nunca en producción."
+            "JWT_SECRET is not set. It is REQUIRED outside development: set JWT_SECRET "
+            f"to at least {MIN_SECRET_BYTES} random bytes (generate one with: {_GENERATE_SECRET_HINT}). "
+            "For local development only you can use AUTH_DEV_MODE=true, which enables an insecure "
+            "development key; never in production."
         )
 
     if not _dev_secret_warned:
         logger.warning(
-            "AUTH_DEV_MODE=true y JWT_SECRET no está definido: se firman tokens con una clave de "
-            "DESARROLLO que está en el repositorio. Nunca usar esta configuración en producción."
+            "AUTH_DEV_MODE=true and JWT_SECRET is not set: tokens are signed with a DEVELOPMENT "
+            "key that is in the repository. Never use this configuration in production."
         )
         _dev_secret_warned = True
     return _DEV_ONLY_SECRET
@@ -114,7 +114,7 @@ def create_access_token(
     """Firma un access token para `subject`. `now` permite fijar el instante de
     emisión (p. ej. en tests, para obtener un token ya expirado)."""
     if not subject:
-        raise ValueError("El subject del token no puede estar vacío.")
+        raise ValueError("The token subject cannot be empty.")
     if role not in KNOWN_ROLES:
         raise ValueError(f"Rol desconocido: {role!r}.")
 

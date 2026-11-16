@@ -48,7 +48,7 @@ def normalize_owner_email(owner_email: str) -> str:
     espacios alrededor): así una llave ata con el dueño del mandato y con el
     subject del token. Un email vacío es un error, nunca un dueño."""
     if not isinstance(owner_email, str) or not owner_email.strip():
-        raise ValueError("owner_email es obligatorio.")
+        raise ValueError("owner_email is required.")
     return owner_email.strip().lower()
 
 
@@ -57,16 +57,16 @@ def validate_public_key(public_key: object) -> str:
 
     Exige exactamente 64 caracteres hex que carguen como llave pública Ed25519."""
     if not isinstance(public_key, str):
-        raise InvalidPublicKey("La llave pública debe ser un texto hex.")
+        raise InvalidPublicKey("The public key must be hex text.")
     candidate = public_key.strip().lower()
     if len(candidate) != ED25519_PUBLIC_KEY_HEX_LENGTH:
         raise InvalidPublicKey(
-            f"La llave pública Ed25519 debe tener {ED25519_PUBLIC_KEY_HEX_LENGTH} caracteres hex."
+            f"The Ed25519 public key must have {ED25519_PUBLIC_KEY_HEX_LENGTH} hex characters."
         )
     try:
         ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(candidate))
     except ValueError:
-        raise InvalidPublicKey("La llave pública no es una llave Ed25519 hex válida.") from None
+        raise InvalidPublicKey("The public key is not a valid hex Ed25519 key.") from None
     return candidate
 
 
@@ -94,16 +94,16 @@ def register_key(owner_email: str, public_key: str) -> str:
             holder = connection.execute(select(KEYS.c.owner_email, *_COLUMNS).where(KEYS.c.public_key == key)).first()
             if holder is not None:
                 if holder.owner_email != owner:
-                    raise KeyConflict("Esa llave pública ya está registrada por otra cuenta.")
+                    raise KeyConflict("That public key is already registered by another account.")
                 if holder.revoked_at is not None:
-                    raise KeyConflict("Esa llave fue revocada y no puede volver a registrarse.")
+                    raise KeyConflict("That key was revoked and cannot be registered again.")
                 return holder.key_id
 
             active = connection.execute(
                 select(func.count()).select_from(KEYS).where(and_(KEYS.c.owner_email == owner, KEYS.c.revoked_at.is_(None)))
             ).scalar_one()
             if active >= MAX_ACTIVE_KEYS_PER_OWNER:
-                raise KeyConflict(f"Máximo {MAX_ACTIVE_KEYS_PER_OWNER} llaves activas por cuenta.")
+                raise KeyConflict(f"At most {MAX_ACTIVE_KEYS_PER_OWNER} active keys per account.")
             key_id = f"key_{uuid.uuid4().hex}"
             connection.execute(insert(KEYS).values(
                 key_id=key_id, owner_email=owner, public_key=key, alg=ALG_ED25519, created_at=_now(), revoked_at=None,
@@ -112,7 +112,7 @@ def register_key(owner_email: str, public_key: str) -> str:
     except IntegrityError:
         # La base rechazó lo que el código no detectó (p. ej. otra escritura concurrente
         # fuera de esta transacción): mismo resultado, fail-closed.
-        raise KeyConflict("Esa llave pública ya está registrada.") from None
+        raise KeyConflict("That public key is already registered.") from None
 
 
 def list_active_key_records(owner_email: str) -> List[dict]:

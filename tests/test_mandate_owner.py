@@ -12,15 +12,11 @@ from api.main import app
 from api.security import Principal, assert_can_access_mandate, owner_email_for
 from core import mandate_store
 from core.mandate_store import get_mandate_owner
-from core.auth_tokens import create_access_token
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_SERVICE_KEY, TEST_USER_EMAIL
-from tests.storage import all_mandate_ids, mandate_exists
-
-SEED_ID = "mnd_marta_001"
-
+from tests.storage import all_mandate_ids, insert_mandate_without_signer, mandate_exists
 
 @pytest.fixture()
-def client(active_seed):
+def client():
     mandate_store.mandate_store.clear()
     with TestClient(app) as test_client:
         yield test_client
@@ -41,12 +37,6 @@ def react_payload(mandate_id: str, **extra) -> dict:
     return payload
 
 
-# ── El seed tiene dueño ─────────────────────────────────────────────────────
-
-def test_seed_mandate_has_owner(client, active_seed):
-    assert get_mandate_owner(SEED_ID) == active_seed["human"]["email"] == "test.user@example.com"
-
-
 # ── POST /mandates/create ya no existe (3.5, P-02) ──────────────────────────
 
 @pytest.mark.parametrize("headers_fixture", ["auth_headers", "admin_headers"])
@@ -56,7 +46,7 @@ def test_mandates_create_route_was_retired(client, request, headers_fixture):
     headers = request.getfixturevalue(headers_fixture)
     response = client.post("/mandates/create", json={"human_id": "hum_x", "max_amount_per_tx": 150}, headers=headers)
     assert response.status_code in (404, 405)
-    assert all_mandate_ids() == {SEED_ID}  # solo el seed cargado al arrancar
+    assert all_mandate_ids() == set()  # 7.2: no hay mandatos precargados
 
 
 # ── POST /mandates (el de React): exige token y el dueño sale de ahí ────────
@@ -134,26 +124,24 @@ def _keys_deep(value) -> set[str]:
     return set()
 
 
-def test_public_mandate_record_shape_is_unchanged(client, signed_poster, auth_headers, seed_owner_headers):
+def test_public_mandate_record_shape_is_unchanged(client, signed_poster, auth_headers):
     signed_poster.create(react_payload("mnd_owner_shape"))
-    strict_id = "mnd_owner_shape"
 
-    # Cada mandato se lee con el token de SU dueño (leerlos exige propiedad).
-    for mandate_id, headers in ((SEED_ID, seed_owner_headers), (strict_id, auth_headers)):
-        record = client.get(f"/mandates/{mandate_id}", headers=headers).json()
-        assert set(record) == {"mandate", "live_state"}
-        assert set(record["live_state"]) == {"status", "uses_count", "amount_spent_cents", "revoked_at"}
-        assert not any("owner" in key for key in _keys_deep(record))
+    # El mandato se lee con el token de SU dueño (leerlo exige propiedad).
+    record = client.get("/mandates/mnd_owner_shape", headers=auth_headers).json()
+    assert set(record) == {"mandate", "live_state"}
+    assert set(record["live_state"]) == {"status", "uses_count", "amount_spent_cents", "revoked_at"}
+    assert not any("owner" in key for key in _keys_deep(record))
 
     # El email del token no aparece en la respuesta del mandato firmado.
-    assert TEST_USER_EMAIL not in client.get(f"/mandates/{strict_id}", headers=auth_headers).text
+    assert TEST_USER_EMAIL not in client.get("/mandates/mnd_owner_shape", headers=auth_headers).text
 
 
-def test_revoke_and_reset_keep_the_owner(client, active_seed, seed_owner_headers):
-    owner = get_mandate_owner(SEED_ID)
-    assert client.post(f"/mandates/{SEED_ID}/revoke", headers=seed_owner_headers).status_code == 200
-    assert client.post(f"/mandates/{SEED_ID}/reset", headers=seed_owner_headers).status_code == 200
-    assert get_mandate_owner(SEED_ID) == owner
+def test_revoke_keeps_the_owner(client, signed_poster, auth_headers):
+    """(7.2, P-17: /reset se retiró.)"""
+    signed_poster.create(react_payload("mnd_owner_revoke"))
+    assert client.post("/mandates/mnd_owner_revoke/revoke", headers=auth_headers).status_code == 200
+    assert get_mandate_owner("mnd_owner_revoke") == TEST_USER_EMAIL
 
 
 def test_store_clear_forgets_owners_and_reused_id_does_not_inherit_owner(client, signed_poster):
@@ -193,10 +181,11 @@ OWNED_ID, ORPHAN_ID = "mnd_access_owned", "mnd_access_orphan"
 
 @pytest.fixture()
 def mandates_with_and_without_owner(client, signed_poster):
-    """Un mandato con dueño (firmado por él) y otro huérfano (owner None). Desde el 3.5
-    un huérfano solo puede ser un seed sin human.email: se sella como el seed."""
+    """Un mandato con dueño (firmado por él) y otro huérfano (owner None). Desde el 7.2
+    ningún flujo crea huérfanos (no hay seed): se inserta directo en la base, porque
+    la regla de acceso debe seguir siendo segura si una base vieja lo trae."""
     signed_poster.create(react_payload(OWNED_ID), email=OWNER_EMAIL)
-    mandate_store.seal_seed_mandate(react_payload(ORPHAN_ID))
+    insert_mandate_without_signer(ORPHAN_ID, react_payload(ORPHAN_ID), owner_email=None)
     return OWNED_ID, ORPHAN_ID
 
 
@@ -240,7 +229,7 @@ def test_service_principal_can_access_nothing(mandates_with_and_without_owner):
 
 def test_admin_removed_from_admin_emails_keeps_only_its_own_mandates(mandates_with_and_without_owner, signed_poster, monkeypatch):
     """Token con role admin pero email ya fuera de ADMIN_EMAILS: se le trata como
-    user (misma regla que require_admin), así que solo conserva lo suyo."""
+    user (misma regla que is_admin), así que solo conserva lo suyo."""
     monkeypatch.delenv("ADMIN_EMAILS", raising=False)
     demoted = Principal(subject=TEST_ADMIN_EMAIL, role="admin")
     assert_forbidden(demoted, OWNED_ID)

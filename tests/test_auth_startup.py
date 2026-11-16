@@ -40,7 +40,7 @@ def test_app_refuses_to_start_without_secret_outside_dev_mode(monkeypatch, caplo
                 pass
 
     message = caplog.text
-    assert "no puede arrancar" in message
+    assert "cannot start" in message
     assert "JWT_SECRET" in message and "AUTH_DEV_MODE" in message  # explica qué configurar
 
 
@@ -102,7 +102,7 @@ def test_dev_mode_without_secret_starts_and_issues_dev_signed_tokens(monkeypatch
     claims = jwt.decode(body["access_token"], auth_tokens._DEV_ONLY_SECRET, algorithms=["HS256"], issuer=ISSUER)
     assert claims["sub"] == EMAIL and claims["role"] == "user"
     assert decode_access_token(body["access_token"])["sub"] == EMAIL
-    assert "DESARROLLO" in caplog.text  # la advertencia existente se sigue emitiendo
+    assert "DEVELOPMENT" in caplog.text  # la advertencia existente se sigue emitiendo
 
 
 def test_dev_mode_prefers_explicit_secret_over_dev_key(monkeypatch):

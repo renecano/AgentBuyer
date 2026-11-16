@@ -16,7 +16,7 @@ from tests.conftest import verify_as_service
 from audit.log import get_trail_events
 from api.main import app
 from core import mandate_store
-from mandate.sign import generate_keypair, sign_payload
+from tests.legacy_signing import generate_keypair, sign_payload
 from tests.storage import mandate_exists, tamper_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
@@ -218,20 +218,11 @@ def test_verification_events_are_recorded(client, signed_poster):
 
 # ── Seed de la demo ──────────────────────────────────────────────────────────
 
-def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
-    """El startup carga el seed — Marta existe sin POST previo.
-
-    active_seed (tests/conftest.py) le da una expiración relativa a "ahora": el
-    test no caduca con la fecha absoluta de shared/seed_mandates.json."""
-    mandate_store.mandate_store.clear()
-    with TestClient(app, headers=seed_owner_headers) as fresh_client:
-        response = fresh_client.get("/mandates/mnd_marta_001")
-        assert response.status_code == 200
-        record = response.json()
-        assert record["live_state"]["status"] == "active"
-        assert record["mandate"]["constraints"]["max_uses"] == 3
-        assert record["mandate"]["expires_at"] == active_seed["expires_at"]
-    mandate_store.mandate_store.clear()
+def test_no_mandate_is_preloaded_on_startup(auth_headers):
+    """7.2 (P-11): el arranque ya no carga ni sella un mandato semilla."""
+    with TestClient(app, headers=auth_headers) as fresh_client:
+        assert fresh_client.get("/mandates/mnd_marta_001").status_code == 404
+        assert fresh_client.get("/mandates").json() == []
 
 
 # ── Mandato firmado por el titular (payload del wizard desde el 3.4) ────────
@@ -246,7 +237,7 @@ def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, sign
     signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
     assert approved["verdict"] == "APPROVE"
     assert signature_check == {"rule": "signature", "pass": True,
-                               "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
+                               "detail": "Valid Ed25519 cardholder signature (registered key)."}
 
     tamper_document("mnd_signed", lambda document: document["constraints"].__setitem__("max_amount_per_purchase_cents", 9999900))
     tampered = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()

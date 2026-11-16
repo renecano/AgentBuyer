@@ -31,13 +31,13 @@ def run_buyer_agent(request: dict[str, Any], principal: Principal = Depends(requ
     Retry-After). Un no-dueño o un cuerpo inválido no gastan cuota de nadie."""
     mandate_id = request.get("mandate_id")
     if not isinstance(mandate_id, str) or not mandate_id.strip():
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="El campo mandate_id es obligatorio y debe ser un texto no vacío.")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="mandate_id is required and must be a non-empty text.")
     # Opcional: con search_fields el agente descubre ofertas reales en la web
     # ({origin, destination, departure_date, ...}); sin él usa los del mandato. En un
     # mandato firmado por el titular solo puede usar los firmados (3.3).
     search_fields = request.get("search_fields")
     if search_fields is not None and not isinstance(search_fields, dict):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="search_fields debe ser un objeto.")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="search_fields must be an object.")
     scenario = request.get("scenario")
     if scenario is not None and scenario not in SCENARIOS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"scenario must be one of: {', '.join(SCENARIOS)}.")
