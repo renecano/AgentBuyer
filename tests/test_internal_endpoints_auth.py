@@ -341,18 +341,20 @@ EXPECTED_SECURITY = {
     ("POST", "/purchases/execute"): "bearer",
     ("GET", "/disputes"): "bearer",
     ("POST", "/merchant/search"): "bearer",
+    # 4.1: las rutas de React que seguían abiertas exigen sesión (P-04, P-05).
+    ("POST", "/agent/run"): "bearer",
+    ("GET", "/audit"): "bearer",
+    ("POST", "/disputes/file"): "bearer",
+    ("POST", "/audit/reset"): "bearer",  # utilidad de desarrollo: admin + AUTH_DEV_MODE
+    # 4.2 (P-03): la verificación es del comercio/agente.
+    ("POST", "/verify"): "service_key",
 }
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):
 # protegerlos rompería la UI hasta que el frontend envíe el header.
 # Los de por-mandato ya NO están aquí: exigen token y propiedad (EXPECTED_SECURITY).
-REACT_ROUTES = {
-    ("POST", "/agent/run"),
-    ("POST", "/verify"),
-    ("POST", "/audit/reset"),
-    ("GET", "/audit"),
-    ("POST", "/disputes/file"),
-}
+# 4.2: ninguna ruta que llame React queda sin seguridad (/verify pasó a `service`).
+REACT_ROUTES: set = set()
 
 
 def _openapi_security_by_operation() -> dict[tuple[str, str], set[str]]:

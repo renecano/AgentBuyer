@@ -20,7 +20,10 @@ from api.main import app
 from audit.log import reset_trail
 from core import mandate_store, merchant_search
 from core.mandate_store import get_mandate_signer
-from tests.conftest import MandateSigner
+from tests.conftest import MandateSigner, verify_as_service
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 SEED_MANDATE_ID = "mnd_marta_001"
 SEED_AGENT_ID = "agt_saturday"
@@ -194,7 +197,9 @@ def assert_dispute(dispute: dict) -> None:
 # ── Helpers de escenario (mismos payloads que envía React) ──────────────────
 
 def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_ID) -> dict:
-    """Mismo shape que demoPurchase() en App.tsx."""
+    """Intento como lo presenta el comercio/agente a /verify. Desde el 4.2 React ya no
+    llama /verify (antes: demoPurchase() en App.tsx); la demo usa /agent/run con un
+    escenario. La forma de la respuesta sigue siendo la que React lee en run.verification."""
     return {
         "attempt_id": attempt_id,
         "mandate_id": mandate_id,
@@ -233,7 +238,7 @@ def populate_trail(client: TestClient) -> None:
     """Genera los tipos de evento que la UI renderiza: agent_run,
     verification, purchase_completed, DISPUTE_*, revocation."""
     run = run_agent(client)
-    assert client.post("/verify", json=demo_attempt("att_contract_escalate", 300.0)).status_code == 200
+    assert verify_as_service(client, demo_attempt("att_contract_escalate", 300.0)).status_code == 200
     assert client.post("/disputes/file", json={
         "attempt_id": run["attempt_id"],
         "mandate_id": SEED_MANDATE_ID,
@@ -369,7 +374,7 @@ def test_agent_run_without_offers_shape(client):
     assert "verification" not in run
 
 
-# ── POST /verify ─────────────────────────────────────────────────────────────
+# ── POST /verify (4.2: identidad service; React lee esta forma vía /agent/run) ─
 
 @pytest.mark.parametrize(
     "attempt, expected_verdict",
@@ -381,7 +386,7 @@ def test_agent_run_without_offers_shape(client):
     ids=["approve", "escalate", "reject"],
 )
 def test_verify_returns_verification_shape(client, attempt, expected_verdict):
-    response = client.post("/verify", json=attempt)
+    response = verify_as_service(client, attempt)
     assert response.status_code == 200
     verification = response.json()
     assert_verification(verification)
@@ -422,6 +427,21 @@ def test_mandate_audit_trail_shape(client, web_offers):
     assert events
     assert_audit_events(events)
     assert all(event["mandate_id"] == SEED_MANDATE_ID for event in events)
+
+
+# ── 4.1: las llamadas de React van con el token de la sesión ────────────────
+
+@pytest.mark.parametrize("method, path, body", [
+    ("POST", "/agent/run", {"mandate_id": SEED_MANDATE_ID}),
+    ("GET", "/audit", None),
+    ("POST", "/disputes/file", {"attempt_id": "att_x", "mandate_id": SEED_MANDATE_ID}),
+])
+def test_react_routes_require_the_session_token(client, method, path, body):
+    """Cambio deliberado de contrato (4.1): /agent/run, GET /audit y /disputes/file
+    eran anónimas; ahora exigen el token que React ya envía en todas sus llamadas
+    (lib/api.ts lo adjunta solo). Sin él, 401 → la UI vuelve al login."""
+    response = TestClient(app).request(method, path, json=body)
+    assert response.status_code == 401
 
 
 # ── POST /disputes/file ──────────────────────────────────────────────────────

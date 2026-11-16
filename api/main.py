@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,6 @@ from shared.schemas import (
     ExecutePurchaseRequest,
     CatalogItem,
 )
-from mandate.sign import generate_keypair
 from core.mandate_store import (
     mandate_store,
     seal_seed_mandate,
@@ -37,9 +36,10 @@ from api.security import (
     require_mandate_access,
     require_principal,
 )
-from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
+from audit.log import audit_ledger, append_entry, get_trail_for
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
+from core.agent_keys import get_or_create_agent_keys
 from core.signed_mandates import (
     SignedMandateError,
     build_signed_mandate,
@@ -122,20 +122,9 @@ app.add_middleware(
     expose_headers=["Retry-After"],
 )
 
-# Llaves del AGENTE, del lado del servidor (P-02). El agente es un servicio de la
-# plataforma, no una persona: su llave identifica a ese servicio y es correcto que la
-# guarde el servidor. Las llaves de las PERSONAS no viven aquí: cada titular firma en
-# su dispositivo con una llave no extraíble (3.1-3.4) y el servidor solo guarda su
-# pubkey (core/owner_keys). Antes este registro también guardaba llaves "humanas"
-# indexadas por un human_id del cliente: eso se retiró con POST /mandates/create.
-_agent_key_registry: Dict[str, Dict[str, str]] = {}
-
-
-def _get_or_create_agent_keys(agent_id: str) -> Dict[str, str]:
-    if agent_id not in _agent_key_registry:
-        priv, pub = generate_keypair()
-        _agent_key_registry[agent_id] = {"priv": priv, "pub": pub}
-    return _agent_key_registry[agent_id]
+# Llaves del AGENTE: viven en core/agent_keys.py (servidor, P-02); las de las
+# personas nunca están en el servidor (cada titular firma en su dispositivo).
+_get_or_create_agent_keys = get_or_create_agent_keys
 
 
 @app.get("/")
@@ -422,11 +411,8 @@ def api_webhook_travel_provider(payload: dict):
     return {"received": True, "pnr": pnr, "status": status_str}
 
 
-# Audit Trail Router
-@app.post("/audit/reset")
-def api_reset_audit_trail():
-    """Abre una sesión de auditoría limpia al reiniciar/iniciar una demo."""
-    return reset_trail()
+# Audit Trail Router (POST /audit/reset vive SOLO en api/audit.py desde el 4.1: era
+# una ruta registrada dos veces, y ahora es una utilidad de desarrollo, P-05.)
 
 
 @app.get("/audit/verify")

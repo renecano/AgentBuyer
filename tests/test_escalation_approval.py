@@ -2,10 +2,14 @@
 POST /mandates/{mandate_id}/approve_escalation."""
 import pytest
 from fastapi.testclient import TestClient
+from tests.conftest import verify_as_service
 
 from api.main import app
 from audit.log import get_trail_events, reset_trail
 from core import mandate_store
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 MANDATE_ID = "mnd_esc_001"
 
@@ -39,7 +43,7 @@ def make_mandate() -> dict:
 
 def escalate_attempt(client: TestClient, attempt_id: str = "att_esc_1", amount: float = 300.0) -> dict:
     """Crea un intento que escala (monto sobre el límite) y devuelve el resultado."""
-    result = client.post("/verify", json={
+    result = verify_as_service(client, {
         "attempt_id": attempt_id,
         "mandate_id": MANDATE_ID,
         "presented_by_agent": "agt_test",
@@ -141,7 +145,7 @@ def test_cannot_review_twice(client, signed_poster):
 def test_cannot_review_an_approved_attempt(client, signed_poster):
     """Solo lo escalado admite revisión — un APPROVE normal no se 're-aprueba'."""
     signed_poster.create(make_mandate())
-    result = client.post("/verify", json={
+    result = verify_as_service(client, {
         "attempt_id": "att_ok_1",
         "mandate_id": MANDATE_ID,
         "presented_by_agent": "agt_test",

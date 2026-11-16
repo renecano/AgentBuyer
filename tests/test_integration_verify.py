@@ -11,16 +11,22 @@ y crea su propio mandato — ningún test depende de otro.
 """
 import pytest
 from fastapi.testclient import TestClient
+from tests.conftest import verify_as_service
 
 from audit.log import get_trail_events, reset_trail
 from api.main import app
 from core import mandate_store, owner_keys
 from mandate.sign import generate_keypair, sign_payload
 
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
+
 ENGINE_RULES = {"amount", "category", "merchant", "uses", "condition.price_below"}
 # 3.3/3.5 (cambio deliberado): un mandato firmado por el titular suma, en este orden,
 # la vigencia de su llave (P-01 a), el binding del payment_token y la moneda firmada.
-SECURITY_ORDER = ["signature", "signing_key_active", "payment_token_binding", "agent_identity", "status", "currency"]
+# 4.2 (P-03): y antes del estado, el nonce único del intento (anti-replay). Este intento
+# no declara firma del agente; si la declarara, "agent_signature" iría tras agent_identity.
+SECURITY_ORDER = ["signature", "signing_key_active", "payment_token_binding", "agent_identity", "nonce_fresh", "status", "currency"]
 SECURITY_RULES = set(SECURITY_ORDER)
 # Y después del engine, el consentimiento a comprar sin la persona presente (D-16).
 CONSENT_RULE = "off_session_consent"
@@ -94,7 +100,7 @@ def rules_of(result: dict) -> list[str]:
 
 def test_approve_runs_security_then_engine_and_updates_state(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
-    response = client.post("/verify", json=make_attempt())
+    response = verify_as_service(client, make_attempt())
     result = response.json()
 
     assert response.status_code == 200
@@ -114,12 +120,11 @@ def test_approve_runs_security_then_engine_and_updates_state(client, signed_post
 def test_uses_exhaust_after_three_approvals(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
     for n in range(3):
-        result = client.post(
-            "/verify", json=make_attempt(attempt_id=f"att_{n}")
+        result = verify_as_service(client, make_attempt(attempt_id=f"att_{n}")
         ).json()
         assert result["verdict"] == "APPROVE", result
 
-    fourth = client.post("/verify", json=make_attempt(attempt_id="att_3")).json()
+    fourth = verify_as_service(client, make_attempt(attempt_id="att_3")).json()
     assert fourth["verdict"] == "ESCALATE"
     failed = {c["rule"] for c in fourth["checks"] if not c["pass"]}
     assert failed == {"uses"}
@@ -129,7 +134,7 @@ def test_uses_exhaust_after_three_approvals(client, signed_poster):
 
 def test_escalate_does_not_touch_live_state(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
-    result = client.post("/verify", json=make_attempt(amount=300.0)).json()
+    result = verify_as_service(client, make_attempt(amount=300.0)).json()
 
     assert result["verdict"] == "ESCALATE"
     live_state = client.get("/mandates/mnd_test_001").json()["live_state"]
@@ -142,11 +147,11 @@ def test_escalate_does_not_touch_live_state(client, signed_poster):
 def test_revoked_mandate_rejects_before_engine(client, signed_poster):
     """El trial by fire: revocar y la SIGUIENTE compra muere en status."""
     create_mandate(signed_poster, make_mandate())
-    assert client.post("/verify", json=make_attempt()).json()["verdict"] == "APPROVE"
+    assert verify_as_service(client, make_attempt()).json()["verdict"] == "APPROVE"
 
     assert client.post("/mandates/mnd_test_001/revoke").status_code == 200
 
-    result = client.post("/verify", json=make_attempt(attempt_id="att_post_revoke")).json()
+    result = verify_as_service(client, make_attempt(attempt_id="att_post_revoke")).json()
     assert result["verdict"] == "REJECT"
     rules = rules_of(result)
     assert "status" in rules
@@ -156,8 +161,7 @@ def test_revoked_mandate_rejects_before_engine(client, signed_poster):
 
 def test_wrong_agent_rejects(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
-    result = client.post(
-        "/verify", json=make_attempt(agent_id="agt_impostor")
+    result = verify_as_service(client, make_attempt(agent_id="agt_impostor")
     ).json()
     assert result["verdict"] == "REJECT"
     failed = {c["rule"] for c in result["checks"] if not c["pass"]}
@@ -175,8 +179,7 @@ def test_mandate_without_cardholder_signature_is_not_created(client):
 
 
 def test_unknown_mandate_rejects(client):
-    result = client.post(
-        "/verify", json=make_attempt(mandate_id="mnd_no_existe")
+    result = verify_as_service(client, make_attempt(mandate_id="mnd_no_existe")
     ).json()
     assert result["verdict"] == "REJECT"
     assert rules_of(result) == ["mandate_exists"]
@@ -188,7 +191,7 @@ def test_non_dict_purchase_is_422_before_engine(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
     attempt = make_attempt()
     attempt["purchase"] = "no-soy-un-dict"
-    response = client.post("/verify", json=attempt)
+    response = verify_as_service(client, attempt)
     assert response.status_code == 422
 
 
@@ -196,7 +199,7 @@ def test_engine_escalation_reports_engine_checks_alongside_security(client, sign
     """En un ESCALATE la respuesta combina los checks de seguridad (pass)
     con los del engine — el trail completo para el humano que decide."""
     create_mandate(signed_poster, make_mandate())
-    result = client.post("/verify", json=make_attempt(category="hotel")).json()
+    result = verify_as_service(client, make_attempt(category="hotel")).json()
 
     assert result["verdict"] == "ESCALATE"
     by_rule = {c["rule"]: c["pass"] for c in result["checks"]}
@@ -207,8 +210,8 @@ def test_engine_escalation_reports_engine_checks_alongside_security(client, sign
 
 def test_verification_events_are_recorded(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
-    client.post("/verify", json=make_attempt())
-    client.post("/verify", json=make_attempt(amount=300.0, attempt_id="att_2"))
+    verify_as_service(client, make_attempt())
+    verify_as_service(client, make_attempt(amount=300.0, attempt_id="att_2"))
 
     verdicts = [event["verdict"] for event in get_trail_events() if event["type"] == "verification"]
     assert verdicts == ["APPROVE", "ESCALATE"]
@@ -241,14 +244,14 @@ def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, sign
     constraints guardadas rompe la verificación."""
     create_mandate(signed_poster, make_mandate(mandate_id="mnd_signed"))
 
-    approved = client.post("/verify", json=make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_1")).json()
+    approved = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_1")).json()
     signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
     assert approved["verdict"] == "APPROVE"
     assert signature_check == {"rule": "signature", "pass": True,
                                "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
 
     mandate_store.MANDATES["mnd_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
-    tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
+    tampered = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
     assert tampered["verdict"] == "REJECT"
     assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False
 
@@ -299,7 +302,7 @@ def test_no_signature_check_ever_passes_without_verifying(client, signed_poster)
     create_mandate(signed_poster, make_mandate(mandate_id="mnd_text"))
     for index, signature in enumerate(["x", "ab" * 64]):
         mandate_store.MANDATES["mnd_text"]["mandate"]["signature"] = signature
-        result = client.post("/verify", json=make_attempt(mandate_id="mnd_text", attempt_id=f"att_text_{index}")).json()
+        result = verify_as_service(client, make_attempt(mandate_id="mnd_text", attempt_id=f"att_text_{index}")).json()
         check = next(item for item in result["checks"] if item["rule"] == "signature")
         assert result["verdict"] == "REJECT" and check["pass"] is False
         assert check["detail"] not in {"Firma presente y estructurada.", "Firma presente y verificada."}

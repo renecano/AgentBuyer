@@ -26,9 +26,12 @@ from datetime import datetime, timedelta, timezone
 
 import core.mandate_store as mandate_store_module
 from mandate.issue import create_mandate
-from tests.conftest import TEST_USER_EMAIL
+from tests.conftest import TEST_USER_EMAIL, verify_as_service
 from mandate.sign import generate_keypair
 from shared.schemas import MandateStatus, VerificationStatus
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 LIVE_STATE_KEYS = {"status", "uses_count", "amount_spent", "revoked_at"}
 
@@ -186,7 +189,7 @@ def test_expiry_is_exposed_without_a_prior_strict_read(client, auth_headers, sig
     assert live_state["status"] == "expired"
     assert mandate_store.get_mandate("mnd_live_expired").status == MandateStatus.EXPIRED
 
-    verification = client.post("/verify", json={
+    verification = verify_as_service(client, {
         "attempt_id": "att_live_expired", "mandate_id": "mnd_live_expired", "presented_by_agent": "agt_saturday",
         "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
     }).json()
@@ -212,7 +215,7 @@ def test_expired_seed_is_still_rejected(monkeypatch, tmp_path):
         assert client.get(f"/mandates/{seed_id}", headers=owner_headers).json()["live_state"]["status"] == "expired"
         assert mandate_store.get_mandate(seed_id).status == MandateStatus.EXPIRED
 
-        verification = client.post("/verify", json={
+        verification = verify_as_service(client, {
             "attempt_id": "att_expired_seed", "mandate_id": seed_id,
             "presented_by_agent": seeds[0]["agent"]["id"],
             "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},

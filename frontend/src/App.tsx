@@ -184,7 +184,9 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
-  async function runAgent(options: { timeoutMs?: number; silentErrors?: boolean; signal?: AbortSignal } = {}): Promise<AgentRun | null> {
+  // `scenario` (4.2): la demo pide al servidor un escenario explícito ("trap_offer",
+  // "after_revocation") en vez de llamar /verify directo; un escenario nunca compra.
+  async function runAgent(options: { timeoutMs?: number; silentErrors?: boolean; signal?: AbortSignal; scenario?: "trap_offer" | "after_revocation" } = {}): Promise<AgentRun | null> {
     setBusy("running");
     setError(null);
     // Un nuevo intento no debe mostrar el veredicto ni relato del intento anterior.
@@ -207,6 +209,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             body: JSON.stringify({
               mandate_id: mandateId,
               ...(mandate?.mandate.search_fields ? { search_fields: mandate.mandate.search_fields } : {}),
+              ...(options.scenario ? { scenario: options.scenario } : {}),
             }),
           }, options.timeoutMs, options.signal)
         : await request<AgentRun>("/agent/run", {
@@ -214,6 +217,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             body: JSON.stringify({
               mandate_id: mandateId,
               ...(mandate?.mandate.search_fields ? { search_fields: mandate.mandate.search_fields } : {}),
+              ...(options.scenario ? { scenario: options.scenario } : {}),
             }),
           });
 
@@ -327,7 +331,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     setBusy("resetting");
     setError(null);
     try {
-      await request<{ status: string }>("/audit/reset", { method: "POST" });
+      // Solo el estado vivo de este mandato; el ledger es append-only (P-05).
       const record = await request<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" });
       setMandate(record);
       setVerification(null);
@@ -369,68 +373,6 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     setPhase("idle");
   }
 
-  function demoPurchase(description: string) {
-    const cap = constraints.max_amount_per_purchase ?? 150;
-    const conditionCap = priceLimit ?? cap;
-    const amountToTry = Math.max(1, Math.min(100, cap - 0.01, conditionCap - 0.01));
-    return {
-      attempt_id: `att_demo_${Date.now().toString(36)}`,
-      mandate_id: mandateId,
-      presented_by_agent: mandate?.mandate.agent?.id ?? "agt_saturday",
-      purchase: {
-        merchant_id: constraints.allowed_merchants?.[0] ?? "mch_vuelaya",
-        category: constraints.allowed_categories?.[0] ?? "travel.flights",
-        amount: amountToTry,
-        currency: constraints.currency ?? "USD",
-        description,
-        metadata: { price: amountToTry, source: "demo" },
-      },
-    };
-  }
-
-  async function runDemoVerification(description: string) {
-    const signal = demoAbort.current?.signal;
-    setBusy("running");
-    setVerification(null);
-    setPendingVerification(null);
-    setRevealedChecks(0);
-    setPhase("verifying");
-    setSaturdayState("thinking");
-    try {
-      const result = await requestWithTimeout<Verification>("/verify", {
-        method: "POST",
-        body: JSON.stringify(demoPurchase(description)),
-      }, 8000, signal);
-      if (!result || signal?.aborted) return;
-      setPendingVerification(result);
-      for (let index = 1; index <= result.checks.length; index += 1) {
-        if (signal?.aborted) return;
-        setRevealedChecks(index);
-        await wait(140);
-      }
-      if (signal?.aborted) return;
-      setVerification(result);
-      setPendingVerification(null);
-      setActivity((previous) => ({
-        ...(previous ?? {}),
-        attempt_id: result.attempt_id ?? null,
-        verification: result,
-        human_readable: result.human_readable,
-        purchase_completed: result.verdict === "APPROVE",
-      }));
-      setSaturdayState(verdictState(result.verdict));
-      const mandateData = await requestWithTimeout<MandateRecord>(`/mandates/${mandateId}`, { method: "GET" }, 8000, signal);
-      if (mandateData && !signal?.aborted) setMandate(mandateData);
-    } catch {
-      // El modo demo conserva la pantalla utilizable aunque una llamada falle.
-    } finally {
-      if (!signal?.aborted) {
-        setPhase("idle");
-        setBusy(null);
-      }
-    }
-  }
-
   async function performDemoAct(act: DemoAct) {
     const signal = demoAbort.current?.signal;
     if (signal?.aborted) return;
@@ -439,8 +381,8 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     if (demoExecutedActs.current.has(act)) return;
     demoExecutedActs.current.add(act);
     if (act === 1) {
-      const auditReset = await requestWithTimeout<{ status: string }>("/audit/reset", { method: "POST" }, 8000, signal);
-      if (!auditReset || signal?.aborted) return;
+      // El ledger es append-only (P-05): la demo empieza limpia reseteando SOLO el
+      // estado vivo de este mandato (endpoint del dueño); el historial se conserva.
       const record = await requestWithTimeout<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" }, 8000, signal);
       if (record && !signal?.aborted) {
         setMandate(record);
@@ -461,7 +403,8 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
       return;
     }
     if (act === 4) {
-      await runDemoVerification("Demonstration flight with an automatic upgrade outside the mandate in 48 hours");
+      // Escenario explícito del servidor: una oferta sintética con trampa de letra chica.
+      await runAgent({ timeoutMs: 30000, silentErrors: true, signal, scenario: "trap_offer" });
       return;
     }
     if (act === 5) {
@@ -470,7 +413,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
         setMandate(revoked);
         setSaturdayState("reject");
       }
-      if (!signal?.aborted) await runDemoVerification("Real purchase attempt after mandate revocation");
+      if (!signal?.aborted) await runAgent({ timeoutMs: 30000, silentErrors: true, signal, scenario: "after_revocation" });
     }
   }
 

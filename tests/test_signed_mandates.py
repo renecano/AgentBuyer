@@ -31,7 +31,10 @@ from core.mandate_store import MANDATE_OWNERS, MANDATES, get_mandate_signer
 from core.verify import verify_purchase as strict_verify_purchase
 from mandate.mandate_message import mandate_signing_message
 from shared.schemas import PurchaseAttempt
-from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner
+from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner, verify_as_service
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 VECTORS = json.loads((Path(__file__).resolve().parent.parent / "shared" / "mandate_signing_vectors.json").read_text(encoding="utf-8"))
 RFC = VECTORS["rfc8032_test1"]
@@ -113,7 +116,7 @@ def attempt(mandate_id: str, attempt_id: str = "att_1", **purchase) -> dict:
 
 
 def verify(client, mandate_id: str, **purchase) -> dict:
-    return client.post("/verify", json=attempt(mandate_id, **purchase)).json()
+    return verify_as_service(client, attempt(mandate_id, **purchase)).json()
 
 
 def check(result: dict, rule: str) -> dict:
@@ -478,7 +481,7 @@ def test_llave_revocada_despues_de_crear_deja_sin_efecto_el_mandato(signer, clie
     assert revoked.status_code == 200
     assert revoked.json()["mandates_affected"] == 2
 
-    result = client.post("/verify", json=attempt(first["mandate_id"], attempt_id="att_2")).json()
+    result = verify_as_service(client, attempt(first["mandate_id"], attempt_id="att_2")).json()
     assert result["verdict"] == "REJECT"
     assert check(result, "signing_key_active")["pass"] is False
     assert check(result, "signature")["pass"] is True  # la firma era auténtica: lo que cambió es la llave
@@ -502,7 +505,7 @@ def test_expires_at_vencido_da_reject(signer, client, clock):
     body = signer.create(expires_at=stamp(clock.now + timedelta(hours=1)))
     assert verify(client, body["mandate_id"])["verdict"] == "APPROVE"
     clock.advance(hours=1, seconds=1)
-    result = client.post("/verify", json=attempt(body["mandate_id"], attempt_id="att_2")).json()
+    result = verify_as_service(client, attempt(body["mandate_id"], attempt_id="att_2")).json()
     assert result["verdict"] == "REJECT"
     assert check(result, "status")["detail"] == "mandato expirado"
 
@@ -532,7 +535,7 @@ def test_moneda_distinta_da_reject(signer, client, currency, verdict):
     payload = attempt(body["mandate_id"], **purchase)
     if currency is None:
         del payload["purchase"]["currency"]
-    result = client.post("/verify", json=payload).json()
+    result = verify_as_service(client, payload).json()
     assert result["verdict"] == verdict
     assert check(result, "currency")["pass"] is (verdict == "APPROVE")
 
@@ -548,7 +551,7 @@ def test_sin_consentimiento_off_session_toda_compra_escala(signer, client):
 def test_con_consentimiento_el_flujo_es_el_normal(signer, client):
     body = signer.create()
     assert verify(client, body["mandate_id"])["verdict"] == "APPROVE"
-    over = client.post("/verify", json=attempt(body["mandate_id"], attempt_id="att_2", amount=500.0,
+    over = verify_as_service(client, attempt(body["mandate_id"], attempt_id="att_2", amount=500.0,
                                                metadata={"price": 500.0})).json()
     assert over["verdict"] == "ESCALATE"  # fuera de límites: escala como siempre
 
@@ -604,7 +607,8 @@ def searches(monkeypatch) -> list:
 def test_agent_run_con_search_fields_distintos_da_422(signer, client, searches):
     body = signer.create()
     response = client.post("/agent/run", json={"mandate_id": body["mandate_id"],
-                                               "search_fields": {"origin": "MEX", "destination": "BOG", "departure_date": "2026-12-05"}})
+                                               "search_fields": {"origin": "MEX", "destination": "BOG", "departure_date": "2026-12-05"}},
+                           headers=signer.headers)
     assert response.status_code == 422
     assert searches == []  # ni siquiera buscó
 
@@ -613,10 +617,10 @@ def test_agent_run_usa_lo_firmado(signer, client, searches):
     body = signer.create()
     signed_fields = MANDATES[body["mandate_id"]]["mandate"]["search_fields"]
 
-    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"]}).status_code == 200
+    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"]}, headers=signer.headers).status_code == 200
     # Los mismos campos con otra grafía (espacios) son los mismos tras normalizar.
     same = {key: f" {value} " for key, value in signed_fields.items()}
-    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"], "search_fields": same}).status_code == 200
+    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"], "search_fields": same}, headers=signer.headers).status_code == 200
     assert searches == [signed_fields, signed_fields]
 
 

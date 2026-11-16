@@ -36,8 +36,10 @@ function liableCopy(party?: string): { label: string; tone: "human" | "protected
 
 // Un cargo disputable es una compra que efectivamente ocurrió.
 function isDisputable(event: AuditEvent): boolean {
+  // Un escenario de demostración (4.2) nunca es una compra: no hay cargo que disputar.
   return Boolean(
     event.attempt_id &&
+    event.type !== "scenario_verification" &&
     (event.verdict === "APPROVE" || event.type === "purchase_completed" || event.type === "human_override_approved"),
   );
 }

@@ -11,6 +11,11 @@ Reglas de responsabilidad (mismo espíritu que el árbitro):
   - Sin verificación/aprobación en el trail -> COMERCIO responsable + reembolso
   - Compra válida, verificada y aprobada    -> TITULAR responsable, sin reembolso
 El veredicto se apoya en la evidencia del trail append-only (tamper-evident).
+
+4.1: abrir una disputa exige ser dueño del mandato (o admin), el intento debe ser
+de ESE mandato (no se puede disputar un cargo ajeno bajo un mandato propio) y la
+evidencia son solo los eventos de ese mandato (antes: el trail de todos). Listar
+disputas muestra a cada uno las suyas; un admin, todas (misma regla que P-04).
 """
 from __future__ import annotations
 
@@ -18,12 +23,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from api.security import Principal, require_principal
+from api.security import Principal, assert_can_access_mandate, is_admin, owner_email_for, require_principal
 from audit.log import append_entry, get_trail_events
-from core.mandate_store import get_mandate
+from core.mandate_store import get_mandate, mandate_ids_owned_by
 
 router = APIRouter()
 
@@ -84,7 +89,15 @@ def _resolve(attempt_id: str, mandate_id: str, evidence: list[dict]) -> dict:
 
 
 @router.post("/disputes/file")
-def file_dispute(body: FileDisputeBody) -> dict[str, Any]:
+def file_dispute(body: FileDisputeBody, principal: Principal = Depends(require_principal)) -> dict[str, Any]:
+    assert_can_access_mandate(principal, body.mandate_id)
+    # El intento debe pertenecer a ESTE mandato: si el trail lo registra bajo otro,
+    # disputarlo aquí sería reclamar (y cobrar el reembolso de) un cargo ajeno.
+    foreign = {event.get("mandate_id") for event in get_trail_events()
+               if event.get("attempt_id") == body.attempt_id and event.get("mandate_id") != body.mandate_id}
+    if foreign:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This purchase attempt does not belong to this mandate.")
+
     dispute_id = f"dsp_{uuid.uuid4().hex[:10]}"
     now = datetime.now(timezone.utc).isoformat()
 
@@ -93,9 +106,9 @@ def file_dispute(body: FileDisputeBody) -> dict[str, Any]:
         "summary": f"Disputa {dispute_id} abierta por el titular: {body.reason}",
     })
 
-    # Misma evidencia que antes (vista de auditor: TODO el trail, del más nuevo al
-    # más viejo), ahora leída del ledger con cadena hash.
-    evidence = list(reversed(get_trail_events()))
+    # Evidencia: SOLO los eventos de este mandato (antes: el trail entero, con
+    # eventos de otras personas), del más nuevo al más viejo, del ledger con cadena hash.
+    evidence = [event for event in reversed(get_trail_events()) if event.get("mandate_id") == body.mandate_id]
     resolution = _resolve(body.attempt_id, body.mandate_id, evidence)
 
     claim = {
@@ -118,4 +131,8 @@ def file_dispute(body: FileDisputeBody) -> dict[str, Any]:
 
 @router.get("/disputes")
 def list_disputes(principal: Principal = Depends(require_principal)) -> list[dict]:
-    return list(_disputes.values())
+    """Las disputas de los mandatos del usuario; un admin ve todas."""
+    if is_admin(principal):
+        return list(_disputes.values())
+    owned = mandate_ids_owned_by(owner_email_for(principal))
+    return [claim for claim in _disputes.values() if claim["mandate_id"] in owned]

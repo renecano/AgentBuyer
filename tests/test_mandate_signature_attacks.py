@@ -19,7 +19,10 @@ from core import mandate_store, owner_keys
 from core.key_challenges import registration_message
 from core.mandate_store import MANDATES
 from mandate.sign import generate_keypair, sign_payload
-from tests.conftest import KeyRegistrar, MandateSigner
+from tests.conftest import KeyRegistrar, MandateSigner, verify_as_service
+
+# 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
+pytestmark = pytest.mark.usefixtures("service_key")
 
 MARTA = "marta.victim@example.com"
 MALLORY = "mallory.attacker@example.com"
@@ -60,7 +63,7 @@ def purchase(mandate_id: str, attempt_id: str = "att_attack") -> dict:
 
 
 def verdict(client, mandate_id: str, attempt_id: str = "att_attack") -> str:
-    return client.post("/verify", json=purchase(mandate_id, attempt_id)).json()["verdict"]
+    return verify_as_service(client, purchase(mandate_id, attempt_id)).json()["verdict"]
 
 
 def assert_not_created(response, mandate_id: str, status: int):

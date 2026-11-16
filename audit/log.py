@@ -12,6 +12,8 @@ from mandate.sign import canonical_json
 _EVENT_TYPES = {
     "mandate_created",
     "verification",
+    # 4.2: verificación de un escenario de demostración (nunca es una compra).
+    "scenario_verification",
     "revocation",
     "purchase_completed",
     "agent_run",
@@ -251,15 +253,12 @@ def get_trail_for(role: str = "auditor", mandate_id: str | None = None, attempt_
     """Vista del trail para la UI: eventos del ledger adaptados a la forma de React,
     del más nuevo al más viejo, con la visibilidad del rol solicitado.
 
-    `attempt_id` se acepta por compatibilidad de firma pero, igual que antes de
-    migrar al ledger, no filtra.
+    `mandate_id` y `attempt_id` filtran (antes del 4.1 `attempt_id` se ignoraba y
+    devolvía el trail entero). Un humano o comercio sin mandate_id no ve nada.
     """
-    if role in {"human", "merchant"}:
-        if not mandate_id:
-            return []
-        entries = _trail_entries(mandate_id=mandate_id)
-    else:
-        entries = _trail_entries()
+    if role in {"human", "merchant"} and not mandate_id:
+        return []
+    entries = _trail_entries(mandate_id=mandate_id, attempt_id=attempt_id)
 
     return [to_frontend_event(entry) for entry in reversed(entries)]
 
