@@ -202,3 +202,122 @@ class KeyRegistrar:
 def key_registrar(client, monkeypatch) -> KeyRegistrar:
     """Registrador de llaves por el flujo real (usa el fixture `client` del módulo)."""
     return KeyRegistrar(client, monkeypatch)
+
+
+# ── Mandatos firmados por el titular (como el navegador desde el 3.4) ────────
+
+def utc_stamp(moment: datetime) -> str:
+    """ISO 8601 UTC con Z y precisión de segundos (formato firmado del 3.2)."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Lo que envía MandateCreator.tsx desde el 3.4 (submitMandate → lib/signedMandate):
+# los montos son el TEXTO que tecleó la persona; la spec los pasa a centavos.
+REACT_MANDATE_INPUTS = {
+    "agent_id": "agt_saturday",
+    "constraints": {
+        "max_amount_per_purchase": "150",
+        "currency": "USD",
+        "allowed_categories": ["travel.flights"],
+        "allowed_merchants": ["mch_vuelaya"],
+        "max_uses": 3,
+        "conditions": [{"type": "price_below", "value": "150"}],
+        "off_session_consent": True,
+    },
+    "search_fields": {"origin": "BUE", "destination": "COR", "departure_date": "2026-12-05"},
+}
+REACT_HUMAN_CONTACT = {
+    "id": "hum_test_user_contract",
+    "display_name": "Test User",
+    "id_document": "XXXXXX",
+    "phone": "+520000000000",
+}
+
+
+class MandateSigner:
+    """Firma mandatos como el navegador (lib/signedMandate.ts, paso 3.4): el mensaje
+    del 3.2 (mandate/mandate_message.py) con una llave registrada por el flujo REAL
+    de prueba de posesión. Sin atajos: el servidor verifica como en producción.
+
+    `now` es el reloj del cliente (created_at); `base_inputs` la forma del mandato
+    (por defecto, la del wizard)."""
+
+    _counter = 0
+
+    def __init__(self, client, registrar: "KeyRegistrar", email: str, *, private_key=None, now=None,
+                 base_inputs: dict | None = None, human: dict | None = None):
+        self.client = client
+        self.registrar = registrar
+        self.email = email
+        self.headers = KeyRegistrar.bearer(email)
+        self.private_key = private_key or registrar.new_private_key()
+        self.public_key = registrar.public_hex(self.private_key)
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.base_inputs = base_inputs or REACT_MANDATE_INPUTS
+        self.human = human or {**REACT_HUMAN_CONTACT, "email": email}
+        self.key_id: str | None = None
+
+    def register(self, monkeypatch=None, key_id_hex: str | None = None) -> str:
+        """Registro REAL con prueba de posesión. key_id_hex fija el id (para vectores)."""
+        from core import owner_keys
+
+        if key_id_hex is not None:
+            class FixedUuid:
+                hex = key_id_hex
+            with monkeypatch.context() as patch:
+                patch.setattr(owner_keys.uuid, "uuid4", lambda: FixedUuid())
+                response, _, _ = self.registrar.register(self.email, self.private_key, headers=self.headers)
+        else:
+            response, _, _ = self.registrar.register(self.email, self.private_key, headers=self.headers)
+        assert response.status_code == 201, response.text
+        self.key_id = response.json()["key_id"]
+        return self.key_id
+
+    def body(self, **changes) -> dict:
+        """Cuerpo firmado (formato 3.2/3.3). `changes` usa rutas con "__"
+        (constraints__max_uses=2) y se aplica ANTES de firmar."""
+        import copy
+        import secrets
+
+        from mandate.mandate_message import mandate_signing_message
+
+        MandateSigner._counter += 1
+        created = self.now()
+        inputs = copy.deepcopy(self.base_inputs)
+        inputs.update({
+            "mandate_id": f"mnd_signed_{MandateSigner._counter}",
+            "created_at": utc_stamp(created),
+            "expires_at": utc_stamp((created + timedelta(days=30)).replace(hour=23, minute=59, second=59)),
+            "nonce": secrets.token_hex(16),
+            "key_id": self.key_id,
+        })
+        inputs.pop("owner_email", None)
+        inputs.pop("public_key", None)
+        for path, value in changes.items():
+            target = inputs
+            *parents, leaf = path.split("__")
+            for parent in parents:
+                target = target[parent]
+            target[leaf] = value
+        message = mandate_signing_message(**{**inputs, "owner_email": self.email, "public_key": self.public_key})
+        return {
+            "mandate_id": inputs["mandate_id"],
+            "human": dict(self.human),
+            "agent": {"id": inputs["agent_id"], "display_name": "Saturday"},
+            "constraints": inputs["constraints"],
+            "search_fields": inputs["search_fields"],
+            "expires_at": inputs["expires_at"],
+            "created_at": inputs["created_at"],
+            "nonce": inputs["nonce"],
+            "key_id": inputs["key_id"],
+            "signature": self.private_key.sign(message).hex(),
+        }
+
+    def post(self, body: dict, headers: dict | None = None):
+        return self.client.post("/mandates", json=body, headers=headers or self.headers)
+
+    def create(self, **changes) -> dict:
+        body = self.body(**changes)
+        response = self.post(body)
+        assert response.status_code == 201, response.text
+        return body

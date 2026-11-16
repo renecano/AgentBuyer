@@ -19,6 +19,8 @@ from fastapi.testclient import TestClient
 from api.main import app
 from audit.log import reset_trail
 from core import mandate_store, merchant_search
+from core.mandate_store import get_mandate_signer
+from tests.conftest import MandateSigner
 
 SEED_MANDATE_ID = "mnd_marta_001"
 SEED_AGENT_ID = "agt_saturday"
@@ -208,33 +210,12 @@ def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_
     }
 
 
-def mandate_creator_payload(mandate_id: str = "mnd_test_user_contract") -> dict:
-    """Mismo payload que submitMandate() en MandateCreator.tsx (categoría vuelos).
-    human.email es el email verificado por OTP."""
-    return {
-        "mandate_id": mandate_id,
-        "human": {
-            "id": "hum_test_user_contract",
-            "display_name": "Test User",
-            "id_document": "XXXXXX",
-            "phone": "+520000000000",
-            "email": "test.user@example.com",
-        },
-        "agent": {"id": SEED_AGENT_ID, "display_name": "Saturday"},
-        "search_fields": {"origin": "BUE", "destination": "COR", "departure_date": "2026-10-01"},
-        "constraints": {
-            "max_amount_per_purchase": 150,
-            "currency": "USD",
-            "allowed_categories": ["travel.flights"],
-            "allowed_merchants": ["mch_vuelaya"],
-            "max_uses": 3,
-            "conditions": [{"type": "price_below", "value": 150}],
-            "off_session_consent": True,
-        },
-        # Sin signature, payment_token ni authentication: desde el login OTP real el
-        # cliente ya no los declara; el servidor genera el token y firma (Ed25519).
-        "valid_until": "2026-09-30",
-    }
+def mandate_creator_payload(signer: MandateSigner, mandate_id: str = "mnd_test_user_contract") -> dict:
+    """Mismo payload que submitMandate() en MandateCreator.tsx desde el 3.4: el FIRMADO
+    con la llave del dispositivo (lib/signedMandate.ts). Lo genera el helper que firma
+    como el cliente (tests/conftest.py: MandateSigner). human.email es el email
+    verificado por OTP; los montos son el texto que tecleó la persona."""
+    return signer.body(mandate_id=mandate_id)
 
 
 def run_agent(client: TestClient) -> dict:
@@ -272,25 +253,38 @@ def test_get_mandate_returns_mandate_record(client):
 
 # ── POST /mandates (MandateCreator.tsx:404) ─────────────────────────────────
 
-def test_create_mandate_from_mandate_creator_shape(client):
-    """Forma ACTUAL: 201 y el registro {mandate, live_state}: el payload del
-    cliente tal cual, más payment_token y firma generados por el servidor. React
-    ignora el body: solo mira response.ok y navega con el mandate_id que generó
-    él mismo, así que ese id debe quedar consultable."""
-    payload = mandate_creator_payload()
+def test_create_mandate_from_mandate_creator_shape(client, key_registrar, active_seed):
+    """Forma ACTUAL (3.4): el wizard FIRMA el mandato con la llave registrada del
+    dispositivo y lo envía en el formato del 3.2. 201 y el registro {mandate, live_state}:
+    lo firmado, normalizado, más el payment_token que el servidor emite después.
+
+    Cambio deliberado de contrato (R4) respecto del anterior: antes React mandaba el
+    payload SIN firma (montos como número, `valid_until` que se ignoraba) y el servidor
+    lo sellaba con una llave suya (kind=system_seal). Ahora manda key_id, nonce,
+    created_at, signature y expires_at (que se hace cumplir), los montos como texto
+    decimal, y el mandato queda kind=human. React sigue ignorando el body: solo mira
+    response.ok y navega con el mandate_id que generó él mismo."""
+    signer = MandateSigner(client, key_registrar, active_seed["human"]["email"])
+    signer.register()
+    payload = mandate_creator_payload(signer)
     response = client.post("/mandates", json=payload)
 
     assert response.status_code == 201, response.text
     record = response.json()
     assert_mandate_record(record)
-    # El cuerpo del cliente se guarda tal cual; el servidor solo AGREGA lo que el
-    # cliente ya no declara: payment_token y la firma Ed25519 con su clave pública.
     stored = record["mandate"]
-    assert {key: stored[key] for key in payload} == payload
-    assert set(stored) - set(payload) == {"payment_token", "human_pubkey", "signature"}
+    assert get_mandate_signer(payload["mandate_id"])["kind"] == "human"
+    # Se guarda LO FIRMADO: mismas claves que envió el wizard + el token del servidor.
+    assert set(stored) == set(payload) | {"payment_token"}
+    for key in ("mandate_id", "human", "agent", "search_fields", "expires_at", "created_at", "nonce", "key_id", "signature"):
+        assert stored[key] == payload[key], key
+    # Los montos firmados (texto) quedan como números para el engine actual.
+    assert stored["constraints"]["max_amount_per_purchase"] == 150
+    assert stored["constraints"]["conditions"] == [{"type": "price_below", "value": 150}]
+    assert stored["constraints"]["off_session_consent"] is True
     assert stored["payment_token"]["token_type"] == "SCOPED_VIRTUAL_TOKEN"
     assert stored["payment_token"]["bound_mandate_id"] == payload["mandate_id"]
-    assert len(stored["human_pubkey"]) == 64 and len(stored["signature"]) == 128  # Ed25519 en hex
+    assert stored["payment_token"]["bound_message_hash"] == get_mandate_signer(payload["mandate_id"])["message_hash"]
     assert record["live_state"] == {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None}
 
     # El id del cliente es el que usa Mission Control a continuación (GET /mandates/{id}).

@@ -1,10 +1,11 @@
 /**
- * Tarjeta "Register this device" (paso 3.1): enrola la llave Ed25519 no extraíble
- * de este navegador en la cuenta de la sesión (lib/enrollment.ts).
+ * Tarjeta "Register this device": enrola la llave Ed25519 no extraíble de este
+ * navegador en la cuenta de la sesión (lib/enrollment.ts, paso 3.1).
  *
- * Opcional por ahora: NO bloquea la creación de mandatos y la llave todavía no
- * firma nada (eso llega en el paso 3.4). La tarjeta lo dice tal cual (R12).
- * Se monta con key={email}: si cambia la cuenta, empieza de cero.
+ * Desde el 3.4 es requisito para autorizar: el wizard firma cada permiso con esta
+ * llave. La tarjeta informa su estado al wizard (onStatusChange) y el wizard puede
+ * pedirle que lo vuelva a leer (refreshSignal), p. ej. tras un 403 o tras enrolar
+ * en la demo. Se monta con key={email}: si cambia la cuenta, empieza de cero.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../lib/api";
@@ -67,7 +68,30 @@ function messageFor(caught: unknown): string {
   return "No connection to the system. Check your connection and try again.";
 }
 
-export default function DeviceKeyCard({ email }: { email: string }) {
+/** Lo que el wizard necesita saber: ¿se puede firmar ya con este dispositivo? */
+export type DeviceKeyStatus =
+  | { status: "loading" }
+  | { status: "registered"; keyId: string }
+  | { status: Exclude<KeyStatus, "registered"> | "unavailable" };
+
+type DeviceKeyCardProps = {
+  email: string;
+  onStatusChange?: (status: DeviceKeyStatus) => void;
+  /** Cambiarlo hace que la tarjeta vuelva a leer el estado de la llave. */
+  refreshSignal?: number;
+};
+
+function statusOf(view: View): DeviceKeyStatus {
+  switch (view.name) {
+    case "registered": return { status: "registered", keyId: view.keyId };
+    case "ready": return { status: view.status };
+    case "unsupported": return { status: "unsupported" };
+    case "loading": return { status: "loading" };
+    default: return { status: "unavailable" };
+  }
+}
+
+export default function DeviceKeyCard({ email, onStatusChange, refreshSignal = 0 }: DeviceKeyCardProps) {
   const [view, setView] = useState<View>({ name: "loading" });
   const [busy, setBusy] = useState<Busy>("loading");
   const [code, setCode] = useState("");
@@ -104,7 +128,15 @@ export default function DeviceKeyCard({ email }: { email: string }) {
     }
   }, [email]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshSignal]);
+
+  // El wizard solo autoriza con status "registered"; cualquier otra vista lo bloquea.
+  const reported = statusOf(view);
+  const reportedKey = reported.status === "registered" ? `registered:${reported.keyId}` : reported.status;
+  useEffect(() => {
+    onStatusChange?.(reported);
+    // reportedKey resume `reported` (objeto nuevo en cada render): se avisa solo si cambia.
+  }, [reportedKey, onStatusChange]);
 
   function applyStart(start: EnrollmentStart) {
     if (start.kind === "code_sent") {
@@ -186,7 +218,7 @@ export default function DeviceKeyCard({ email }: { email: string }) {
 
   const working = busy !== null;
   const status = view.name === "registered" ? "complete" : view.name === "awaiting_code" || working ? "processing" : "pending";
-  const chip = view.name === "registered" ? "REGISTERED" : view.name === "unsupported" ? "UNAVAILABLE" : working || view.name === "awaiting_code" ? "IN PROGRESS" : "OPTIONAL";
+  const chip = view.name === "registered" ? "REGISTERED" : view.name === "unsupported" ? "UNAVAILABLE" : working || view.name === "awaiting_code" ? "IN PROGRESS" : "REQUIRED";
 
   return (
     <section className={`verify-item is-${status}`} aria-labelledby="device-key-title">
@@ -212,7 +244,7 @@ export default function DeviceKeyCard({ email }: { email: string }) {
 
         {view.name === "ready" && <>
           <p className="verify-hint">
-            The private key is created in this browser and can't be exported, not even by this app. Registering it needs a fresh code sent to your email. Your permissions aren't signed with this key yet.
+            The private key is created in this browser and can't be exported, not even by this app. Registering it needs a fresh code sent to your email. Every permission you authorize is signed with this key, so you need it to continue.
           </p>
           <button className="verify-action" type="button" onClick={() => void sendCode()} disabled={working || cooldownSeconds > 0}>
             {busy === "sending" ? "Sending…" : cooldownSeconds > 0 ? `Try again in ${cooldownSeconds}s` : "Register this device"}
@@ -261,7 +293,7 @@ export default function DeviceKeyCard({ email }: { email: string }) {
         </>}
 
         {view.name === "registered" && (
-          <p className="verify-hint">Key ID {view.keyId}. It stays on this browser and can't be exported. Your permissions aren't signed with it yet.</p>
+          <p className="verify-hint">Key ID {view.keyId}. It stays on this browser and can't be exported. Every permission you authorize here is signed with it.</p>
         )}
 
         {view.name === "load_failed" && (

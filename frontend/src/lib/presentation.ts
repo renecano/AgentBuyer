@@ -207,6 +207,9 @@ export function checkRuleLabel(rule: string): string {
   const labels: Record<string, string> = {
     mandate_exists: "Mandate exists",
     signature: "Signature",
+    payment_token_binding: "Payment token",
+    currency: "Currency",
+    off_session_consent: "Buying without you",
     agent_identity: "Agent identity",
     status: "Mandate status",
     amount: "Amount",

@@ -1,10 +1,20 @@
-import { FormEvent, useMemo, useState, useEffect, useRef } from "react";
+import { FormEvent, useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Saturday, { type SaturdayExpression } from "./Saturday";
 import { ApiError, request } from "../lib/api";
 import { LoginRateLimitedError, type AccessToken, type EmailLoginStart } from "../lib/authApi";
 import { useAuth } from "../lib/AuthProvider";
-import DeviceKeyCard from "./DeviceKeyCard";
+import DeviceKeyCard, { type DeviceKeyStatus } from "./DeviceKeyCard";
+import { beginEnrollment, completeEnrollment } from "../lib/enrollment";
+import {
+  DeviceKeyNotReadyError,
+  MandateFieldError,
+  SigningKeyRejectedError,
+  createSignedMandate,
+  describeExpiry,
+  endOfLocalDay,
+  type MandateDraft,
+} from "../lib/signedMandate";
 
 type MandateCreatorProps = {
   onCreated: (mandateId: string) => void;
@@ -152,7 +162,7 @@ function CalendarDatePicker({ value, onChange, ariaLabel = "Pick a date" }: Cale
 type WizardStep = 1 | 2 | 3;
 const WIZARD_STEPS = 3;
 
-type WizardDemoStage = "idle" | "preparing" | "signin" | "awaiting_code" | "limits" | "authorizing" | "paused" | "error";
+type WizardDemoStage = "idle" | "preparing" | "signin" | "awaiting_code" | "enrolling" | "awaiting_device" | "limits" | "authorizing" | "paused" | "error";
 
 // Datos de la demo: neutros y claramente ficticios.
 const DEMO_MARTA = {
@@ -171,6 +181,8 @@ const WIZARD_DEMO_LABELS: Record<Exclude<WizardDemoStage, "idle" | "paused" | "e
   preparing: "Marta starts a new permission",
   signin: "Signing in with a one-time email code…",
   awaiting_code: "Enter the code sent to your email to continue the demo.",
+  enrolling: "Registering this device's signing key…",
+  awaiting_device: "Register this device (code sent to your email) to continue the demo.",
   limits: "Setting verifiable limits…",
   authorizing: "Issuing the mandate…",
 };
@@ -178,6 +190,25 @@ const WIZARD_DEMO_LABELS: Record<Exclude<WizardDemoStage, "idle" | "paused" | "e
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 class DemoCancelledError extends Error {}
+
+/** Campo de la spec (o del 422 del servidor) → cómo lo llama el formulario. */
+const FIELD_LABELS: Record<string, string> = {
+  "constraints.max_amount_per_purchase": "Maximum per purchase",
+  "constraints.conditions.price_below": "Price condition",
+  "constraints.max_uses": "Maximum purchases",
+  "constraints.allowed_categories": "Category",
+  "constraints.allowed_merchants": "Merchant",
+  "constraints.currency": "Currency",
+  expires_at: "Valid until",
+  mandate_id: "Your name",
+};
+
+function fieldErrorMessage(error: MandateFieldError): string {
+  const label = FIELD_LABELS[error.field] ?? (error.field.startsWith("search_fields") ? "Search details" : null);
+  // El mensaje de la spec trae "campo: motivo"; se muestra solo el motivo con la etiqueta.
+  const reason = error.message.replace(/^[a-z_][a-z0-9_.]*:\s*/i, "");
+  return label ? `${label}: ${reason}` : reason;
+}
 
 function withTimeout<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -199,6 +230,8 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
   const [maxUses, setMaxUses] = useState("3");
   const [priceBelow, setPriceBelow] = useState("150");
   const [validUntil, setValidUntil] = useState(endOfMonth());
+  // Consentimiento firmado (D-16): sin él, cada compra espera la aprobación de la persona.
+  const [offSessionConsent, setOffSessionConsent] = useState(true);
   // Estos datos viajan con el permiso para que Saturday pueda buscar la ruta real.
   // Ruta por defecto BUE→COR con fecha cercana: combinación confirmada que
   // la búsqueda web real devuelve de forma confiable para la demo.
@@ -238,6 +271,14 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
 
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Llave del dispositivo (DeviceKeyCard): sin "registered" no se puede firmar ni autorizar.
+  const [deviceKey, setDeviceKey] = useState<DeviceKeyStatus>({ status: "loading" });
+  const [keyRefresh, setKeyRefresh] = useState(0);
+  const deviceKeyWaiter = useRef<((status: DeviceKeyStatus) => void) | null>(null);
+  const onDeviceKeyStatus = useCallback((status: DeviceKeyStatus) => {
+    setDeviceKey(status);
+    deviceKeyWaiter.current?.(status);
+  }, []);
   const [wizardDemoStage, setWizardDemoStage] = useState<WizardDemoStage>("idle");
   const [showWizardDemoLabel, setShowWizardDemoLabel] = useState(false);
 
@@ -248,17 +289,26 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
   const phoneComplete = phoneDigits.length >= 10;
   const identityComplete = Boolean(userIdDoc.trim() && phoneComplete);
   const identityCollapsed = identityComplete && !editingIdentity;
-  const stepOneReady = identityComplete && isAuthenticated;
-  const completedVerificationCount = Number(identityComplete) + Number(isAuthenticated);
+  const deviceReady = isAuthenticated && deviceKey.status === "registered";
+  const stepOneReady = identityComplete && isAuthenticated && deviceReady;
+  const completedVerificationCount = Number(identityComplete) + Number(isAuthenticated) + Number(deviceReady);
   const identityStatus = verificationStatus(identityComplete, Boolean(userIdDoc.trim() || userPhone.trim()));
   const signInStatus = verificationStatus(isAuthenticated, codeSent || sendingCode || verifyingCode);
   const cooldownSeconds = cooldownUntil !== null ? Math.max(0, Math.ceil((cooldownUntil - now) / 1000)) : 0;
   const saturdayExpression: SaturdayExpression | undefined = sensitiveFieldFocused
     ? "covering"
     : microExpression ?? (stepOneReady ? "ready" : undefined);
+  // D-19: "válido hasta" = final de ese día en la zona del navegador, con fecha, hora y zona.
+  const expiryText = useMemo(() => {
+    try {
+      return validUntil ? describeExpiry(endOfLocalDay(validUntil)) : null;
+    } catch {
+      return null;
+    }
+  }, [validUntil]);
   const summary = useMemo(
-    () => `Saturday will be able to buy ${selectedCategory.toLowerCase()} at ${selectedMerchant}, up to $${maxAmount || "—"} per purchase, at most ${maxUses || "—"} times, only if the price drops below $${priceBelow || "—"}${validUntil ? `, valid until ${validUntil}.` : "."}${session ? ` Authorized by ${session.email}.` : ""}`,
-    [maxAmount, maxUses, priceBelow, selectedCategory, selectedMerchant, validUntil, session],
+    () => `Saturday will be able to buy ${selectedCategory.toLowerCase()} at ${selectedMerchant}, up to $${maxAmount || "—"} per purchase, at most ${maxUses || "—"} times, only if the price drops below $${priceBelow || "—"}${expiryText ? `, valid until ${expiryText}.` : "."} ${offSessionConsent ? "It can buy within these limits without asking you first." : "Every purchase will wait for your approval."}${session ? ` Authorized by ${session.email}.` : ""}`,
+    [maxAmount, maxUses, priceBelow, selectedCategory, selectedMerchant, expiryText, offSessionConsent, session],
   );
 
   // Si la sesión se cae (expiró o el backend devolvió 401), el wizard vuelve al
@@ -415,10 +465,11 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     }
 
     const mandateId = safeId(demoValues.name, "mnd");
-    // Sin firma, token de pago ni "autenticación" declarados por el cliente: el
-    // servidor genera el payment_token y firma el mandato con Ed25519.
-    const payload = {
-      mandate_id: mandateId,
+    // Borrador con lo que la persona eligió. La firma se calcula AHORA, al autorizar,
+    // con la llave de este dispositivo (lib/signedMandate): cambiar un límite y volver
+    // a autorizar produce otra firma. El servidor genera el payment_token después.
+    const draft: MandateDraft = {
+      mandateId,
       human: {
         id: safeId(demoValues.name, "hum"),
         display_name: demoValues.name.trim(),
@@ -428,22 +479,19 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
         email: verifiedEmail,
       },
       agent: { id: "agt_saturday", display_name: "Saturday" },
-      ...(category === "travel.flights" ? {
-        search_fields: {
-          origin: demoValues.origin.trim(),
-          destination: demoValues.destination.trim(),
-          departure_date: demoValues.date,
-        },
+      searchFields: category === "travel.flights" ? {
+        origin: demoValues.origin.trim(),
+        destination: demoValues.destination.trim(),
+        departure_date: demoValues.date,
       } : category === "travel.hotels" ? {
-        search_fields: {
-          destination: hotelDestination.trim(),
-          check_in: hotelCheckIn,
-          check_out: addDays(hotelCheckIn, nights),
-          nights,
-        },
-      } : {}),
+        destination: hotelDestination.trim(),
+        check_in: hotelCheckIn,
+        check_out: addDays(hotelCheckIn, nights),
+        nights,
+      } : null,
       constraints: {
-        max_amount_per_purchase: amount,
+        // El texto que tecleó la persona: la spec lo pasa a centavos sin float.
+        max_amount_per_purchase: demoValues.amount.trim(),
         currency: "USD",
         allowed_categories: [category],
         // Solo el comercio que la persona eligió: si la mejor oferta real viene
@@ -451,25 +499,35 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
         // a la persona (human-in-the-loop) en vez de comprar en silencio.
         allowed_merchants: [merchant],
         max_uses: uses,
-        conditions: [{ type: "price_below", value: price }],
-        off_session_consent: true,
+        conditions: [{ type: "price_below", value: demoValues.price.trim() }],
+        off_session_consent: offSessionConsent,
       },
-      ...(validUntil ? { valid_until: validUntil } : {}),
+      validUntil,
     };
 
     setCreating(true);
     try {
       // La respuesta no se usa: se navega con el mandate_id generado aquí.
-      await request<unknown>("/mandates", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      await createSignedMandate(draft, verifiedEmail);
       if (demo) onDemoCreated?.(mandateId);
       else onCreated(mandateId);
       return true;
     } catch (caught) {
-      const reason = caught instanceof ApiError ? `El sistema respondió ${caught.status}.` : caught instanceof Error ? caught.message : null;
-      setError(reason !== null ? `We couldn't create your permission: ${reason}` : "We couldn't create your permission. Check the connection to the system.");
+      if (caught instanceof DeviceKeyNotReadyError) {
+        setError(caught.message);
+        setCurrentStep(1);
+      } else if (caught instanceof SigningKeyRejectedError) {
+        // La llave ya no vale en el servidor (revocada, borrada…): se relee su estado.
+        setError(caught.message);
+        setKeyRefresh((value) => value + 1);
+        setCurrentStep(1);
+      } else if (caught instanceof MandateFieldError) {
+        setError(fieldErrorMessage(caught));
+        setCurrentStep(2);
+      } else {
+        const reason = caught instanceof ApiError ? `The system responded ${caught.status}.` : caught instanceof Error ? caught.message : null;
+        setError(reason !== null ? `We couldn't create your permission: ${reason}` : "We couldn't create your permission. Check the connection to the system.");
+      }
       return false;
     } finally {
       setCreating(false);
@@ -524,6 +582,44 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     demoLogin.current = null;
   }
 
+  /** Espera a que la tarjeta del dispositivo informe "registered" (demo sin AUTH_DEV_MODE). */
+  function waitForDeviceRegistration(): Promise<void> {
+    return new Promise((resolve) => {
+      deviceKeyWaiter.current = (status) => {
+        if (status.status !== "registered") return;
+        deviceKeyWaiter.current = null;
+        resolve();
+      };
+    });
+  }
+
+  /** La demo registra el dispositivo sola con AUTH_DEV_MODE (code_demo del step-up). */
+  async function ensureDemoDeviceKey(email: string): Promise<void> {
+    if (deviceKey.status === "registered") return;
+    setWizardDemoStage("enrolling");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const start = await beginEnrollment(email);
+      if (start.kind === "already_registered") break;
+      if (start.kind === "limit_reached") {
+        throw new Error("This account already has the maximum number of registered devices. Revoke one in the device card and try again.");
+      }
+      if (!start.stepUp.codeDemo) {
+        // Sin modo desarrollo el código llega por correo: la persona usa la tarjeta.
+        setWizardDemoStage("awaiting_device");
+        setKeyRefresh((value) => value + 1);
+        await waitForDeviceRegistration();
+        return;
+      }
+      const result = await completeEnrollment(email, start.stepUp.codeDemo);
+      if (result.kind === "registered") break;
+      if (result.kind === "limit_reached") {
+        throw new Error("This account already has the maximum number of registered devices. Revoke one in the device card and try again.");
+      }
+      // key_replaced: la llave anterior estaba revocada; se registra la nueva.
+    }
+    setKeyRefresh((value) => value + 1);
+  }
+
   /** Espera a que la persona verifique el código a mano (demo sin AUTH_DEV_MODE). */
   function waitForManualSignIn(): Promise<AccessToken> {
     return new Promise((resolve, reject) => {
@@ -571,6 +667,9 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
         await waitForNarration();
       }
 
+      // Firmar exige un dispositivo registrado (3.4).
+      await ensureDemoDeviceKey(verifiedEmail);
+
       setCurrentStep(2);
       setWizardDemoStage("limits");
       await waitForNarration();
@@ -608,7 +707,7 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     }
     setShowWizardDemoLabel(true);
     // Esperar el código es una acción de la persona: la etiqueta no se oculta.
-    if (wizardDemoStage === "awaiting_code") return;
+    if (wizardDemoStage === "awaiting_code" || wizardDemoStage === "awaiting_device") return;
     const timer = window.setTimeout(() => setShowWizardDemoLabel(false), 4500);
     return () => window.clearTimeout(timer);
   }, [wizardDemoStage]);
@@ -616,6 +715,7 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
   useEffect(() => () => {
     clearWizardDemoPause();
     demoLogin.current = null;
+    deviceKeyWaiter.current = null;
   }, []);
 
   const demoButton = wizardDemoStage === "paused"
@@ -671,6 +771,10 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
               <label>Until when is this permission valid?<CalendarDatePicker value={validUntil} onChange={setValidUntil} ariaLabel="Pick how long the permission is valid" /></label>
             </div>
             <label>Any price condition?<div className="price-condition"><span>Only if the price drops below USD $</span><input value={priceBelow} onChange={(event) => setPriceBelow(event.target.value)} inputMode="decimal" placeholder="150" required /></div></label>
+            <label className="consent-option">
+              <input type="checkbox" checked={offSessionConsent} onChange={(event) => setOffSessionConsent(event.target.checked)} />
+              <span>Saturday can buy within these limits without asking me first.<small className="field-hint">{offSessionConsent ? "Purchases that meet every limit go through on their own." : "Every purchase will wait for your approval, even within the limits."}</small></span>
+            </label>
           </div>
 
           {category === "travel.flights" && currentStep === 2 && <div className="wizard-step flight-search-step">
@@ -692,10 +796,10 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
 
           {currentStep === 1 && <div className="wizard-step wizard-security-step" style={{ background: "rgba(30, 41, 59, 0.6)", padding: "14px", borderRadius: "10px", border: "1px solid rgba(77, 124, 255, 0.35)", marginTop: "4px" }}>
             <h3>Verify it's you</h3>
-            <p className="verify-subtitle">Add your contact details and sign in with a one-time code sent to your email.</p>
+            <p className="verify-subtitle">Add your contact details, sign in with a one-time code sent to your email, and register this device to sign your permission.</p>
             <div className="verify-progress" role="status">
-              <span>{completedVerificationCount} of 2 completed</span>
-              <div className="verify-progress-bar" aria-hidden="true"><i style={{ width: `${Math.round((completedVerificationCount / 2) * 100)}%` }} /></div>
+              <span>{completedVerificationCount} of 3 completed</span>
+              <div className="verify-progress-bar" aria-hidden="true"><i style={{ width: `${Math.round((completedVerificationCount / 3) * 100)}%` }} /></div>
             </div>
 
             {/* a) Datos de contacto (no se verifican; viajan con el permiso) */}
@@ -760,25 +864,30 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
               </div>}
             </section>
 
-            {/* c) Llave de firma de este dispositivo (paso 3.1). Opcional por ahora:
-                no bloquea crear el permiso y todavía no firma nada (paso 3.4). */}
-            {isAuthenticated && session && <DeviceKeyCard key={session.email} email={session.email} />}
+            {/* c) Llave de firma de este dispositivo: el permiso se firma con ella (3.4). */}
+            {isAuthenticated && session && <DeviceKeyCard key={session.email} email={session.email} onStatusChange={onDeviceKeyStatus} refreshSignal={keyRefresh} />}
           </div>}
 
           <div className="wizard-step" style={{ display: currentStep === 3 ? "grid" : "none" }}>
             <h3>Confirm and authorize</h3>
             <div className="permission-summary"><span>THIS IS WHAT YOUR PERMISSION WILL LOOK LIKE</span><p>{summary}</p></div>
+            {expiryText && <p className="verify-hint">Valid until <b>{expiryText}</b>.</p>}
+            <p className="verify-hint">{deviceKey.status === "registered"
+              ? <>It will be signed on this device with key <b>{deviceKey.keyId.slice(0, 12)}…</b> when you authorize. If you change a limit, the new version is signed again.</>
+              : "Register this device in step 1: your permission is signed with its key."}</p>
           </div>
 
           {error && <div className="form-error" role="alert">{error}</div>}
 
-          {currentStep === 1 && !stepOneReady && <p className="wizard-notice">To continue, add your contact details and sign in with the code sent to your email.</p>}
+          {currentStep === 1 && !stepOneReady && <p className="wizard-notice">{isAuthenticated && identityComplete && !deviceReady
+            ? "To continue, register this device: your permission is signed with its key."
+            : "To continue, add your contact details, sign in with the code sent to your email, and register this device."}</p>}
 
           <div className="wizard-navigation">
             {currentStep > 1 && <button className="wizard-back" type="button" onClick={() => setCurrentStep((currentStep - 1) as WizardStep)}>← Back</button>}
             {currentStep === 1 && <button className="wizard-next" type="button" disabled={!stepOneReady} onClick={() => setCurrentStep(2)}>Next →</button>}
             {currentStep === 2 && <button className="wizard-next" type="button" onClick={() => setCurrentStep(3)}>Next →</button>}
-            {currentStep === 3 && <button className="authorize-button" disabled={creating || !isAuthenticated} type="submit">{creating ? "CREATING YOUR PERMISSION…" : !isAuthenticated ? "⚠ SIGN IN REQUIRED" : "AUTHORIZE SATURDAY"}</button>}
+            {currentStep === 3 && <button className="authorize-button" disabled={creating || !isAuthenticated || !deviceReady} type="submit">{creating ? "SIGNING YOUR PERMISSION…" : !isAuthenticated ? "⚠ SIGN IN REQUIRED" : !deviceReady ? "⚠ REGISTER THIS DEVICE FIRST" : "SIGN & AUTHORIZE SATURDAY"}</button>}
           </div>
         </form>
       </section>

@@ -31,7 +31,7 @@ from core.mandate_store import MANDATE_OWNERS, MANDATES, get_mandate_signer
 from core.verify import verify_purchase as strict_verify_purchase
 from mandate.mandate_message import mandate_signing_message
 from shared.schemas import PurchaseAttempt
-from tests.conftest import TEST_USER_EMAIL, KeyRegistrar
+from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner
 
 VECTORS = json.loads((Path(__file__).resolve().parent.parent / "shared" / "mandate_signing_vectors.json").read_text(encoding="utf-8"))
 RFC = VECTORS["rfc8032_test1"]
@@ -78,74 +78,18 @@ def client():
     reset_trail()
 
 
-class SignedMandateClient:
-    """Firma mandatos como lo hará el navegador (paso 3.4)."""
-
-    _counter = 0
+class SignedMandateClient(MandateSigner):
+    """El helper de conftest con la base del vector caso_base del 3.2 y el reloj fijo."""
 
     def __init__(self, client, registrar: KeyRegistrar, clock: Clock, email: str = TEST_USER_EMAIL, private_key=None):
-        self.client = client
-        self.registrar = registrar
+        super().__init__(client, registrar, email, private_key=private_key, now=lambda: clock.now,
+                         base_inputs=BASE_INPUTS,
+                         human={"id": "hum_marta", "display_name": "Marta", "email": email, "phone": "+00 000 000 0000"})
         self.clock = clock
-        self.email = email
-        self.headers = bearer(email)
-        self.private_key = private_key or registrar.new_private_key()
-        self.public_key = registrar.public_hex(self.private_key)
-        self.key_id = None
-
-    def register(self, monkeypatch=None, key_id_hex: str | None = None) -> str:
-        """Registro REAL con prueba de posesión. key_id_hex fija el id (vectores)."""
-        if key_id_hex is not None:
-            class FixedUuid:
-                hex = key_id_hex
-            with monkeypatch.context() as patch:
-                patch.setattr(owner_keys.uuid, "uuid4", lambda: FixedUuid())
-                response, _, _ = self.registrar.register(self.email, self.private_key, headers=self.headers)
-        else:
-            response, _, _ = self.registrar.register(self.email, self.private_key, headers=self.headers)
-        assert response.status_code == 201, response.text
-        self.key_id = response.json()["key_id"]
-        return self.key_id
 
     def body(self, **changes) -> dict:
-        """Cuerpo firmado (formato 3.2) sobre la base del vector caso_base.
-        `changes` usa rutas con "__" (constraints__max_uses=2) ANTES de firmar."""
-        SignedMandateClient._counter += 1
-        inputs = copy.deepcopy(BASE_INPUTS)
-        inputs.update({
-            "mandate_id": f"mnd_signed_{SignedMandateClient._counter}",
-            "created_at": stamp(self.clock.now),
-            "nonce": secrets.token_hex(16),
-            "key_id": self.key_id,
-        })
-        for path, value in changes.items():
-            target = inputs
-            *parents, leaf = path.split("__")
-            for parent in parents:
-                target = target[parent]
-            target[leaf] = value
-        message = mandate_signing_message(**{**inputs, "owner_email": self.email, "public_key": self.public_key})
-        return {
-            "mandate_id": inputs["mandate_id"],
-            "human": {"id": "hum_marta", "display_name": "Marta", "email": self.email, "phone": "+00 000 000 0000"},
-            "agent": {"id": inputs["agent_id"], "display_name": "Saturday"},
-            "constraints": inputs["constraints"],
-            "search_fields": inputs["search_fields"],
-            "expires_at": inputs["expires_at"],
-            "created_at": inputs["created_at"],
-            "nonce": inputs["nonce"],
-            "key_id": inputs["key_id"],
-            "signature": self.private_key.sign(message).hex(),
-        }
-
-    def post(self, body: dict, headers: dict | None = None):
-        return self.client.post("/mandates", json=body, headers=headers or self.headers)
-
-    def create(self, **changes) -> dict:
-        body = self.body(**changes)
-        response = self.post(body)
-        assert response.status_code == 201, response.text
-        return body
+        # La vigencia del vector (2026-11-30) salvo que el test la cambie.
+        return super().body(**{"expires_at": BASE_INPUTS["expires_at"], **changes})
 
 
 @pytest.fixture()
