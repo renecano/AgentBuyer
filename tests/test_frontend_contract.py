@@ -44,7 +44,7 @@ WEB_OFFERS = [
 def _clear_backend_state() -> None:
     # Único punto acoplado a internals del backend: si el refactor cambia dónde
     # vive el estado, solo hay que ajustar esta función, no las aserciones.
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
     reset_trail()
 
 

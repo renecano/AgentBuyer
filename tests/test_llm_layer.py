@@ -13,14 +13,14 @@ from fastapi.testclient import TestClient
 import core.llm as llm
 from api.main import app
 from audit.log import reset_trail
-from core import mandate_store, merchant_search, owner_keys
+from core import mandate_store, merchant_search
 from core.auth_tokens import create_access_token
 from core.llm import DEFAULT_MODEL, LLMConfig, LLMError, OpenAIResponsesClient, get_llm, set_llm_client
-from core.mandate_store import MANDATES
 from core.merchant_identity import merchant_id_from_url
 from core.semantic_firewall import auditoria_cognitiva_firewall
 from engine.llm_judge import verificar_semantica_con_llm
 from tests.conftest import TEST_USER_EMAIL, verify_as_service
+from tests.storage import live_state
 
 SECRET = "sk-test-NOT-A-REAL-KEY-0123456789"
 
@@ -202,12 +202,10 @@ def test_heuristic_reads_english_and_spanish_and_says_what_it_found():
 def client(monkeypatch):
     monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: "[]")
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
 
 
@@ -241,7 +239,7 @@ def test_firewall_escalate_escalates_on_the_react_line(client, mine):
     set_llm_client(FakeLLM(answer={"verdict": "ESCALATE", "risks": ["odd"], "summary": "A person should check this."}))
     result = verify_as_service(client, attempt(mine, 12000)).json()
     assert result["verdict"] == "ESCALATE"
-    assert MANDATES[mine]["live_state"]["uses_count"] == 0
+    assert live_state(mine)["uses_count"] == 0
 
 
 def test_firewall_failure_does_not_approve_on_the_react_line(client, mine):

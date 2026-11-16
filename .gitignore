@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 CLAUDE.md
+
+# Base de datos local de desarrollo (6.2, core/db.py). Nunca al repo.
+var/

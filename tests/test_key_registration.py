@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from audit.log import reset_trail
-from core import mandate_store, owner_keys
+from core import mandate_store
 from core.owner_keys import MAX_ACTIVE_KEYS_PER_OWNER, get_active_keys, is_key_active, register_key
 from tests.conftest import TEST_USER_EMAIL, KeyRegistrar
+from tests.storage import key_records
 
 VICTIM = "victim@example.com"
 ATTACKER = "attacker@example.com"
@@ -19,9 +20,7 @@ ATTACKER = "attacker@example.com"
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    owner_keys.clear()
     yield
-    owner_keys.clear()
 
 
 @pytest.fixture()
@@ -56,7 +55,7 @@ def test_blind_registration_of_the_step_1_kind_is_no_longer_possible(client, aut
     response = client.post("/keys", json={"public_key": key}, headers=auth_headers)
 
     assert response.status_code == 422
-    assert owner_keys.OWNER_KEYS == {}
+    assert key_records() == []
 
 
 # ── Challenge ───────────────────────────────────────────────────────────────
@@ -261,8 +260,7 @@ def test_squatting_is_closed_without_the_private_key(key_registrar):
 
     assert not is_key_active(ATTACKER, victim_pub)
     # Nadie quedó como dueño de la pubkey de la víctima (ni activa ni revocada).
-    assert all(record["public_key"] != victim_pub
-               for records in owner_keys.OWNER_KEYS.values() for record in records)
+    assert all(record["public_key"] != victim_pub for record in key_records())
 
     # La víctima registra SU llave sin problema: el atacante no la bloqueó.
     response, _, _ = key_registrar.register(VICTIM, victim_private)

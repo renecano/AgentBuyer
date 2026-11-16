@@ -15,11 +15,11 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from audit.log import reset_trail
-from core import mandate_store, owner_keys
+from core import mandate_store
 from core.key_challenges import registration_message
-from core.mandate_store import MANDATES
 from mandate.sign import generate_keypair, sign_payload
 from tests.conftest import KeyRegistrar, MandateSigner, verify_as_service
+from tests.storage import mandate_exists, stored_document, tamper_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
@@ -31,12 +31,10 @@ MALLORY = "mallory.attacker@example.com"
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
 
 
@@ -68,7 +66,7 @@ def verdict(client, mandate_id: str, attempt_id: str = "att_attack") -> str:
 
 def assert_not_created(response, mandate_id: str, status: int):
     assert response.status_code == status, response.text
-    assert mandate_id not in MANDATES
+    assert not mandate_exists(mandate_id)
 
 
 # ── Sin firma del titular ───────────────────────────────────────────────────
@@ -174,11 +172,13 @@ def test_replay_de_una_creacion(client, marta):
 ])
 def test_campo_alterado_despues_de_firmar(client, marta, path, value):
     body = marta.create(constraints__off_session_consent=False)
-    target = MANDATES[body["mandate_id"]]["mandate"]
-    *parents, leaf = path.split(".")
-    for parent in parents:
-        target = target[parent]
-    target[leaf] = value
+    def alter(document: dict) -> None:
+        target = document
+        *parents, leaf = path.split(".")
+        for parent in parents:
+            target = target[parent]
+        target[leaf] = value
+    tamper_document(body["mandate_id"], alter)
     assert verdict(client, body["mandate_id"]) == "REJECT"
 
 
@@ -193,8 +193,8 @@ def test_campo_alterado_antes_de_enviar(client, marta):
 def test_payment_token_de_otro_mandato(client, marta):
     victim = marta.create()
     other = marta.create()
-    MANDATES[victim["mandate_id"]]["mandate"]["payment_token"] = copy.deepcopy(
-        MANDATES[other["mandate_id"]]["mandate"]["payment_token"])
+    stolen = copy.deepcopy(stored_document(other["mandate_id"])["payment_token"])
+    tamper_document(victim["mandate_id"], lambda document: document.__setitem__("payment_token", stolen))
     assert verdict(client, victim["mandate_id"]) == "REJECT"
 
 

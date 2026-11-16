@@ -383,13 +383,9 @@ class SignedMandatePoster:
 @pytest.fixture()
 def signed_poster(client, key_registrar):
     """Crea mandatos firmados por el titular (flujo real) desde dicts con forma de React.
-    Limpia el registro de llaves antes y después: sin eso, las llaves de un test se
-    sumarían al tope de 10 por cuenta del siguiente."""
-    from core import owner_keys
-
-    owner_keys.clear()
+    Cada test corre sobre su propia base (conftest.py de la raíz, 6.2): las llaves de un
+    test no se suman al tope de 10 por cuenta del siguiente."""
     yield SignedMandatePoster(client, key_registrar)
-    owner_keys.clear()
 
 
 # ── /verify es la verificación del comercio/agente (4.2, P-03) ───────────────

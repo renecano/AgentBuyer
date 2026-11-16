@@ -4,6 +4,13 @@
 >
 > Escrito el 16 nov 2026 sobre `main` en `0f85984`. Cada afirmación sobre el código cita el archivo donde se puede comprobar.
 
+## 0. Estado de la implementación
+
+| Paso | Estado |
+|---|---|
+| 6.2 | **Hecho.** `core/db.py`, `core/db_schema.py`, `migrations/` (`0001_mandates_and_keys`). Llaves del titular, mandatos, dueños, firmantes, periodos y nonces de creación son persistentes. H5 corregido. Tests: `tests/test_persistence.py`, más los de concurrencia del 5.2, que ahora exigen que cada intento simultáneo reciba una respuesta |
+| 6.3 | Pendiente: ledger, cabeza y triggers (H4), nonces de intento con `created_at` firmado (H1), `escalation_decisions` (H2), disputas, cuota y llaves públicas del agente |
+
 ## 1. Por qué
 
 Hoy **todo** el estado vive en diccionarios del proceso. Un reinicio borra mandatos, llaves registradas, el ledger "a prueba de manipulación" y los nonces anti-replay. Que el ledger sea a prueba de manipulación no sirve de mucho si desaparece con cada despliegue. Que el anti-replay funcione tampoco, si se reinicia cada vez que arranca el proceso.

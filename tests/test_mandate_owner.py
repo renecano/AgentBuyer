@@ -12,9 +12,10 @@ from api.main import app
 from api.security import Principal, assert_can_access_mandate, owner_email_for
 from audit.log import reset_trail
 from core import mandate_store
-from core.mandate_store import MANDATE_OWNERS, get_mandate_owner
+from core.mandate_store import get_mandate_owner
 from core.auth_tokens import create_access_token
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_SERVICE_KEY, TEST_USER_EMAIL
+from tests.storage import all_mandate_ids, mandate_exists
 
 SEED_ID = "mnd_marta_001"
 
@@ -58,7 +59,7 @@ def test_mandates_create_route_was_retired(client, request, headers_fixture):
     headers = request.getfixturevalue(headers_fixture)
     response = client.post("/mandates/create", json={"human_id": "hum_x", "max_amount_per_tx": 150}, headers=headers)
     assert response.status_code in (404, 405)
-    assert set(mandate_store.MANDATES) == {SEED_ID}  # solo el seed cargado al arrancar
+    assert all_mandate_ids() == {SEED_ID}  # solo el seed cargado al arrancar
 
 
 # ── POST /mandates (el de React): exige token y el dueño sale de ahí ────────
@@ -69,7 +70,7 @@ def test_react_mandate_without_token_is_401(client):
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
     # Sin credencial no se creó nada: el rechazo ocurre antes de tocar el store.
-    assert "mnd_owner_anon" not in MANDATE_OWNERS
+    assert not mandate_exists("mnd_owner_anon")
     assert mandate_store.get_mandate("mnd_owner_anon") is None
 
 

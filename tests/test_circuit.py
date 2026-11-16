@@ -5,12 +5,13 @@ from shared.schemas import MandateStatus, VerificationStatus
 from mandate.sign import generate_keypair
 from mandate.issue import create_mandate
 from core import verify as core_verify
-from core.mandate_store import MANDATES, get_mandate, mandate_store
+from core.mandate_store import get_mandate, mandate_store
 from core.agent_loop import PurchasingAgent
 from core.merchant import vuelaya_merchant
 from core.verify import get_pending_escalations, resolve_escalation
 from core.dispute import dispute_arbiter
 from audit.log import audit_ledger
+from tests.storage import tamper_document
 
 
 @pytest.fixture(autouse=True)
@@ -303,7 +304,7 @@ def test_expired_mandate_is_rejected():
 def test_unreadable_expires_at_fails_closed():
     """El store ignora una fecha ilegible y deja el mandato ACTIVE; la verificación no."""
     mandate, agent = new_mandate()
-    MANDATES[mandate.mandate_id]["mandate"]["expires_at"] = "not-a-date"
+    tamper_document(mandate.mandate_id, lambda document: document.__setitem__("expires_at", "not-a-date"))
 
     attempt, result = agent.attempt_purchase(mandate, vuelaya_merchant.get_item("FLIGHT_COR_130"))
 

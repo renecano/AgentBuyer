@@ -18,6 +18,7 @@ from shared.schemas import (
     ExecutePurchaseRequest,
     CatalogItem,
 )
+from core.db import DatabaseConfigError, get_engine, validate_database_config
 from core.mandate_store import (
     mandate_store,
     seal_seed_mandate,
@@ -86,6 +87,14 @@ async def lifespan(_app: FastAPI):
     try:
         validate_service_key_config()
     except ServiceKeyConfigError as error:
+        startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
+        raise
+    # 6.2: la base es obligatoria fuera de desarrollo y se migra a la última versión
+    # ANTES de servir (un esquema viejo no debe recibir tráfico).
+    try:
+        validate_database_config()
+        get_engine()
+    except DatabaseConfigError as error:
         startup_logger.critical("AgentBuyer API no puede arrancar: %s", error)
         raise
     load_seed_mandates()

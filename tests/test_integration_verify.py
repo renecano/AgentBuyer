@@ -15,8 +15,9 @@ from tests.conftest import verify_as_service
 
 from audit.log import get_trail_events, reset_trail
 from api.main import app
-from core import mandate_store, owner_keys
+from core import mandate_store
 from mandate.sign import generate_keypair, sign_payload
+from tests.storage import mandate_exists, tamper_document
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
@@ -39,11 +40,9 @@ def client(auth_headers):
     # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
     with TestClient(app, headers=auth_headers) as test_client:
         mandate_store.mandate_store.clear()
-        owner_keys.clear()
         reset_trail()
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
 
 
@@ -176,7 +175,7 @@ def test_mandate_without_cardholder_signature_is_not_created(client):
     response = client.post("/mandates", json=make_mandate(signature=""))
     assert response.status_code == 422
     assert "cardholder signature is required" in response.json()["detail"]
-    assert "mnd_test_001" not in mandate_store.MANDATES
+    assert not mandate_exists("mnd_test_001")
 
 
 def test_unknown_mandate_rejects(client):
@@ -225,7 +224,7 @@ def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
 
     active_seed (tests/conftest.py) le da una expiración relativa a "ahora": el
     test no caduca con la fecha absoluta de shared/seed_mandates.json."""
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
     with TestClient(app, headers=seed_owner_headers) as fresh_client:
         response = fresh_client.get("/mandates/mnd_marta_001")
         assert response.status_code == 200
@@ -233,7 +232,7 @@ def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
         assert record["live_state"]["status"] == "active"
         assert record["mandate"]["constraints"]["max_uses"] == 3
         assert record["mandate"]["expires_at"] == active_seed["expires_at"]
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
     reset_trail()
 
 
@@ -251,7 +250,7 @@ def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, sign
     assert signature_check == {"rule": "signature", "pass": True,
                                "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
 
-    mandate_store.MANDATES["mnd_signed"]["mandate"]["constraints"]["max_amount_per_purchase_cents"] = 9999900
+    tamper_document("mnd_signed", lambda document: document["constraints"].__setitem__("max_amount_per_purchase_cents", 9999900))
     tampered = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
     assert tampered["verdict"] == "REJECT"
     assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False
@@ -294,7 +293,7 @@ def test_legacy_client_signature_no_longer_creates_a_mandate(client, case):
     mandate = legacy_cases()[case]
     response = client.post("/mandates", json=mandate)
     assert response.status_code == 422
-    assert mandate["mandate_id"] not in mandate_store.MANDATES
+    assert not mandate_exists(mandate["mandate_id"])
 
 
 def test_no_signature_check_ever_passes_without_verifying(client, signed_poster):
@@ -302,7 +301,7 @@ def test_no_signature_check_ever_passes_without_verifying(client, signed_poster)
     (los textos de las ramas que aprobaban sin verificar), ni con una firma alterada."""
     create_mandate(signed_poster, make_mandate(mandate_id="mnd_text"))
     for index, signature in enumerate(["x", "ab" * 64]):
-        mandate_store.MANDATES["mnd_text"]["mandate"]["signature"] = signature
+        tamper_document("mnd_text", lambda document: document.__setitem__("signature", signature))
         result = verify_as_service(client, make_attempt(mandate_id="mnd_text", attempt_id=f"att_text_{index}")).json()
         check = next(item for item in result["checks"] if item["rule"] == "signature")
         assert result["verdict"] == "REJECT" and check["pass"] is False

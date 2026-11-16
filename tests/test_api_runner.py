@@ -2,7 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 from api.main import app
-from core import merchant_search, owner_keys
+from core import merchant_search
 from tests.conftest import KeyRegistrar, SignedMandatePoster
 
 client = TestClient(app)
@@ -25,7 +25,6 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
 
     # 2. Create mandate: desde el 3.5 lo firma el titular con su llave registrada
     # (mismo flujo que el navegador: tests/conftest.py SignedMandatePoster).
-    owner_keys.clear()
     poster = SignedMandatePoster(client, KeyRegistrar(client, monkeypatch))
     mandate_payload = {
         "mandate_id": "mandate_test_001",

@@ -27,11 +27,14 @@ from api.main import app
 from audit.log import reset_trail
 from core import mandate_store, owner_keys
 from core.auth_tokens import create_access_token
-from core.mandate_store import MANDATE_OWNERS, MANDATES, get_mandate_signer
+from core.mandate_store import get_mandate_signer
 from core.verify import verify_purchase as strict_verify_purchase
 from mandate.mandate_message import mandate_signing_message
 from shared.schemas import PurchaseAttempt
 from tests.conftest import TEST_USER_EMAIL, KeyRegistrar, MandateSigner, verify_as_service
+from sqlalchemy.exc import IntegrityError
+from tests.storage import (insert_mandate_without_signer, live_state, mandate_exists, move_keys_of_owner,
+                           set_owner, stored_document, tamper_document)
 
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
@@ -72,12 +75,10 @@ def clock(monkeypatch) -> Clock:
 @pytest.fixture()
 def client():
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
     with TestClient(app) as test_client:
         yield test_client
     mandate_store.mandate_store.clear()
-    owner_keys.clear()
     reset_trail()
 
 
@@ -197,7 +198,7 @@ def test_el_payment_token_lo_emite_el_servidor_atado_a_los_bytes_firmados(signer
     assert signer.post(body).status_code == 422  # el cliente no aporta el token
 
     body = signer.create()
-    token = MANDATES[body["mandate_id"]]["mandate"]["payment_token"]
+    token = stored_document(body["mandate_id"])["payment_token"]
     assert token["bound_mandate_id"] == body["mandate_id"]
     assert token["bound_message_hash"] == get_mandate_signer(body["mandate_id"])["message_hash"]
 
@@ -208,7 +209,7 @@ def test_el_owner_sale_del_token_no_del_cuerpo(signer, client):
     body = signer.body()
     response = signer.post(body, headers=bearer(OTHER_OWNER))
     assert response.status_code == 403
-    assert body["mandate_id"] not in MANDATES
+    assert not mandate_exists(body["mandate_id"])
 
 
 def test_key_id_de_otro_dueno_inexistente_o_revocado_dan_el_mismo_403(signer, client, key_registrar, clock):
@@ -236,7 +237,7 @@ def test_firma_de_otra_llave_del_mismo_dueno_con_este_key_id_da_403(signer, clie
     body["key_id"] = signer.key_id  # firmó la segunda llave, pero dice ser la primera
     response = signer.post(body)
     assert response.status_code == 403
-    assert body["mandate_id"] not in MANDATES
+    assert not mandate_exists(body["mandate_id"])
 
 
 def test_public_key_distinta_en_el_cuerpo_da_403(signer, key_registrar):
@@ -276,7 +277,7 @@ def test_cuerpo_malformado_da_422(signer, change, expected):
             body[key] = value
     response = signer.post(body)
     assert response.status_code == expected, response.text
-    assert body["mandate_id"] not in MANDATES
+    assert not mandate_exists(body["mandate_id"])
 
 
 @pytest.mark.parametrize("name", [
@@ -328,7 +329,7 @@ def test_nonce_repetido_da_409_por_dueno(signer, client, key_registrar, clock):
     replay = signer.body(nonce=first["nonce"])
     response = signer.post(replay)
     assert response.status_code == 409
-    assert replay["mandate_id"] not in MANDATES
+    assert not mandate_exists(replay["mandate_id"])
 
     # Otro dueño puede usar el mismo nonce: el anti-replay es por dueño.
     other = SignedMandateClient(client, key_registrar, clock, email=OTHER_OWNER)
@@ -371,7 +372,7 @@ def test_sin_firma_del_titular_el_mandato_no_se_crea(client, auth_headers):
     response = client.post("/mandates", json=unsigned_payload("mnd_unsigned"), headers=auth_headers)
     assert response.status_code == 422
     assert "cardholder signature is required" in response.json()["detail"]
-    assert "mnd_unsigned" not in MANDATES and get_mandate_signer("mnd_unsigned") is None
+    assert not mandate_exists("mnd_unsigned") and get_mandate_signer("mnd_unsigned") is None
 
 
 def test_firma_propia_del_cliente_ya_no_crea_el_mandato(client, auth_headers):
@@ -382,7 +383,7 @@ def test_firma_propia_del_cliente_ya_no_crea_el_mandato(client, auth_headers):
     payload = unsigned_payload("mnd_legacy")
     payload.update(human_pubkey=pub, signature=sign_payload(priv, payload["constraints"]))
     assert client.post("/mandates", json=payload, headers=auth_headers).status_code == 422
-    assert "mnd_legacy" not in MANDATES
+    assert not mandate_exists("mnd_legacy")
 
 
 def test_el_seed_es_el_unico_sello_y_su_token_lo_emite_el_servidor(client, active_seed):
@@ -390,7 +391,7 @@ def test_el_seed_es_el_unico_sello_y_su_token_lo_emite_el_servidor(client, activ
     payment_token ya no es el del archivo: lo emite el servidor atado a lo sellado."""
     with TestClient(app):
         signer = get_mandate_signer(active_seed["mandate_id"])
-        token = MANDATES[active_seed["mandate_id"]]["mandate"]["payment_token"]
+        token = stored_document(active_seed["mandate_id"])["payment_token"]
     assert signer["kind"] == "system_seal"
     assert token["bound_message_hash"] == signer["message_hash"]
     assert token["token_id"] != active_seed["payment_token"]["token_id"]
@@ -420,7 +421,7 @@ TAMPERS = {
 @pytest.mark.parametrize("field", sorted(TAMPERS))
 def test_campo_alterado_tras_firmar_da_reject(signer, client, field):
     body = signer.create()
-    TAMPERS[field](MANDATES[body["mandate_id"]]["mandate"])
+    tamper_document(body["mandate_id"], TAMPERS[field])
 
     result = verify(client, body["mandate_id"])
     assert result["verdict"] == "REJECT"
@@ -429,24 +430,38 @@ def test_campo_alterado_tras_firmar_da_reject(signer, client, field):
 
 def test_cambiar_el_dueno_tras_firmar_da_reject(signer, client):
     body = signer.create()
-    MANDATE_OWNERS[body["mandate_id"]] = OTHER_OWNER
+    set_owner(body["mandate_id"], OTHER_OWNER)
     assert verify(client, body["mandate_id"])["verdict"] == "REJECT"
 
 
-def test_si_la_llave_deja_de_pertenecer_al_dueno_da_reject(signer, client):
+def test_una_llave_que_firmo_un_mandato_no_se_puede_borrar_del_registro(signer):
+    """6.2 (cambio de contrato del test): antes se simulaba que la llave desaparecía del
+    registro (owner_keys.clear()). Con persistencia ese estado es IMPOSIBLE: la clave
+    foránea de mandate_signers impide borrar una llave que firmó un mandato."""
+    signer.create()
+    with pytest.raises(IntegrityError):
+        owner_keys.clear()
+
+
+def test_si_la_llave_ya_no_esta_en_el_registro_da_reject(signer):
+    """La rama de verificación sigue fallando cerrada si el key_id no se encuentra
+    (p. ej. una base restaurada a medias): se prueba sobre la función de verificación."""
+    from core.signed_mandates import verify_signed_mandate
+
     body = signer.create()
-    owner_keys.clear()  # el registro ya no tiene esa llave para ese dueño
-    result = verify(client, body["mandate_id"])
-    assert result["verdict"] == "REJECT"
-    assert check(result, "signature")["detail"] == "Firma humana inválida: la llave ya no pertenece al titular."
+    unknown = "key_" + "0" * 32
+    mandate = {**stored_document(body["mandate_id"]), "key_id": unknown}
+    signer_record = {**get_mandate_signer(body["mandate_id"]), "key_id": unknown}
+    valid, detail = verify_signed_mandate(mandate, signer.email, signer_record)
+    assert valid is False
+    assert detail == "Firma humana inválida: la llave ya no pertenece al titular."
 
 
 def test_si_la_llave_pasa_a_otra_cuenta_da_reject(signer, client):
     """La pertenencia es la ÚNICA defensa aquí: la llave sigue existiendo con la misma
     pubkey (la firma verifica), pero el registro ya no la tiene a nombre del dueño."""
     body = signer.create()
-    record = owner_keys.OWNER_KEYS.pop(signer.email)
-    owner_keys.OWNER_KEYS[OTHER_OWNER] = record
+    move_keys_of_owner(signer.email, OTHER_OWNER)
 
     result = verify(client, body["mandate_id"])
     assert result["verdict"] == "REJECT"
@@ -461,9 +476,10 @@ def test_cambiar_lo_guardado_por_otra_version_firmada_da_reject(signer, client):
     rival = signer.body(mandate_id=accepted["mandate_id"], constraints__max_amount_per_purchase=5000)
     assert signer.post(rival).status_code == 409
 
-    stored = MANDATES[accepted["mandate_id"]]["mandate"]
-    stored["constraints"]["max_amount_per_purchase_cents"] = 500000
-    stored.update(nonce=rival["nonce"], created_at=rival["created_at"], signature=rival["signature"])
+    def substitute(stored: dict) -> None:
+        stored["constraints"]["max_amount_per_purchase_cents"] = 500000
+        stored.update(nonce=rival["nonce"], created_at=rival["created_at"], signature=rival["signature"])
+    tamper_document(accepted["mandate_id"], substitute)
 
     result = verify(client, accepted["mandate_id"])
     assert result["verdict"] == "REJECT"
@@ -486,7 +502,7 @@ def test_llave_revocada_despues_de_crear_deja_sin_efecto_el_mandato(signer, clie
     assert result["verdict"] == "REJECT"
     assert check(result, "signing_key_active")["pass"] is False
     assert check(result, "signature")["pass"] is True  # la firma era auténtica: lo que cambió es la llave
-    assert MANDATES[second["mandate_id"]]["live_state"]["status"] == "active"  # sin mutar el estado
+    assert live_state(second["mandate_id"])["status"] == "active"  # sin mutar el estado
 
 
 def test_revocar_cuenta_solo_mandatos_vigentes_de_esa_llave(signer, client, key_registrar, clock):
@@ -514,8 +530,8 @@ def test_expires_at_vencido_da_reject(signer, client, clock):
 def test_payment_token_de_otro_mandato_da_reject(signer, client):
     first = signer.create()
     second = signer.create()
-    stolen = copy.deepcopy(MANDATES[second["mandate_id"]]["mandate"]["payment_token"])
-    MANDATES[first["mandate_id"]]["mandate"]["payment_token"] = stolen
+    stolen = copy.deepcopy(stored_document(second["mandate_id"])["payment_token"])
+    tamper_document(first["mandate_id"], lambda document: document.__setitem__("payment_token", stolen))
 
     result = verify(client, first["mandate_id"])
     assert result["verdict"] == "REJECT"
@@ -525,7 +541,7 @@ def test_payment_token_de_otro_mandato_da_reject(signer, client):
 
 def test_payment_token_reemitido_sin_binding_da_reject(signer, client):
     body = signer.create()
-    del MANDATES[body["mandate_id"]]["mandate"]["payment_token"]["bound_message_hash"]
+    tamper_document(body["mandate_id"], lambda document: document["payment_token"].pop("bound_message_hash"))
     assert verify(client, body["mandate_id"])["verdict"] == "REJECT"
 
 
@@ -546,7 +562,7 @@ def test_sin_consentimiento_off_session_toda_compra_escala(signer, client):
     result = verify(client, body["mandate_id"])  # dentro de todos los límites
     assert result["verdict"] == "ESCALATE"
     assert check(result, "off_session_consent")["pass"] is False
-    assert MANDATES[body["mandate_id"]]["live_state"]["uses_count"] == 0  # no se compró solo
+    assert live_state(body["mandate_id"])["uses_count"] == 0  # no se compró solo
 
 
 def test_con_consentimiento_el_flujo_es_el_normal(signer, client):
@@ -577,7 +593,7 @@ def test_linea_estricta_verifica_la_firma_humana(signer):
     assert valid.authorized is False
     assert next(item for item in valid.checks if item["rule"] == "agent_signature_valid")["pass"] is False
 
-    MANDATES[body["mandate_id"]]["mandate"]["constraints"]["max_amount_per_purchase_cents"] = 999900
+    tamper_document(body["mandate_id"], lambda document: document["constraints"].__setitem__("max_amount_per_purchase_cents", 999900))
     tampered = strict_verify_purchase(strict_attempt(body["mandate_id"]))
     assert tampered.authorized is False
     assert next(item for item in tampered.checks if item["rule"] == "human_signature_valid")["pass"] is False
@@ -586,7 +602,8 @@ def test_linea_estricta_verifica_la_firma_humana(signer):
 def test_linea_estricta_rechaza_token_ajeno_y_otra_moneda(signer):
     first = signer.create()
     second = signer.create()
-    MANDATES[first["mandate_id"]]["mandate"]["payment_token"] = copy.deepcopy(MANDATES[second["mandate_id"]]["mandate"]["payment_token"])
+    stolen = copy.deepcopy(stored_document(second["mandate_id"])["payment_token"])
+    tamper_document(first["mandate_id"], lambda document: document.__setitem__("payment_token", stolen))
     stolen = strict_verify_purchase(strict_attempt(first["mandate_id"]))
     assert next(item for item in stolen.checks if item["rule"] == "payment_token_binding")["pass"] is False
 
@@ -616,7 +633,7 @@ def test_agent_run_con_search_fields_distintos_da_422(signer, client, searches):
 
 def test_agent_run_usa_lo_firmado(signer, client, searches):
     body = signer.create()
-    signed_fields = MANDATES[body["mandate_id"]]["mandate"]["search_fields"]
+    signed_fields = stored_document(body["mandate_id"])["search_fields"]
 
     assert client.post("/agent/run", json={"mandate_id": body["mandate_id"]}, headers=signer.headers).status_code == 200
     # Los mismos campos con otra grafía (espacios) son los mismos tras normalizar.
@@ -676,11 +693,12 @@ def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verif
     priv, pub = generate_keypair()
     constraints = {"max_amount_per_purchase": 150, "allowed_categories": ["travel.flights"],
                    "allowed_merchants": ["mch_vuelaya"], "max_uses": 3}
-    MANDATES["mnd_no_signer"] = {
-        "mandate": {"mandate_id": "mnd_no_signer", "agent": {"id": "agt_saturday"}, "constraints": constraints,
-                    "human_pubkey": pub, "signature": sign_payload(priv, constraints)},
-        "live_state": {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None},
-    }
+    insert_mandate_without_signer(
+        "mnd_no_signer",
+        {"mandate_id": "mnd_no_signer", "agent": {"id": "agt_saturday"}, "constraints": constraints,
+         "human_pubkey": pub, "signature": sign_payload(priv, constraints)},
+        owner_email=None,
+    )
     result = verify(client, "mnd_no_signer")
     assert result["verdict"] == "REJECT"
     assert check(result, "signature") == {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
@@ -692,4 +710,4 @@ def test_el_seed_no_puede_traer_firma_propia(client):
             "human_pubkey": "ab" * 32, "signature": "cd" * 64}
     with pytest.raises(ValueError, match="no puede traer firma"):
         seal_seed_mandate(seed)
-    assert "mnd_seed_signed" not in MANDATES
+    assert not mandate_exists("mnd_seed_signed")
