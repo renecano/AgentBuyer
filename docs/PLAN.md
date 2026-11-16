@@ -146,7 +146,7 @@ René adoptó las recomendaciones al pedir que el plan se ejecute completo. Pued
 | P-14 | **Pendiente de René** (confirmar con Ana Paola Oviedo y dglvanp). Hasta entonces: sección de créditos sí, licencia no |
 | P-15 | Un solo cliente LLM configurable; modelo verificado al implementar; fail-closed |
 | P-16 | Cuota configurable por usuario (por defecto 20 corridas/día) y tope global diario configurable; al agotarse, error claro. El límite de gasto en la cuenta de OpenAI lo configura René |
-| P-17 | **Pendiente de René** (surgió en el 6.1, hallazgo H3 de `docs/design/persistence.md`). Recomendado: retirar `POST /mandates/{id}/reset`; el acto 1 de la demo crea y firma un mandato nuevo. Hasta decidir, se persiste sin cambiar su comportamiento |
+| P-17 | **Resuelta por René (16 nov 2026): retirar `POST /mandates/{id}/reset`.** Reiniciar un mandato agotado autorizaría más compras sin firma; para seguir comprando se crea y firma un mandato nuevo. El acto 1 de la demo crea y firma un mandato nuevo en lugar de resetear. Se aplica en el 7.2 |
 
 **P-01 — ¿Qué pasa con un mandato si se revoca la llave que lo firmó?** *(antes de 3.5)*
 - (a) **Recomendado:** el mandato deja de verificar (`/verify` → REJECT con check `signing_key_active`), sin mutar su estado. El humano re-firma con su llave nueva. Coherente con el kill switch: revocar una llave comprometida corta todo lo firmado con ella.
@@ -694,6 +694,9 @@ Commit: "refactor: fuera webhooks/inbox de demo; recibo real con plantilla segur
 ```
 Lee docs/PLAN.md y aplica todas las reglas. Rama fase-7-higiene.
 DECISIÓN P-08: <...>   DECISIÓN P-11: <...>
+- Aplica P-17: retira POST /mandates/{id}/reset (y su uso en React y en la demo, que crea y
+  firma un mandato nuevo); tests que lo usaban pasan a crear un mandato firmado nuevo; el
+  guardián de OpenAPI deja de esperarla. Un mandato agotado solo se "renueva" firmando otro.
 - Aplica P-11: fixtures de tests con mandatos firmados por una llave de prueba;
   scripts/bootstrap_demo.py solo con AUTH_DEV_MODE=true; fuera shared/seed_mandates.json y
   el kind system_seal (y su rama en /verify).
