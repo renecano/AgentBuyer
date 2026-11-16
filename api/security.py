@@ -71,8 +71,9 @@ def owner_email_for(principal: Optional[Principal]) -> Optional[str]:
     Solo humanos autenticados (user/admin) son dueños; sin principal o con un
     servicio, no hay dueño (None).
 
-    Los dos endpoints de creación (POST /mandates y POST /mandates/create) pasan
-    por aquí su Principal: el dueño sale SIEMPRE del token, nunca del cuerpo."""
+    El alta de mandatos (POST /mandates, el único desde el 3.5) y el registro de
+    llaves pasan por aquí su Principal: el dueño sale SIEMPRE del token, nunca del
+    cuerpo."""
     if principal is None or principal.role not in (ROLE_USER, ROLE_ADMIN):
         return None
     return principal.subject.strip().lower()

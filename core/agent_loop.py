@@ -12,7 +12,7 @@ from shared.schemas import (
 )
 from mandate.sign import sign_payload
 from core.merchant import vuelaya_merchant, VuelaYaMerchant
-from core.mandate_store import get_mandate
+from core.mandate_store import get_mandate, get_mandate_signer
 from audit.log import append_entry
 from core.merchant_search import _merchant_slug, search_merchant_offers
 
@@ -178,6 +178,34 @@ def _price_limit(mandate: dict) -> int | float | None:
     return None
 
 
+class SignedSearchFieldsMismatch(ValueError):
+    """El llamador pidió buscar otra cosa que lo que el titular firmó."""
+
+
+def bind_search_fields(mandate_id: str, mandate: dict, search_fields: dict | None) -> dict | None:
+    """search_fields con los que puede buscar el agente.
+
+    En un mandato FIRMADO por el titular (kind=human) el agente queda atado a lo
+    firmado: si el llamador manda otros, es un error (no se ignoran en silencio);
+    si manda los mismos (tras la normalización de la spec) o ninguno, se usan los
+    guardados. En los demás mandatos, el comportamiento de siempre."""
+    signer = get_mandate_signer(mandate_id)
+    if signer is None or signer.get("kind") != "human":
+        return search_fields
+    stored = mandate.get("search_fields") or {}
+    if search_fields is not None:
+        from mandate.mandate_message import MandateMessageError, normalize_search_fields
+        try:
+            requested = normalize_search_fields(search_fields)
+        except MandateMessageError as error:
+            raise SignedSearchFieldsMismatch(f"search_fields: {error}") from None
+        if requested != stored:
+            raise SignedSearchFieldsMismatch(
+                "This mandate was signed by the cardholder: the agent can only search what was signed."
+            )
+    return stored
+
+
 def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
     """Descubre, decide, intenta y registra el resultado de una compra.
 
@@ -188,6 +216,7 @@ def run_agent(mandate_id: str, search_fields: dict | None = None) -> dict:
     """
     record = get_mandate(mandate_id)
     mandate = record["mandate"] if record is not None else {}
+    search_fields = bind_search_fields(mandate_id, mandate, search_fields)
     if not search_fields:
         stored_fields = mandate.get("search_fields")
         if isinstance(stored_fields, dict) and stored_fields:

@@ -12,6 +12,15 @@ from audit.log import append_entry
 from core.mandate_store import (
     apply_approved_purchase,
     get_mandate,
+    get_mandate_owner,
+    get_mandate_signer,
+)
+from core.signed_mandates import (
+    KIND_HUMAN,
+    KIND_SYSTEM_SEAL,
+    verify_payment_token_binding,
+    verify_signed_mandate,
+    verify_signing_key_active,
 )
 from engine.evaluator import evaluate
 from mandate.sign import verify_signature
@@ -85,6 +94,8 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     mandate = record["mandate"]
     live_state = record["live_state"]
     security_checks: list[dict] = []
+    signer = get_mandate_signer(mandate_id)
+    kind = signer["kind"] if signer else None
 
     # 2a. Firma del mandato (Ed25519), FAIL-CLOSED. El check pasa SOLO si hay una
     # firma que verifica de verdad contra la llave pública guardada en el mandato.
@@ -94,10 +105,20 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     signature = mandate.get("signature") or mandate.get("human_signature")
     pubkey = mandate.get("human_pubkey") or mandate.get("pubkey")
 
-    if not isinstance(signature, str) or not signature.strip():
+    if kind == KIND_HUMAN:
+        # Firma del TITULAR (3.3): se reconstruye el mensaje desde lo guardado y se
+        # verifica con su llave registrada, que debe seguir siendo suya.
+        human_ok, human_detail = verify_signed_mandate(mandate, get_mandate_owner(mandate_id), signer)
+        signature_check = {"rule": "signature", "pass": human_ok, "detail": human_detail}
+    elif kind != KIND_SYSTEM_SEAL:
+        # 3.5: sin firmante registrado (ni titular ni sello del seed) no hay mandato válido.
+        signature_check = {"rule": "signature", "pass": False, "detail": "El mandato no tiene una firma registrada."}
+    elif not isinstance(signature, str) or not signature.strip():
         signature_check = {"rule": "signature", "pass": False, "detail": "Firma ausente o vacía."}
     elif verify_signature(pubkey, mandate.get("scope", mandate.get("constraints", {})), signature):
-        signature_check = {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+        # El detail dice QUÉ verificó: un sello del servidor no es una firma del titular.
+        signature_check = {"rule": "signature", "pass": True,
+                           "detail": "Sello de sistema Ed25519 válido (llave del servidor; no es una firma del titular)."}
     else:
         # Incluye la firma sin llave pública: lo que no se puede verificar no es válido.
         signature_check = {"rule": "signature", "pass": False, "detail": "Firma digital inválida."}
@@ -110,6 +131,32 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
             "REJECT",
             security_checks,
             "Compra rechazada: la firma del mandato no es válida.",
+        )
+
+    # 2a'. P-01 (a): revocar la llave que firmó deja sin efecto el mandato.
+    if kind == KIND_HUMAN:
+        key_ok, key_detail = verify_signing_key_active(signer)
+        security_checks.append({"rule": "signing_key_active", "pass": key_ok, "detail": key_detail})
+        if not key_ok:
+            return _finish(
+                mandate_id,
+                attempt_id,
+                "REJECT",
+                security_checks,
+                "Compra rechazada: la llave que firmó el mandato fue revocada.",
+            )
+
+    # 2a''. El payment_token lo emitió el servidor atado a ESTOS bytes firmados (o
+    # sellados, para el seed); uno de otro mandato, o aportado por un cliente, no sirve.
+    binding_ok, binding_detail = verify_payment_token_binding(mandate, signer)
+    security_checks.append({"rule": "payment_token_binding", "pass": binding_ok, "detail": binding_detail})
+    if not binding_ok:
+        return _finish(
+            mandate_id,
+            attempt_id,
+            "REJECT",
+            security_checks,
+            "Compra rechazada: el token de pago no corresponde a este mandato.",
         )
 
     # 2b. El agente que presenta el intento debe ser el autorizado en el mandato
@@ -159,6 +206,27 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
         )
     security_checks.append({"rule": "status", "pass": True, "detail": "Mandato activo."})
 
+    # 2d. Moneda firmada (mandato del titular): otra moneda, o ninguna, es REJECT.
+    if kind == KIND_HUMAN:
+        purchase_view = attempt_purchase.get("purchase", attempt_purchase)
+        signed_currency = (mandate.get("constraints") or {}).get("currency")
+        presented_currency = purchase_view.get("currency") if isinstance(purchase_view, dict) else None
+        currency_ok = isinstance(presented_currency, str) and presented_currency.strip().upper() == signed_currency
+        security_checks.append({
+            "rule": "currency",
+            "pass": currency_ok,
+            "detail": f"{presented_currency} = {signed_currency}" if currency_ok
+            else f"La compra es en {presented_currency}; el mandato firmado autoriza solo {signed_currency}.",
+        })
+        if not currency_ok:
+            return _finish(
+                mandate_id,
+                attempt_id,
+                "REJECT",
+                security_checks,
+                "Compra rechazada: la moneda no es la autorizada en el mandato.",
+            )
+
     # 3. Evaluación en el Engine Simbólico
     engine_attempt = attempt_purchase.get("purchase", attempt_purchase)
     if not isinstance(engine_attempt, dict):
@@ -169,6 +237,19 @@ def verify_purchase(attempt_purchase: dict[str, Any]):
     engine_result = evaluate(mandate, live_state, engine_attempt)
     verdict = engine_result["verdict"]
     checks = security_checks + engine_result["checks"]
+
+    # 3b. Consentimiento firmado a comprar sin la persona presente (D-16). Sin él,
+    # NINGUNA compra se aprueba sola: toda compra escala a aprobación humana.
+    if kind == KIND_HUMAN:
+        consent = (mandate.get("constraints") or {}).get("off_session_consent") is True
+        checks.append({
+            "rule": "off_session_consent",
+            "pass": consent,
+            "detail": "El titular autorizó compras sin estar presente." if consent
+            else "El titular no autorizó compras sin estar presente: cada compra requiere su aprobación.",
+        })
+        if not consent and verdict == "APPROVE":
+            verdict = "ESCALATE"
 
     # 4. Auditoría Cognitiva (Detección de Costos Ocultos y Trampas de Letra Chica)
     purchase = attempt_purchase.get("purchase", attempt_purchase)

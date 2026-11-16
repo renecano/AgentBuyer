@@ -14,10 +14,10 @@ MANDATE_ID = "mnd_esc_001"
 def client(auth_headers):
     # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
     with TestClient(app, headers=auth_headers) as test_client:
-        mandate_store.MANDATES.clear()
+        mandate_store.mandate_store.clear()
         reset_trail()
         yield test_client
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
     reset_trail()
 
 
@@ -33,8 +33,7 @@ def make_mandate() -> dict:
             "max_uses": 3,
             "conditions": [{"type": "price_below", "value": 150.00}],
         },
-        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
-        # (antes: "firma-de-prueba", que solo pasaba por el fail-open de /verify).
+        # 3.5: lo firma el titular (signed_poster, como el navegador).
     }
 
 
@@ -67,8 +66,8 @@ def live_state(client: TestClient) -> dict:
     return client.get(f"/mandates/{MANDATE_ID}").json()["live_state"]
 
 
-def test_human_approves_escalation_updates_state_and_audit(client):
-    client.post("/mandates", json=make_mandate())
+def test_human_approves_escalation_updates_state_and_audit(client, signed_poster):
+    signed_poster.create(make_mandate())
     escalate_attempt(client, amount=300.0)
     assert live_state(client)["uses_count"] == 0  # la escalación no tocó nada
 
@@ -92,8 +91,8 @@ def test_human_approves_escalation_updates_state_and_audit(client):
     assert "APROBADA" in override["summary"]
 
 
-def test_human_declines_no_state_change(client):
-    client.post("/mandates", json=make_mandate())
+def test_human_declines_no_state_change(client, signed_poster):
+    signed_poster.create(make_mandate())
     escalate_attempt(client)
 
     response = review(client, "decline")
@@ -108,9 +107,9 @@ def test_human_declines_no_state_change(client):
     assert "RECHAZADA" in override["summary"]
 
 
-def test_cannot_approve_on_revoked_mandate(client):
+def test_cannot_approve_on_revoked_mandate(client, signed_poster):
     """Revocado después de escalar: la revisión humana no puede pasar por encima."""
-    client.post("/mandates", json=make_mandate())
+    signed_poster.create(make_mandate())
     escalate_attempt(client)
     client.post(f"/mandates/{MANDATE_ID}/revoke")
 
@@ -123,15 +122,15 @@ def test_cannot_approve_on_revoked_mandate(client):
     assert not any(e["type"].startswith("human_override") for e in get_trail_events())
 
 
-def test_unknown_attempt_id_is_clean_404(client):
-    client.post("/mandates", json=make_mandate())
+def test_unknown_attempt_id_is_clean_404(client, signed_poster):
+    signed_poster.create(make_mandate())
     response = review(client, "approve", attempt_id="att_no_existe")
     assert response.status_code == 404
     assert "intento" in response.json()["detail"]
 
 
-def test_cannot_review_twice(client):
-    client.post("/mandates", json=make_mandate())
+def test_cannot_review_twice(client, signed_poster):
+    signed_poster.create(make_mandate())
     escalate_attempt(client)
     assert review(client, "approve").status_code == 200
     second = review(client, "decline")
@@ -139,9 +138,9 @@ def test_cannot_review_twice(client):
     assert live_state(client)["uses_count"] == 1  # el segundo intento no tocó nada
 
 
-def test_cannot_review_an_approved_attempt(client):
+def test_cannot_review_an_approved_attempt(client, signed_poster):
     """Solo lo escalado admite revisión — un APPROVE normal no se 're-aprueba'."""
-    client.post("/mandates", json=make_mandate())
+    signed_poster.create(make_mandate())
     result = client.post("/verify", json={
         "attempt_id": "att_ok_1",
         "mandate_id": MANDATE_ID,
@@ -155,8 +154,8 @@ def test_cannot_review_an_approved_attempt(client):
     assert review(client, "approve", attempt_id="att_ok_1").status_code == 409
 
 
-def test_invalid_body_is_422(client):
-    client.post("/mandates", json=make_mandate())
+def test_invalid_body_is_422(client, signed_poster):
+    signed_poster.create(make_mandate())
     assert review(client, "quizas").status_code == 422
     response = client.post(
         f"/mandates/{MANDATE_ID}/approve_escalation", json={"decision": "approve"}

@@ -2,7 +2,8 @@ import json
 
 from fastapi.testclient import TestClient
 from api.main import app
-from core import merchant_search
+from core import merchant_search, owner_keys
+from tests.conftest import KeyRegistrar, SignedMandatePoster
 
 client = TestClient(app)
 
@@ -22,10 +23,15 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
-    # 2. Create mandate (dict format expected by team endpoints)
+    # 2. Create mandate: desde el 3.5 lo firma el titular con su llave registrada
+    # (mismo flujo que el navegador: tests/conftest.py SignedMandatePoster).
+    owner_keys.clear()
+    poster = SignedMandatePoster(client, KeyRegistrar(client, monkeypatch))
     mandate_payload = {
         "mandate_id": "mandate_test_001",
-        "human_id": "marta",
+        "human": {"id": "marta", "display_name": "Marta"},
+        "agent": {"id": "agt_saturday"},
+        "search_fields": SEARCH_FIELDS,
         "constraints": {
             "max_amount_per_purchase": 150.0,
             "allowed_categories": ["travel.flights"],
@@ -37,8 +43,8 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
         }
     }
     # Crear mandato exige token de persona: el dueño sale de ahí (api/security.py).
-    resp = client.post("/mandates", json=mandate_payload, headers=auth_headers)
-    assert resp.status_code == 201
+    resp = poster.post(mandate_payload, headers=auth_headers)
+    assert resp.status_code == 201, resp.text
 
     # 3. Get flights
     resp = client.get("/merchant/flights")

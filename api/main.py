@@ -1,28 +1,28 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+from datetime import datetime, timezone
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from shared.schemas import (
     Mandate,
-    CreateMandateRequest,
     RevokeMandateRequest,
     ExecutePurchaseRequest,
     CatalogItem,
 )
-from mandate.issue import create_mandate
 from mandate.sign import generate_keypair
 from core.mandate_store import (
     mandate_store,
-    create_mandate as store_create_mandate,
+    seal_seed_mandate,
+    create_human_signed_mandate,
     get_mandate as store_get_mandate,
     revoke_mandate as store_revoke_mandate,
     reset_mandate,
@@ -36,12 +36,16 @@ from api.security import (
     require_human_principal,
     require_mandate_access,
     require_principal,
-    require_service,
 )
 from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
-from mandate.adversarial_tests import run_adversarial_suite
+from core.signed_mandates import (
+    SignedMandateError,
+    build_signed_mandate,
+    missing_signature_detail,
+    parse_signed_body,
+)
 
 startup_logger = logging.getLogger("agentbuyer.startup")
 
@@ -62,7 +66,7 @@ def load_seed_mandates():
                     # No trae firma: al crearlo, el servidor lo SELLA con una llave
                     # Ed25519 real (sello de sistema/legado, verificable en /verify).
                     # Un placeholder de texto ya no pasaría: la verificación es fail-closed.
-                    store_create_mandate(m, owner_email=(m.get("human") or {}).get("email"))
+                    seal_seed_mandate(m, owner_email=(m.get("human") or {}).get("email"))
                 except Exception:
                     pass
 
@@ -118,16 +122,20 @@ app.add_middleware(
     expose_headers=["Retry-After"],
 )
 
-# Key storage for demo
-_key_registry: Dict[str, Dict[str, str]] = {}
+# Llaves del AGENTE, del lado del servidor (P-02). El agente es un servicio de la
+# plataforma, no una persona: su llave identifica a ese servicio y es correcto que la
+# guarde el servidor. Las llaves de las PERSONAS no viven aquí: cada titular firma en
+# su dispositivo con una llave no extraíble (3.1-3.4) y el servidor solo guarda su
+# pubkey (core/owner_keys). Antes este registro también guardaba llaves "humanas"
+# indexadas por un human_id del cliente: eso se retiró con POST /mandates/create.
+_agent_key_registry: Dict[str, Dict[str, str]] = {}
 
 
-def _get_or_create_keys(entity_id: str) -> Dict[str, str]:
-
-    if entity_id not in _key_registry:
+def _get_or_create_agent_keys(agent_id: str) -> Dict[str, str]:
+    if agent_id not in _agent_key_registry:
         priv, pub = generate_keypair()
-        _key_registry[entity_id] = {"priv": priv, "pub": pub}
-    return _key_registry[entity_id]
+        _agent_key_registry[agent_id] = {"priv": priv, "pub": pub}
+    return _agent_key_registry[agent_id]
 
 
 @app.get("/")
@@ -181,64 +189,52 @@ def api_send_ticket_notification(payload: TicketSendRequest, principal: Principa
 
 
 # Mandate Endpoints
-@app.post("/mandates/create", response_model=Mandate)
-def api_create_mandate(req: CreateMandateRequest, principal: Principal = Depends(require_principal)):
-    h_keys = _get_or_create_keys(req.human_id)
-    a_keys = _get_or_create_keys("agent_marta")
-
-    mandate = create_mandate(
-        human_id=req.human_id,
-        human_privkey=h_keys["priv"],
-        human_pubkey=h_keys["pub"],
-        agent_id="agent_marta",
-        agent_pubkey=a_keys["pub"],
-        max_amount_per_tx=req.max_amount_per_tx,
-        monthly_budget=req.monthly_budget,
-        allowed_categories=req.allowed_categories,
-        allowed_merchants=req.allowed_merchants,
-        conditions_expression=req.conditions_expression,
-        currency=req.currency,
-        max_executions_per_month=req.max_executions_per_month,
-        allow_hitl_escalation=req.allow_hitl_escalation,
-        validity_days=req.validity_days,
-        masked_card=req.masked_card,
-        bank_issuer=req.bank_issuer,
-    )
-    mandate_store.save_mandate(mandate, owner_email=owner_email_for(principal))
-    return mandate
-
-
+# (POST /mandates/create se retiró en el 3.5, P-02: firmaba con llaves "humanas" que
+# guardaba el servidor. Hoy el único alta es POST /mandates, firmado por el titular.)
 @app.post("/mandates", status_code=status.HTTP_201_CREATED)
-def create_mandate_endpoint(
-    mandate: dict[str, Any],
+async def create_mandate_endpoint(
+    request: Request,
     principal: Principal = Depends(require_human_principal),
 ):
-    """Crea un mandato firmado y establece su estado vivo inicial.
+    """Crea un mandato FIRMADO por su titular y establece su estado vivo inicial.
 
-    Exige token de persona (user/admin): quien lo crea queda como su dueño."""
-    mandate_id = mandate.get("mandate_id")
-    if not isinstance(mandate_id, str) or not mandate_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="El campo mandate_id es obligatorio y debe ser un texto no vacío.",
-        )
+    Desde el 3.5 es el único camino: el cuerpo trae el formato del 3.2 (key_id + nonce
+    + created_at + signature) firmado con la llave registrada del dispositivo, y se
+    verifica antes de guardar (kind=human). El servidor ya no firma por nadie:
+    sin firma → 422; firma o llave que no valen → 403 (core/signed_mandates.py).
 
+    Exige token de persona (user/admin): quien lo crea queda como su dueño, y el
+    dueño sale del token, nunca del cuerpo."""
+    raw = await request.body()
     try:
-        # Dueño derivado del token, NUNCA del cuerpo: un owner_email que venga en
-        # `mandate` se guarda como un dato más del cliente, sin ningún efecto.
-        record = store_create_mandate(mandate, owner_email=owner_email_for(principal))
-        append_entry(
-            {
-                "type": "mandate_created",
-                "mandate_id": mandate_id,
-                "summary": f"Mandato creado para {mandate.get('human', {}).get('display_name', 'la persona autorizante')}.",
-            }
+        # Los montos como Decimal: lo firmado no puede pasar por float.
+        body = parse_signed_body(raw)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="The body must be valid JSON.") from None
+    missing = missing_signature_detail(body)
+    if missing is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=missing)
+
+    owner_email = owner_email_for(principal)
+    try:
+        mandate, signer, nonce = build_signed_mandate(body, owner_email)
+    except SignedMandateError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from None
+    try:
+        record = create_human_signed_mandate(
+            mandate, signer, owner_email, nonce,
+            created_at=datetime.strptime(mandate["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc),
         )
-        return record
     except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(error)
-        ) from error
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    append_entry(
+        {
+            "type": "mandate_created",
+            "mandate_id": mandate["mandate_id"],
+            "summary": f"Mandato firmado por el titular creado para {mandate.get('human', {}).get('display_name', 'la persona autorizante')}.",
+        }
+    )
+    return record
 
 
 @app.get("/mandates", response_model=List[Mandate])
@@ -324,7 +320,7 @@ def api_execute_purchase(req: ExecutePurchaseRequest, principal: Principal = Dep
     if not item:
         raise HTTPException(status_code=404, detail="Item not found in catalog")
 
-    a_keys = _get_or_create_keys(req.agent_id)
+    a_keys = _get_or_create_agent_keys(req.agent_id)
     agent = PurchasingAgent(req.agent_id, a_keys["priv"], a_keys["pub"])
 
     attempt, result = agent.attempt_purchase(
@@ -444,14 +440,9 @@ def api_verify_audit_integrity():
 # nativo del modelo API/React). core/dispute.py sigue sirviendo al flujo adversarial.
 
 
-# Adversarial Suite Runner
-@app.post("/adversarial/run")
-def api_run_adversarial(principal: Principal = Depends(require_service)):
-    success = run_adversarial_suite()
-    return {
-        "success": success,
-        "message": "All 8 attack vectors evaluated." if success else "Some attacks breached perimeter.",
-    }
+# (POST /adversarial/run se retiró en el 3.5: creaba mandatos sellados por el servidor
+# en el registro VIVO. Los ataques a la firma son ahora regresión permanente en CI:
+# tests/test_mandate_signature_attacks.py.)
 
 
 # Include modular routers

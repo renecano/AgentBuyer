@@ -32,7 +32,8 @@ type SearchFields = {
 };
 
 type MandateRecord = {
-  mandate: { mandate_id: string; human?: { name?: string }; agent?: { id?: string }; constraints?: Constraints; search_fields?: SearchFields };
+  // key_id: solo en mandatos firmados por el titular con la llave de su dispositivo (3.4).
+  mandate: { mandate_id: string; human?: { name?: string }; agent?: { id?: string }; constraints?: Constraints; search_fields?: SearchFields; key_id?: string };
   live_state: LiveState;
 };
 
@@ -649,6 +650,11 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             <div>
               <p className="panel-eyebrow">ACTIVE MANDATE · {mandate?.mandate.human?.name ?? "MARTA"}</p>
               <h2>{mandate?.mandate.mandate_id ?? mandateId}</h2>
+              {/* Quién firmó, sin adornos: la llave del dispositivo del titular, o el
+                  sello del servidor (que NO es una firma del titular). */}
+              {mandate && (mandate.mandate.key_id
+                ? <p className="signer-badge signer-human">✓ Signed on this device · {mandate.mandate.key_id.slice(0, 12)}…</p>
+                : <p className="signer-badge signer-seal">Sealed by the server — not your signature</p>)}
             </div>
             <span className={`status-pill status-${status}`}>{statusLabel}</span>
           </div>

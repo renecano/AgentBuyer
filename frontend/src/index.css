@@ -249,6 +249,17 @@ button { font: inherit; }
 .session-banner button { border: 0; border-radius: .35rem; background: transparent; color: #FFB84D; font-size: .8rem; line-height: 1; cursor: pointer; padding: .25rem .35rem; }
 .session-banner button:hover { background: rgba(255,184,77,.16); }
 .verify-hint-tip { color: #3DDC97; }
+.consent-option { display: flex; align-items: flex-start; gap: .55rem; font-size: .74rem; cursor: pointer; }
+.consent-option input { margin-top: .15rem; width: auto; accent-color: #3DDC97; }
+.consent-option span { display: grid; gap: .15rem; }
+.signer-badge { margin: .35rem 0 0; font-size: .7rem; font-weight: 600; letter-spacing: .02em; }
+.signer-human { color: #3DDC97; }
+.signer-seal { color: #FFB84D; }
+.device-key-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; max-height: 14rem; overflow-y: auto; }
+.device-key-list li { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .4rem .55rem; border: 1px solid #232D45; border-radius: .45rem; background: rgba(10, 14, 26, .5); }
+.device-key-list li > span { display: grid; gap: .1rem; min-width: 0; }
+.device-key-list b { color: #E8ECF5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; font-weight: 600; overflow-wrap: anywhere; }
+.device-key-list small { color: #8A94AD; font-size: .62rem; }
 .verify-tabs { display: flex; gap: .35rem; padding: .25rem; border-radius: .6rem; border: 1px solid #232D45; background: rgba(10, 14, 26, .5); width: fit-content; }
 .verify-tab { border: 1px solid transparent; background: transparent; color: #8A94AD; border-radius: .45rem; padding: .35rem .7rem; font-family: "Space Grotesk", sans-serif; font-size: .68rem; font-weight: 700; cursor: pointer; }
 .verify-tab:hover { color: #E8ECF5; }

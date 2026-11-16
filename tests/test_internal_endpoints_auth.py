@@ -4,22 +4,32 @@
 - service (require_service):   header X-Service-Key contra SERVICE_API_KEY.
 
 401 = no autenticado; 403 = autenticado sin el rol. El efecto nunca ocurre sin
-la credencial correcta."""
+la credencial correcta.
+
+3.5: se retiraron POST /mandates/create (P-02) y POST /adversarial/run (creaba
+mandatos sellados por el servidor en el registro vivo). Este era el único endpoint
+de producto con identidad `service`; hasta que /verify lo sea (4.2, P-03), la
+mecánica de require_service se prueba contra una ruta de prueba (SERVICE_PROBE) que
+solo depende de ella y no aparece en el esquema OpenAPI."""
 import jwt
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
 
 import api.auth as auth_api
-import api.main as api_main
 import core.notifications as notifications
 from api.main import app
 from audit.log import get_trail_events, reset_trail
 from core.auth_config import MIN_SERVICE_KEY_BYTES, ServiceKeyConfigError, service_api_keys
 from core.auth_tokens import ISSUER, create_access_token
+from api.security import Principal, require_service
 from core.email_otp import EmailOtpService
 from tests.conftest import TEST_ADMIN_EMAIL, TEST_JWT_SECRET, TEST_SERVICE_KEY
 
 USER, ADMIN, SERVICE = "user", "admin", "service"
+
+# Ruta de prueba con identidad service (ver docstring del módulo).
+SERVICE_PROBE = "/__tests__/service-probe"
 
 # (método, ruta concreta) → (body, rol exigido). Bodies vacíos o inválidos a
 # propósito: la autorización debe rechazar ANTES de validar el body (401/403, no 422).
@@ -28,12 +38,11 @@ ENDPOINTS = {
     ("POST", "/notifications/send-ticket"): ({}, ADMIN),
     ("POST", "/purchases/att_x/approve-exception"): ({}, ADMIN),
     ("GET", "/mandates"): (None, USER),
-    ("POST", "/mandates/create"): ({}, USER),
     ("POST", "/mandates/mnd_x/pause"): (None, USER),
     ("POST", "/mandates/mnd_x/resume"): (None, USER),
     ("GET", "/mandates/mnd_x/activity"): (None, USER),
     ("POST", "/purchases/execute"): ({}, USER),
-    ("POST", "/adversarial/run"): (None, SERVICE),
+    ("POST", SERVICE_PROBE): (None, SERVICE),
     ("GET", "/disputes"): (None, USER),
     ("POST", "/merchant/search"): ({}, USER),
 }
@@ -45,6 +54,21 @@ SERVICE_ENDPOINTS = {key: value for key, value in ENDPOINTS.items() if value[1] 
 
 def ids(endpoints):
     return [f"{method} {path}" for method, path in endpoints]
+
+
+@pytest.fixture(autouse=True)
+def service_probe():
+    """Monta SERVICE_PROBE (solo require_service) durante el test; devuelve los sujetos
+    que la atravesaron, para comprobar que el efecto solo ocurre con la key correcta."""
+    calls: list[str] = []
+
+    def probe(principal: Principal = Depends(require_service)):
+        calls.append(principal.subject)
+        return {"ok": True}
+
+    app.add_api_route(SERVICE_PROBE, probe, methods=["POST"], include_in_schema=False)
+    yield calls
+    app.router.routes[:] = [route for route in app.router.routes if getattr(route, "path", None) != SERVICE_PROBE]
 
 
 @pytest.fixture()
@@ -136,7 +160,7 @@ def test_forged_admin_claim_is_401_not_403(client, admin_headers):
 # ── Credenciales que no se mezclan ──────────────────────────────────────────
 
 def test_admin_jwt_does_not_open_service_endpoint(client, admin_headers, service_headers):
-    response = client.post("/adversarial/run", headers=admin_headers)
+    response = client.post(SERVICE_PROBE, headers=admin_headers)
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "X-Service-Key"
 
@@ -149,7 +173,7 @@ def test_service_key_does_not_open_bearer_endpoints(client, service_headers):
 def test_service_endpoint_fails_closed_without_configured_key(client, monkeypatch, caplog):
     monkeypatch.delenv("SERVICE_API_KEY", raising=False)
     with caplog.at_level("WARNING", logger="api.security"):
-        response = client.post("/adversarial/run", headers={"X-Service-Key": "anything"})
+        response = client.post(SERVICE_PROBE, headers={"X-Service-Key": "anything"})
     assert response.status_code == 401
     assert "SERVICE_API_KEY" in caplog.text
 
@@ -208,28 +232,29 @@ def test_approve_exception_requires_admin(client, auth_headers, admin_headers):
     assert [event["attempt_id"] for event in approvals()] == ["att_forged"]
 
 
-def test_adversarial_run_requires_service_key(client, monkeypatch, auth_headers, service_headers):
-    runs = []
-    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: runs.append(1) or True)
+def test_service_identity_requires_service_key(client, service_probe, auth_headers, service_headers):
+    assert client.post(SERVICE_PROBE).status_code == 401
+    assert client.post(SERVICE_PROBE, headers=auth_headers).status_code == 401  # un JWT no es una key
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": "wrong-key"}).status_code == 401
+    assert service_probe == []  # el efecto no ocurrió
 
-    assert client.post("/adversarial/run").status_code == 401
-    assert client.post("/adversarial/run", headers=auth_headers).status_code == 401  # un JWT no es una key
-    assert client.post("/adversarial/run", headers={"X-Service-Key": "wrong-key"}).status_code == 401
-    assert runs == []  # la suite no se ejecutó
-
-    response = client.post("/adversarial/run", headers=service_headers)
+    response = client.post(SERVICE_PROBE, headers=service_headers)
     assert response.status_code == 200
-    assert response.json()["success"] is True
-    assert runs == [1]
+    assert service_probe == ["service"]
+
+
+def test_retired_routes_are_gone(client, auth_headers, service_headers):
+    """3.5: POST /mandates/create (P-02) y POST /adversarial/run ya no existen."""
+    assert client.post("/mandates/create", json={}, headers=auth_headers).status_code in (404, 405)
+    assert client.post("/adversarial/run", headers=service_headers).status_code in (404, 405)
 
 
 def test_service_key_rotation_accepts_any_configured_key(client, monkeypatch):
-    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: True)
     monkeypatch.setenv("SERVICE_API_KEY", "old-service-key-0123456789, new-service-key-0123456789")
 
-    assert client.post("/adversarial/run", headers={"X-Service-Key": "old-service-key-0123456789"}).status_code == 200
-    assert client.post("/adversarial/run", headers={"X-Service-Key": "new-service-key-0123456789"}).status_code == 200
-    assert client.post("/adversarial/run", headers={"X-Service-Key": "retired-key"}).status_code == 401
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": "old-service-key-0123456789"}).status_code == 200
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": "new-service-key-0123456789"}).status_code == 200
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": "retired-key"}).status_code == 401
 
 
 def test_admin_can_also_use_user_endpoints(client, admin_headers):
@@ -303,17 +328,19 @@ EXPECTED_SECURITY = {
     # Registro de llaves públicas: el dueño sale del token (require_principal).
     ("POST", "/keys"): "bearer",
     ("GET", "/keys"): "bearer",
+    # Prueba de posesión: step-up OTP al email del token y challenge (sesión + OTP).
+    ("POST", "/keys/step-up/start"): "bearer",
+    ("POST", "/keys/challenge"): "bearer",
+    ("DELETE", "/keys/{key_id}"): "bearer",
     ("POST", "/notifications/send-ticket"): "bearer",
     ("POST", "/purchases/{purchase_id}/approve-exception"): "bearer",
     ("GET", "/mandates"): "bearer",
-    ("POST", "/mandates/create"): "bearer",
     ("POST", "/mandates/{mandate_id}/pause"): "bearer",
     ("POST", "/mandates/{mandate_id}/resume"): "bearer",
     ("GET", "/mandates/{mandate_id}/activity"): "bearer",
     ("POST", "/purchases/execute"): "bearer",
     ("GET", "/disputes"): "bearer",
     ("POST", "/merchant/search"): "bearer",
-    ("POST", "/adversarial/run"): "service_key",
 }
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):
@@ -385,33 +412,28 @@ def test_short_service_key_is_rejected_as_invalid_config(monkeypatch, caplog):
     assert "SERVICE_API_KEY" in caplog.text and str(MIN_SERVICE_KEY_BYTES) in caplog.text
 
 
-def test_short_service_key_set_after_startup_fails_closed(client, monkeypatch):
+def test_short_service_key_set_after_startup_fails_closed(client, service_probe, monkeypatch):
     """Config cambiada en caliente a una key débil: nunca se acepta (401, no 500)."""
-    runs = []
-    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: runs.append(1) or True)
     monkeypatch.setenv("SERVICE_API_KEY", "short-key")
 
-    assert client.post("/adversarial/run", headers={"X-Service-Key": "short-key"}).status_code == 401
-    assert runs == []
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": "short-key"}).status_code == 401
+    assert service_probe == []
 
 
 def test_service_key_of_minimum_length_works(client, monkeypatch):
     key = "k" * MIN_SERVICE_KEY_BYTES
-    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: True)
     monkeypatch.setenv("SERVICE_API_KEY", key)
 
     assert service_api_keys() == [key.encode()]
-    assert client.post("/adversarial/run", headers={"X-Service-Key": key}).status_code == 200
+    assert client.post(SERVICE_PROBE, headers={"X-Service-Key": key}).status_code == 200
 
 
-def test_app_starts_without_service_key_and_service_endpoint_is_closed(monkeypatch):
+def test_app_starts_without_service_key_and_service_endpoint_is_closed(monkeypatch, service_probe):
     monkeypatch.delenv("SERVICE_API_KEY", raising=False)
-    runs = []
-    monkeypatch.setattr(api_main, "run_adversarial_suite", lambda: runs.append(1) or True)
 
     with TestClient(app) as started_client:  # arranca sin error
         assert started_client.get("/health").status_code == 200
-        response = started_client.post("/adversarial/run", headers={"X-Service-Key": "any-key-at-all-0123456789"})
+        response = started_client.post(SERVICE_PROBE, headers={"X-Service-Key": "any-key-at-all-0123456789"})
 
     assert response.status_code == 401
-    assert runs == []
+    assert service_probe == []

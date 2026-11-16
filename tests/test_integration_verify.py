@@ -14,11 +14,16 @@ from fastapi.testclient import TestClient
 
 from audit.log import get_trail_events, reset_trail
 from api.main import app
-from core import mandate_store
+from core import mandate_store, owner_keys
 from mandate.sign import generate_keypair, sign_payload
 
 ENGINE_RULES = {"amount", "category", "merchant", "uses", "condition.price_below"}
-SECURITY_RULES = {"signature", "agent_identity", "status"}
+# 3.3/3.5 (cambio deliberado): un mandato firmado por el titular suma, en este orden,
+# la vigencia de su llave (P-01 a), el binding del payment_token y la moneda firmada.
+SECURITY_ORDER = ["signature", "signing_key_active", "payment_token_binding", "agent_identity", "status", "currency"]
+SECURITY_RULES = set(SECURITY_ORDER)
+# Y después del engine, el consentimiento a comprar sin la persona presente (D-16).
+CONSENT_RULE = "off_session_consent"
 
 
 @pytest.fixture()
@@ -27,10 +32,12 @@ def client(auth_headers):
     # después para que cada test empiece con memoria vacía y estado propio.
     # Autenticado como usuario real: crear mandatos exige token (POST /mandates).
     with TestClient(app, headers=auth_headers) as test_client:
-        mandate_store.MANDATES.clear()
+        mandate_store.mandate_store.clear()
+        owner_keys.clear()
         reset_trail()
         yield test_client
-    mandate_store.MANDATES.clear()
+    mandate_store.mandate_store.clear()
+    owner_keys.clear()
     reset_trail()
 
 
@@ -46,8 +53,7 @@ def make_mandate(mandate_id: str = "mnd_test_001", **overrides) -> dict:
             "max_uses": 3,
             "conditions": [{"type": "price_below", "value": 150.00}],
         },
-        # Sin "signature": el servidor sella el mandato con Ed25519 REAL al crearlo
-        # (antes: "firma-de-prueba", que solo pasaba por el fail-open de /verify).
+        # 3.5: lo firma el titular (helper signed_poster, como el navegador).
     }
     mandate.update(overrides)
     return mandate
@@ -75,9 +81,9 @@ def make_attempt(
     }
 
 
-def create_mandate(client: TestClient, mandate: dict) -> None:
-    response = client.post("/mandates", json=mandate)
-    assert response.status_code == 201, response.text
+def create_mandate(poster, mandate: dict) -> None:
+    """Crea el mandato FIRMADO por el titular (tests/conftest.py: SignedMandatePoster)."""
+    poster.create(mandate)
 
 
 def rules_of(result: dict) -> list[str]:
@@ -86,8 +92,8 @@ def rules_of(result: dict) -> list[str]:
 
 # ── Camino feliz ─────────────────────────────────────────────────────────────
 
-def test_approve_runs_security_then_engine_and_updates_state(client):
-    create_mandate(client, make_mandate())
+def test_approve_runs_security_then_engine_and_updates_state(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     response = client.post("/verify", json=make_attempt())
     result = response.json()
 
@@ -95,8 +101,9 @@ def test_approve_runs_security_then_engine_and_updates_state(client):
     assert result["verdict"] == "APPROVE"
     # Seguridad primero, engine después — y todas las reglas presentes.
     rules = rules_of(result)
-    assert rules[:3] == ["signature", "agent_identity", "status"]
-    assert set(rules[3:]) == ENGINE_RULES
+    assert rules[:len(SECURITY_ORDER)] == SECURITY_ORDER
+    assert set(rules[len(SECURITY_ORDER):-1]) == ENGINE_RULES
+    assert rules[-1] == CONSENT_RULE
 
     # El estado vivo se actualizó tras aprobar.
     live_state = client.get("/mandates/mnd_test_001").json()["live_state"]
@@ -104,8 +111,8 @@ def test_approve_runs_security_then_engine_and_updates_state(client):
     assert live_state["amount_spent"] == 130.0
 
 
-def test_uses_exhaust_after_three_approvals(client):
-    create_mandate(client, make_mandate())
+def test_uses_exhaust_after_three_approvals(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     for n in range(3):
         result = client.post(
             "/verify", json=make_attempt(attempt_id=f"att_{n}")
@@ -120,8 +127,8 @@ def test_uses_exhaust_after_three_approvals(client):
     assert client.get("/mandates/mnd_test_001").json()["live_state"]["uses_count"] == 3
 
 
-def test_escalate_does_not_touch_live_state(client):
-    create_mandate(client, make_mandate())
+def test_escalate_does_not_touch_live_state(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     result = client.post("/verify", json=make_attempt(amount=300.0)).json()
 
     assert result["verdict"] == "ESCALATE"
@@ -132,9 +139,9 @@ def test_escalate_does_not_touch_live_state(client):
 
 # ── Seguridad primero: el engine ni se entera ────────────────────────────────
 
-def test_revoked_mandate_rejects_before_engine(client):
+def test_revoked_mandate_rejects_before_engine(client, signed_poster):
     """El trial by fire: revocar y la SIGUIENTE compra muere en status."""
-    create_mandate(client, make_mandate())
+    create_mandate(signed_poster, make_mandate())
     assert client.post("/verify", json=make_attempt()).json()["verdict"] == "APPROVE"
 
     assert client.post("/mandates/mnd_test_001/revoke").status_code == 200
@@ -147,8 +154,8 @@ def test_revoked_mandate_rejects_before_engine(client):
     assert not ENGINE_RULES.intersection(rules)
 
 
-def test_wrong_agent_rejects(client):
-    create_mandate(client, make_mandate())
+def test_wrong_agent_rejects(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     result = client.post(
         "/verify", json=make_attempt(agent_id="agt_impostor")
     ).json()
@@ -158,12 +165,13 @@ def test_wrong_agent_rejects(client):
     assert not ENGINE_RULES.intersection(rules_of(result))
 
 
-def test_missing_signature_rejects(client):
-    create_mandate(client, make_mandate(signature=""))
-    result = client.post("/verify", json=make_attempt()).json()
-    assert result["verdict"] == "REJECT"
-    failed = {c["rule"] for c in result["checks"] if not c["pass"]}
-    assert failed == {"signature"}
+def test_mandate_without_cardholder_signature_is_not_created(client):
+    """3.5 (cambio deliberado): antes un mandato con signature="" se creaba y /verify lo
+    rechazaba. Ahora ni se crea: sin firma del titular, POST /mandates da 422."""
+    response = client.post("/mandates", json=make_mandate(signature=""))
+    assert response.status_code == 422
+    assert "cardholder signature is required" in response.json()["detail"]
+    assert "mnd_test_001" not in mandate_store.MANDATES
 
 
 def test_unknown_mandate_rejects(client):
@@ -176,18 +184,18 @@ def test_unknown_mandate_rejects(client):
 
 # ── Contratos del endpoint ───────────────────────────────────────────────────
 
-def test_non_dict_purchase_is_422_before_engine(client):
-    create_mandate(client, make_mandate())
+def test_non_dict_purchase_is_422_before_engine(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     attempt = make_attempt()
     attempt["purchase"] = "no-soy-un-dict"
     response = client.post("/verify", json=attempt)
     assert response.status_code == 422
 
 
-def test_engine_escalation_reports_engine_checks_alongside_security(client):
+def test_engine_escalation_reports_engine_checks_alongside_security(client, signed_poster):
     """En un ESCALATE la respuesta combina los checks de seguridad (pass)
     con los del engine — el trail completo para el humano que decide."""
-    create_mandate(client, make_mandate())
+    create_mandate(signed_poster, make_mandate())
     result = client.post("/verify", json=make_attempt(category="hotel")).json()
 
     assert result["verdict"] == "ESCALATE"
@@ -197,8 +205,8 @@ def test_engine_escalation_reports_engine_checks_alongside_security(client):
     assert by_rule["category"] is False
 
 
-def test_verification_events_are_recorded(client):
-    create_mandate(client, make_mandate())
+def test_verification_events_are_recorded(client, signed_poster):
+    create_mandate(signed_poster, make_mandate())
     client.post("/verify", json=make_attempt())
     client.post("/verify", json=make_attempt(amount=300.0, attempt_id="att_2"))
 
@@ -225,106 +233,73 @@ def test_seed_mandate_loads_on_startup(active_seed, seed_owner_headers):
     reset_trail()
 
 
-# ── Mandato firmado por el servidor (payload del wizard con login OTP) ──────
+# ── Mandato firmado por el titular (payload del wizard desde el 3.4) ────────
 
-def test_server_signed_mandate_passes_real_ed25519_verification(client):
-    """El wizard ya no envía firma: el servidor firma con Ed25519 al crear.
-    Ese mandato debe pasar la verificación criptográfica REAL de /verify, y
-    alterar las constraints firmadas debe romperla."""
-    mandate = make_mandate(mandate_id="mnd_server_signed")
-    assert "signature" not in mandate  # el servidor firma
-    create_mandate(client, mandate)
+def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, signed_poster):
+    """3.5: el servidor ya no firma por el usuario. El titular firma con la llave de su
+    dispositivo; /verify reconstruye el mensaje y lo verifica, y alterar las
+    constraints guardadas rompe la verificación."""
+    create_mandate(signed_poster, make_mandate(mandate_id="mnd_signed"))
 
-    approved = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_1")).json()
+    approved = client.post("/verify", json=make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_1")).json()
     signature_check = next(check for check in approved["checks"] if check["rule"] == "signature")
     assert approved["verdict"] == "APPROVE"
-    assert signature_check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
+    assert signature_check == {"rule": "signature", "pass": True,
+                               "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
 
-    mandate_store.MANDATES["mnd_server_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
-    tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_server_signed", attempt_id="att_signed_2")).json()
+    mandate_store.MANDATES["mnd_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
+    tampered = client.post("/verify", json=make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
     assert tampered["verdict"] == "REJECT"
     assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False
 
 
-# ── Firma FAIL-CLOSED: el check pasa SOLO con Ed25519 verificada de verdad ──
+# ── Firmas legadas: ya no crean mandatos (3.5) ──────────────────────────────
 #
 # Antes /verify daba pass=True a una firma sin llave pública, o de menos de 64
-# caracteres ("Firma presente y estructurada."), y la rama except también
-# aprobaba. Estos casos congelan que eso ya no ocurre.
+# caracteres ("Firma presente y estructurada."). Después (2.x-3.4) esas firmas se
+# rechazaban en /verify. Desde el 3.5 ni siquiera crean el mandato: el único alta es
+# la firma del titular con su llave registrada. Estos casos lo congelan.
 
-def signature_result(client, mandate: dict) -> tuple[str, dict]:
-    create_mandate(client, mandate)
-    result = client.post("/verify", json=make_attempt(mandate_id=mandate["mandate_id"])).json()
-    return result["verdict"], next(check for check in result["checks"] if check["rule"] == "signature")
-
-
-def client_signed(mandate_id: str, signing_priv: str, declared_pub: str) -> dict:
-    """Mandato firmado por el CLIENTE: su pubkey y su firma Ed25519 sobre constraints."""
+def client_signed(mandate_id: str, signing_priv: str, declared_pub) -> dict:
+    """Mandato firmado por el CLIENTE con una llave propia NO registrada (camino legado)."""
     mandate = make_mandate(mandate_id=mandate_id)
     mandate["human_pubkey"] = declared_pub
     mandate["signature"] = sign_payload(signing_priv, mandate["constraints"])
     return mandate
 
 
-@pytest.mark.parametrize(
-    "signature",
-    ["x", "firma-de-prueba", "test-signature-placeholder", "ab" * 64],
-    ids=["one-char", "placeholder", "seed-placeholder", "128-hex-garbage"],
-)
-def test_signature_without_public_key_is_rejected(client, signature):
-    """Sin llave con la que verificar, ninguna firma pasa: ni corta ni con forma de Ed25519."""
-    verdict, check = signature_result(client, make_mandate(mandate_id="mnd_nopub", signature=signature))
-
-    assert verdict == "REJECT"
-    assert check == {"rule": "signature", "pass": False, "detail": "Firma digital inválida."}
-
-
-def test_garbage_signature_with_a_real_public_key_is_rejected(client):
-    _, pub = generate_keypair()
-    mandate = make_mandate(mandate_id="mnd_garbage", human_pubkey=pub, signature="ab" * 64)
-
-    verdict, check = signature_result(client, mandate)
-    assert verdict == "REJECT" and check["pass"] is False
-
-
-def test_client_signature_with_its_own_key_is_approved(client):
-    """Una firma Ed25519 real hecha por el cliente, con su propia llave, verifica."""
+def legacy_cases():
     priv, pub = generate_keypair()
-    verdict, check = signature_result(client, client_signed("mnd_client_ok", priv, pub))
-
-    assert verdict == "APPROVE"
-    assert check == {"rule": "signature", "pass": True, "detail": "Firma digital Ed25519 válida."}
-
-
-def test_public_key_of_one_key_and_signature_of_another_is_rejected(client):
-    _, pub = generate_keypair()
     other_priv, _ = generate_keypair()
-    verdict, check = signature_result(client, client_signed("mnd_mismatch", other_priv, pub))
-
-    assert verdict == "REJECT" and check["pass"] is False
-
-
-@pytest.mark.parametrize("bad_pubkey", ["zz" * 32, "ab" * 10, 12345], ids=["non-hex", "short", "not-a-string"])
-def test_malformed_public_key_fails_closed(client, bad_pubkey):
-    """Una llave pública que ni siquiera se puede cargar no es 'firma presente': es REJECT."""
-    priv, _ = generate_keypair()
-    verdict, check = signature_result(client, client_signed("mnd_badpub", priv, bad_pubkey))
-
-    assert verdict == "REJECT" and check["pass"] is False
+    return {
+        "one-char": make_mandate(mandate_id="mnd_l1", signature="x"),
+        "placeholder": make_mandate(mandate_id="mnd_l2", signature="firma-de-prueba"),
+        "128-hex-garbage": make_mandate(mandate_id="mnd_l3", signature="ab" * 64),
+        "garbage-with-real-pubkey": make_mandate(mandate_id="mnd_l4", human_pubkey=pub, signature="ab" * 64),
+        "own-unregistered-key": client_signed("mnd_l5", priv, pub),
+        "pubkey-of-another-key": client_signed("mnd_l6", other_priv, pub),
+        "malformed-pubkey": client_signed("mnd_l7", priv, "zz" * 32),
+        "non-string-signature": make_mandate(mandate_id="mnd_l8", human_pubkey=pub, signature={"sig": "x"}),
+    }
 
 
-def test_non_string_signature_is_rejected(client):
-    _, pub = generate_keypair()
-    verdict, check = signature_result(
-        client, make_mandate(mandate_id="mnd_sig_obj", human_pubkey=pub, signature={"sig": "x"})
-    )
-    assert verdict == "REJECT" and check["pass"] is False
+@pytest.mark.parametrize("case", sorted(legacy_cases()))
+def test_legacy_client_signature_no_longer_creates_a_mandate(client, case):
+    """Incluida una firma Ed25519 REAL con la llave propia del cliente: sin llave
+    registrada del titular no prueba quién firmó, así que no autoriza nada."""
+    mandate = legacy_cases()[case]
+    response = client.post("/mandates", json=mandate)
+    assert response.status_code == 422
+    assert mandate["mandate_id"] not in mandate_store.MANDATES
 
 
-def test_no_signature_check_ever_passes_without_verifying(client):
+def test_no_signature_check_ever_passes_without_verifying(client, signed_poster):
     """Ninguna respuesta de /verify vuelve a decir 'presente y estructurada/verificada'
-    (los textos de las ramas que aprobaban sin verificar)."""
+    (los textos de las ramas que aprobaban sin verificar), ni con una firma alterada."""
+    create_mandate(signed_poster, make_mandate(mandate_id="mnd_text"))
     for index, signature in enumerate(["x", "ab" * 64]):
-        _, check = signature_result(client, make_mandate(mandate_id=f"mnd_text_{index}", signature=signature))
+        mandate_store.MANDATES["mnd_text"]["mandate"]["signature"] = signature
+        result = client.post("/verify", json=make_attempt(mandate_id="mnd_text", attempt_id=f"att_text_{index}")).json()
+        check = next(item for item in result["checks"] if item["rule"] == "signature")
+        assert result["verdict"] == "REJECT" and check["pass"] is False
         assert check["detail"] not in {"Firma presente y estructurada.", "Firma presente y verificada."}
-
