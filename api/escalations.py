@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.security import Principal, require_mandate_access
 from audit.log import append_entry, get_trail_events
-from core.mandate_store import apply_approved_purchase, get_mandate
+from core.mandate_store import apply_approved_purchase, get_mandate, get_mandate_signer
+from core.signed_mandates import KIND_HUMAN, verify_signing_key_active
 
 
 router = APIRouter()
@@ -87,6 +88,15 @@ def approve_escalation(
                 f"El mandato está {live_status}: una revisión humana no puede "
                 "aprobar compras sobre un mandato que ya no es válido."
             ),
+        )
+
+    # P-01 (a): si la llave que firmó el mandato fue revocada, lo firmado ya no
+    # autoriza nada; tampoco una aprobación humana sobre él (4.1).
+    signer = get_mandate_signer(mandate_id)
+    if signer is not None and signer.get("kind") == KIND_HUMAN and not verify_signing_key_active(signer)[0]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La llave que firmó el mandato fue revocada: una revisión humana no puede aprobar compras sobre él.",
         )
 
     escalation_reason = {

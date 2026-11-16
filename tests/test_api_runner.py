@@ -53,7 +53,7 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
     assert len(flights) > 0
 
     # 4. Run agent (descubrimiento web real, mockeado arriba)
-    resp = client.post("/agent/run", json={"mandate_id": "mandate_test_001", "search_fields": SEARCH_FIELDS})
+    resp = client.post("/agent/run", json={"mandate_id": "mandate_test_001", "search_fields": SEARCH_FIELDS}, headers=auth_headers)
     assert resp.status_code == 200
     agent_res = resp.json()
     assert "attempt" in agent_res
@@ -64,7 +64,7 @@ def test_full_pipeline_headless(monkeypatch, auth_headers):
     assert resp.status_code == 200
 
     # 6. Run agent after revocation -> Must fail immediately
-    resp2 = client.post("/agent/run", json={"mandate_id": "mandate_test_001", "search_fields": SEARCH_FIELDS})
+    resp2 = client.post("/agent/run", json={"mandate_id": "mandate_test_001", "search_fields": SEARCH_FIELDS}, headers=auth_headers)
     assert resp2.status_code == 200
     agent_res2 = resp2.json()
     assert agent_res2["purchase_completed"] is False

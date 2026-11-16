@@ -604,7 +604,8 @@ def searches(monkeypatch) -> list:
 def test_agent_run_con_search_fields_distintos_da_422(signer, client, searches):
     body = signer.create()
     response = client.post("/agent/run", json={"mandate_id": body["mandate_id"],
-                                               "search_fields": {"origin": "MEX", "destination": "BOG", "departure_date": "2026-12-05"}})
+                                               "search_fields": {"origin": "MEX", "destination": "BOG", "departure_date": "2026-12-05"}},
+                           headers=signer.headers)
     assert response.status_code == 422
     assert searches == []  # ni siquiera buscó
 
@@ -613,10 +614,10 @@ def test_agent_run_usa_lo_firmado(signer, client, searches):
     body = signer.create()
     signed_fields = MANDATES[body["mandate_id"]]["mandate"]["search_fields"]
 
-    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"]}).status_code == 200
+    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"]}, headers=signer.headers).status_code == 200
     # Los mismos campos con otra grafía (espacios) son los mismos tras normalizar.
     same = {key: f" {value} " for key, value in signed_fields.items()}
-    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"], "search_fields": same}).status_code == 200
+    assert client.post("/agent/run", json={"mandate_id": body["mandate_id"], "search_fields": same}, headers=signer.headers).status_code == 200
     assert searches == [signed_fields, signed_fields]
 
 

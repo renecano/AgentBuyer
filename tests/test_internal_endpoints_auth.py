@@ -341,17 +341,19 @@ EXPECTED_SECURITY = {
     ("POST", "/purchases/execute"): "bearer",
     ("GET", "/disputes"): "bearer",
     ("POST", "/merchant/search"): "bearer",
+    # 4.1: las rutas de React que seguían abiertas exigen sesión (P-04, P-05).
+    ("POST", "/agent/run"): "bearer",
+    ("GET", "/audit"): "bearer",
+    ("POST", "/disputes/file"): "bearer",
+    ("POST", "/audit/reset"): "bearer",  # utilidad de desarrollo: admin + AUTH_DEV_MODE
 }
 
 # Endpoints que el frontend React llama hoy SIN credencial (frontend/src):
 # protegerlos rompería la UI hasta que el frontend envíe el header.
 # Los de por-mandato ya NO están aquí: exigen token y propiedad (EXPECTED_SECURITY).
+# 4.1: solo queda /verify, que pasa a identidad `service` en el 4.2 (P-03).
 REACT_ROUTES = {
-    ("POST", "/agent/run"),
     ("POST", "/verify"),
-    ("POST", "/audit/reset"),
-    ("GET", "/audit"),
-    ("POST", "/disputes/file"),
 }
 
 

@@ -317,6 +317,17 @@ def resolve_escalation(
     if not mandate:
         return None
 
+    # 4.1: una aprobación humana no revive un mandato que ya no es válido. Si fue
+    # revocado, pausado o venció después de escalar, la compra se rechaza.
+    if approved and mandate.status != MandateStatus.ACTIVE:
+        esc_req.status = "REJECTED"
+        checks = [_check("status_active", False, f"Mandate status is {mandate.status.value}.")]
+        return _decide(
+            esc_req.attempt, mandate.mandate_id, VerificationStatus.REJECTED,
+            f"Mandate is {mandate.status.value}: a human review cannot approve purchases on it.", checks, now_iso,
+            event_type=EventType.HITL_REJECTED, escalation_id=escalation_id,
+        )
+
     attempt = esc_req.attempt
     checks = [_check("hitl_approval", approved, note or ("Approved by cardholder." if approved else "Rejected by cardholder."))]
 

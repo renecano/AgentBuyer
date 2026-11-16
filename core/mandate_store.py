@@ -66,6 +66,15 @@ def _sealed_signer(public_key: Optional[str], sealed_bytes: Optional[bytes], kin
     }
 
 
+def mandate_ids_owned_by(owner_email: Optional[str]) -> set:
+    """Ids de los mandatos cuyo dueño es `owner_email` (vacío si no hay dueño)."""
+    owner = _normalize_owner(owner_email)
+    if owner is None:
+        return set()
+    with mandate_store._lock:
+        return {mandate_id for mandate_id, holder in MANDATE_OWNERS.items() if holder == owner}
+
+
 def get_mandate_owner(mandate_id: str) -> Optional[str]:
     """Email del dueño del mandato, o None si no tiene dueño registrado (o no existe)."""
     with mandate_store._lock:

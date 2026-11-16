@@ -44,34 +44,28 @@ René pidió que Claude Code ejecute el plan completo por su cuenta: hacer los c
 
 ## 1. Dónde estamos
 
+> Actualizado en modo autónomo (16 nov 2026). El detalle paso a paso está en la bitácora (sección 18).
+
 | | |
 |---|---|
-| Rama activa | `fase-3-firma-cliente` (sincronizada con origin, árbol limpio) |
-| Último commit | `095d1cf` — registro de llave exige prueba de posesión + `DELETE /keys` |
-| Tests | 488 pytest + 71 Vitest, todo verde |
-| `main` | hasta `86e2f29` (Pasos 0 y 1 de la Fase 3) |
+| Rama activa | `fase-4-rutas` (desde `main` en `06df819`) |
+| `main` | `06df819` — merge de la Fase 3 (PR #1), CI verde |
+| Tests | 799 pytest + 240 Vitest al cerrar el 4.1 |
 
 **Hecho:**
 
-- **Fase 1 — Cimiento.** Un solo pipeline confiable por debajo; auditoría con cadena hash como única fuente (adaptador para React); estado vivo unificado; demo `static/index.html` y código muerto fuera; red de tests de contrato de React.
-- **Fase 2 — Autenticación y autorización.** OTP de email endurecido (TTL, uso único, HMAC en tiempo constante, rate limit); JWT HS256 (lista cerrada de algoritmos, `JWT_SECRET` obligatorio salvo `AUTH_DEV_MODE`, la app no arranca mal configurada); tres identidades `user`/`admin`/`service`; dueño del mandato derivado del token; `assert_can_access_mandate` en los endpoints por mandato; frontend con login real, cliente HTTP central, sesión en memoria, 401 → login; todo el teatro de seguridad del wizard eliminado; dependencias fijadas y CI reproducible.
-- **Fase 3 (en curso) — Firma del humano.**
-  - Paso 0: verificador de firmas fail-closed (el bypass `signature: "x"` está cerrado y congelado como regresión).
-  - Paso 1: registro de llaves públicas por dueño (`OWNER_KEYS`, unicidad global, tope de 10, revocación terminal).
-  - 2.0: canonicalización compartida JS/Python (RFC 8785 con desviaciones documentadas, vectores + fuzz + mutación).
-  - 2.1–2.2: keystore Ed25519 **no extraíble** en IndexedDB.
-  - 2.3: `POST /keys/step-up/start` + `POST /keys/challenge` (step-up con OTP fresco; el challenge *es* la prueba).
-  - 2.4: `POST /keys` exige prueba de posesión; squatting cerrado (4 vectores probados); `DELETE /keys/{key_id}`.
+- **Fase 1 — Cimiento** y **Fase 2 — Autenticación y autorización** (ver historial de `main`).
+- **Fase 3 — Firma del humano** (merge `06df819`, resumen en `docs/pr/fase-3.md`): el titular firma cada mandato en su dispositivo con una llave Ed25519 no extraíble registrada con prueba de posesión; el servidor ya no firma por nadie; revocar una llave deja sin efecto lo firmado (P-01 a); `POST /mandates/create` y `POST /adversarial/run` retirados.
+- **Fase 4 (en curso):** 4.1 — `/agent/run`, `GET /audit`, `/disputes/file`, `GET /disputes` exigen sesión y propiedad (P-04); cuota por usuario en `/agent/run`; `/audit/reset` solo como utilidad de desarrollo (P-05).
 
-**Lo que sigue abierto, comprobado en el repo hoy:**
+**Lo que sigue abierto, comprobado en el repo:**
 
-- El navegador todavía no enrola su llave ni firma nada; el servidor sigue firmando los mandatos.
-- `POST /mandates/create` firma con llaves guardadas en el servidor e indexadas por un `human_id` que manda el cliente (`api/main.py:122-130, 184-187`).
-- Cinco rutas que usa React siguen **sin autenticación**: `POST /agent/run`, `POST /verify`, `GET /audit`, `POST /audit/reset` (registrada dos veces) y `POST /disputes/file`.
-- Motor de decisión: montos ≤ 0 aceptados, categoría por substring (`engine/evaluator.py:49`), `monthly_budget` sin aplicar, TOCTOU de `max_uses`.
-- Webhooks sin verificación de firma; 43 `print` en lugar de logging; cuatro clientes LLM con modelos distintos (`gpt-5.6`, `gpt-4o`, `gpt-4o-mini`, `gpt-4.1-mini`).
-- Todo el estado vive en memoria.
-- README y `docs/` describen el proyecto del hackathon (enlazan al repo de anapaolaoviedo, prometen "Zero Raw Card Exposure", "Merkle", "Trial by Fire"). No hay `LICENSE`.
+- `POST /verify` sigue anónimo (4.2, P-03); `GET /audit/verify` también (expone el número de bloques).
+- Motor de decisión: montos ≤ 0 aceptados, categoría por substring (`engine/evaluator.py:49`), `monthly_budget` sin aplicar, TOCTOU de `max_uses` (Fase 5).
+- Webhooks sin verificación de firma; `print` en lugar de logging; cuatro clientes LLM distintos; el texto del agente dice "real search" aunque la búsqueda esté simulada (Fases 5 y 7).
+- Todo el estado vive en memoria (Fase 6).
+- Línea estricta (`core/verify.py`, `/purchases/execute`, `mandate/issue.py`, `mandate/adversarial_tests.py`) sin alta por endpoint desde el 3.5: legado a retirar en el 7.2 (P-08).
+- README y `docs/` describen el proyecto del hackathon; no hay `LICENSE` (Fase 12, P-14).
 
 ---
 
@@ -909,4 +903,5 @@ René: tag `v1.0.0` con notas de release, descripción y topics del repo en GitH
 | 2026-11-16 | Verificación del 3.3 (navegador) | `46e2f38` | 756 / 215 | Chromium headless: el wizard crea y compra igual (APPROVE); el check de firma dice "system seal". CI de la rama vía PR #1 (borrador): verde |
 | 2026-11-16 | 3.4 El wizard firma el mandato | `58734f0` | 756 / 239 | Navegador (TZ America/Mexico_City): sin dispositivo no avanza; registrar → confirmar muestra "Nov 30, 2026, 11:59:59 PM CST (America/Mexico_City)" → "Signed on this device" → compra APPROVE con "cardholder signature"; otro email en el mismo navegador pide otra llave; la demo guiada enrola y firma sola en dev. Decisiones: montos como texto tecleado; off_session_consent elegible (por defecto sí); helper MandateSigner en conftest. Contrato de React: el alta congela el payload firmado (kind=human). 8 mutaciones detectadas (una pedía un caso DST nuevo: Sydney) |
 | 2026-11-16 | 3.5 Exigir la firma humana | `9d51047` | 783 / 240 | POST /mandates sin firma → 422; el servidor ya no firma por usuarios; kind=system_seal solo para el seed (token emitido por el servidor y atado al hash); fuera legacy_client. P-01 (a): check signing_key_active en ambas líneas; DELETE /keys devuelve mandates_affected (la tarjeta lo muestra). P-02: fuera POST /mandates/create y las llaves humanas (_agent_key_registry para el agente). Decisión propia: también se retiró POST /adversarial/run (creaba mandatos sellados en el registro vivo, prohibido por el punto 1); la mecánica de require_service se prueba con una ruta de prueba hasta el 4.2. Sondeo permanente tests/test_mandate_signature_attacks.py (27). 12 archivos de tests migrados al helper que firma como el cliente. 8 mutaciones detectadas (3 pidieron tests nuevos). Navegador: el flujo manual y la demo siguen creando y comprando con firma del titular |
-| 2026-11-16 | 3.6 Cierre de la Fase 3 | (este commit) | 783 / 240 | docs/pr/fase-3.md (garantías con su test, cambios de contrato, migraciones, límites). Navegador, recorrido completo (TZ America/Mexico_City): login → registrar dispositivo → firmar → compra APPROVED ("cardholder signature") → revocar → compra REJECTED ("mandate revoked") → Audit con 18 eventos y GET /audit/verify valid=True; sin errores de consola. Pendientes vistos: la vista Audit muestra eventos de todos los usuarios (P-04, 4.1); GET /audit/verify es anónimo; el texto del agente dice "real search" aunque la búsqueda esté simulada (5.3); título de Mission Control en español (7.3) |
+| 2026-11-16 | 3.6 Cierre de la Fase 3 | `65ff63c` (merge `06df819`) | 783 / 240 | docs/pr/fase-3.md (garantías con su test, cambios de contrato, migraciones, límites). Navegador, recorrido completo (TZ America/Mexico_City): login → registrar dispositivo → firmar → compra APPROVED ("cardholder signature") → revocar → compra REJECTED ("mandate revoked") → Audit con 18 eventos y GET /audit/verify valid=True; sin errores de consola. Pendientes vistos: la vista Audit muestra eventos de todos los usuarios (P-04, 4.1); GET /audit/verify es anónimo; el texto del agente dice "real search" aunque la búsqueda esté simulada (5.3); título de Mission Control en español (7.3) |
+| 2026-11-16 | 4.1 Rutas de React con sesión y propiedad | (este commit) | 799 / 240 | /agent/run: dueño + cuota por usuario (20 cada 24 h, P-16; 429 + Retry-After; un 422 previo a buscar devuelve el uso). GET /audit: lo propio, admin todo (P-04). /disputes/file: dueño, el intento debe ser de ese mandato (cerraba un fraude de reembolso), evidencia sin eventos ajenos. GET /disputes: lo propio (decisión propia, misma regla que P-04). /audit/reset: admin + AUTH_DEV_MODE, si no 404; ruta duplicada fuera (P-05). Escalaciones: 409 también si la llave que firmó fue revocada; la línea estricta rechaza aprobar sobre mandatos no activos. get_trail_for filtra por attempt_id. React deja de llamar /audit/reset; la vista Audit dice "Your permissions' record" a un usuario. Contrato de React: +3 tests (las rutas exigen el token). 13 mutaciones detectadas. Navegador: flujo completo y demo guiada OK |

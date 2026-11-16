@@ -633,12 +633,8 @@ export default function MandateCreator({ onCreated, onDemoCreated }: MandateCrea
     setWizardDemoStage("preparing");
 
     try {
-      try {
-        await withTimeout(request<unknown>("/audit/reset", { method: "POST" }));
-      } catch (caught) {
-        if (caught instanceof ApiError) throw new Error("The audit session could not be reset.");
-        throw caught;
-      }
+      // Ya no se borra el ledger al empezar (P-05: es append-only y su reset solo
+      // existe como utilidad de desarrollo para admin): el historial se conserva.
       loadMartaDemoValues();
       setCurrentStep(1);
       await waitForNarration();

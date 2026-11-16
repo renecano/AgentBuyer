@@ -37,7 +37,7 @@ from api.security import (
     require_mandate_access,
     require_principal,
 )
-from audit.log import audit_ledger, append_entry, get_trail_for, reset_trail
+from audit.log import audit_ledger, append_entry, get_trail_for
 from core.auth_config import ServiceKeyConfigError, validate_service_key_config
 from core.auth_tokens import TokenConfigError, validate_token_config
 from core.signed_mandates import (
@@ -422,11 +422,8 @@ def api_webhook_travel_provider(payload: dict):
     return {"received": True, "pnr": pnr, "status": status_str}
 
 
-# Audit Trail Router
-@app.post("/audit/reset")
-def api_reset_audit_trail():
-    """Abre una sesión de auditoría limpia al reiniciar/iniciar una demo."""
-    return reset_trail()
+# Audit Trail Router (POST /audit/reset vive SOLO en api/audit.py desde el 4.1: era
+# una ruta registrada dos veces, y ahora es una utilidad de desarrollo, P-05.)
 
 
 @app.get("/audit/verify")

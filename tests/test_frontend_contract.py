@@ -424,6 +424,21 @@ def test_mandate_audit_trail_shape(client, web_offers):
     assert all(event["mandate_id"] == SEED_MANDATE_ID for event in events)
 
 
+# ── 4.1: las llamadas de React van con el token de la sesión ────────────────
+
+@pytest.mark.parametrize("method, path, body", [
+    ("POST", "/agent/run", {"mandate_id": SEED_MANDATE_ID}),
+    ("GET", "/audit", None),
+    ("POST", "/disputes/file", {"attempt_id": "att_x", "mandate_id": SEED_MANDATE_ID}),
+])
+def test_react_routes_require_the_session_token(client, method, path, body):
+    """Cambio deliberado de contrato (4.1): /agent/run, GET /audit y /disputes/file
+    eran anónimas; ahora exigen el token que React ya envía en todas sus llamadas
+    (lib/api.ts lo adjunta solo). Sin él, 401 → la UI vuelve al login."""
+    response = TestClient(app).request(method, path, json=body)
+    assert response.status_code == 401
+
+
 # ── POST /disputes/file ──────────────────────────────────────────────────────
 
 def test_dispute_on_completed_purchase_shape(client, web_offers):

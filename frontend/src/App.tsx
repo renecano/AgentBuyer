@@ -327,7 +327,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     setBusy("resetting");
     setError(null);
     try {
-      await request<{ status: string }>("/audit/reset", { method: "POST" });
+      // Solo el estado vivo de este mandato; el ledger es append-only (P-05).
       const record = await request<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" });
       setMandate(record);
       setVerification(null);
@@ -439,8 +439,8 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
     if (demoExecutedActs.current.has(act)) return;
     demoExecutedActs.current.add(act);
     if (act === 1) {
-      const auditReset = await requestWithTimeout<{ status: string }>("/audit/reset", { method: "POST" }, 8000, signal);
-      if (!auditReset || signal?.aborted) return;
+      // El ledger es append-only (P-05): la demo empieza limpia reseteando SOLO el
+      // estado vivo de este mandato (endpoint del dueño); el historial se conserva.
       const record = await requestWithTimeout<MandateRecord>(`/mandates/${mandateId}/reset`, { method: "POST" }, 8000, signal);
       if (record && !signal?.aborted) {
         setMandate(record);
