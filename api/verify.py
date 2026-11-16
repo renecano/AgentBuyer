@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.security import Principal, require_service
 from core.agent_keys import AGENT_SIGNATURE_FIELD, verify_attempt_signature
+from core.merchant_identity import merchant_id_from_url
 from core.money import is_cents
 
 from audit.log import append_entry
@@ -262,6 +263,25 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
                 "Compra rechazada: la firma del agente no es válida.",
             )
 
+    # 2b-bis. Identidad del comercio (5.3): si el intento trae la URL de la oferta, el
+    # comercio presentado debe ser el de ESE dominio. Un comercio que solo "afirma"
+    # el LLM (o una página) no pasa por uno autorizado.
+    offer_view = attempt_purchase.get("purchase", attempt_purchase)
+    offer_url = (offer_view.get("metadata") or {}).get("url") if isinstance(offer_view, dict) else None
+    if offer_url is not None:
+        derived = merchant_id_from_url(offer_url)
+        presented = str(offer_view.get("merchant_id", "")).strip().lower()
+        identity_ok = derived is not None and derived == presented
+        security_checks.append({
+            "rule": "merchant_identity",
+            "pass": identity_ok,
+            "detail": f"{presented} coincide con el dominio de la oferta." if identity_ok
+            else f"El comercio presentado ({presented}) no es el del dominio de la oferta ({derived}).",
+        })
+        if not identity_ok:
+            return finish(mandate_id, attempt_id, "REJECT", security_checks,
+                          "Compra rechazada: el comercio no coincide con la fuente de la oferta.")
+
     # 2b''. Anti-replay (4.2): cada intento trae un nonce único; un intento ya
     # presentado (aprobado o no) no se acepta otra vez.
     nonce = attempt_purchase.get("nonce")
@@ -348,38 +368,28 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
         if not consent and verdict == "APPROVE":
             verdict = "ESCALATE"
 
-    # 4. Auditoría Cognitiva (Detección de Costos Ocultos y Trampas de Letra Chica)
+    # 4. Firewall semántico (5.3): revisa la letra chica de TODA compra que el engine
+    # aprobaría (antes solo si el texto traía ciertas palabras en español, así que la
+    # misma trampa en inglés pasaba). Solo puede BAJAR el veredicto: el LLM nunca
+    # aprueba lo que el código rechazó. ESCALATE escala; REJECT rechaza.
     purchase = attempt_purchase.get("purchase", attempt_purchase)
     item_desc = str(purchase.get("description", purchase.get("item_title", "")))
-    amount_cents = purchase.get("amount_cents")
-
-    if verdict == "APPROVE" and item_desc:
-        constraints = mandate.get("constraints") or mandate.get("scope", {})
-        if any(w in item_desc.lower() for w in ["por fuera", "upgrade automático", "48 horas", "gift card", "crypto"]):
-            # Borde con el firewall/LLM: el prompt habla en UNIDADES (texto para una
-            # persona o un modelo); la decisión del engine ya se tomó en centavos.
-            units_view = {**constraints, "max_amount_per_purchase": constraints.get("max_amount_per_purchase_cents", 0) / 100}
-            audit_res = auditoria_cognitiva_firewall(
-                mandato_constraints=units_view,
-                item_titulo=item_desc,
-                item_descripcion=item_desc,
-                precio_declarado=amount_cents / 100 if is_cents(amount_cents) else 0.0,
-                categoria=str(purchase.get("category", "travel")),
-                metadata=purchase.get("metadata", {}),
-            )
-            if audit_res.get("veredicto") == "REJECT":
-                checks.append({
-                    "rule": "semantic_firewall",
-                    "pass": False,
-                    "detail": audit_res.get("resumen_para_humano", "Hidden fine-print risk detected.")
-                })
-                return finish(
-                    mandate_id,
-                    attempt_id,
-                    "REJECT",
-                    checks,
-                    f"Purchase vetoed by Semantic Firewall: {audit_res.get('resumen_para_humano', 'Hidden fine-print risk detected.')}"
-                )
+    if verdict == "APPROVE":
+        audit_res = auditoria_cognitiva_firewall(
+            mandate_constraints=mandate.get("constraints") or {},
+            title=item_desc,
+            description=item_desc,
+            price_cents=engine_attempt.get("amount_cents"),
+            category=str(purchase.get("category", "")),
+            metadata=purchase.get("metadata", {}),
+        )
+        firewall_verdict = audit_res.get("veredicto")
+        summary = audit_res.get("resumen_para_humano") or "Semantic firewall review."
+        checks.append({"rule": "semantic_firewall", "pass": firewall_verdict == "APPROVE", "detail": summary})
+        if firewall_verdict == "REJECT":
+            return finish(mandate_id, attempt_id, "REJECT", checks, f"Purchase vetoed by Semantic Firewall: {summary}")
+        if firewall_verdict != "APPROVE":  # ESCALATE, o cualquier cosa inesperada: decide la persona
+            verdict = "ESCALATE"
 
     amount_cents = engine_attempt.get("amount_cents")
     if not is_cents(amount_cents):

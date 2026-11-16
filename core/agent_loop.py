@@ -14,7 +14,8 @@ from core.merchant import vuelaya_merchant, VuelaYaMerchant
 from core.mandate_store import get_mandate, get_mandate_signer
 from core.money import format_money, is_cents
 from audit.log import append_entry
-from core.merchant_search import _merchant_slug, search_merchant_offers
+from core.merchant_identity import merchant_id_from_url
+from core.merchant_search import search_merchant_offers
 
 
 class PurchasingAgent:
@@ -135,6 +136,9 @@ def _discover_offers(category_key: str, search_fields: dict | None) -> tuple[lis
             else:
                 label = f"{search_fields.get('origin', '?')}->{search_fields.get('destination', '?')}"
                 taxon = "travel.flights"
+            # 5.3: el comercio de una oferta es el del DOMINIO de su URL, no el nombre
+            # que afirma el LLM ("merchant" se conserva solo para mostrarlo). Una oferta
+            # sin una URL verificable no tiene identidad: se descarta.
             found = [
                 {
                     "id": f"web_{index}",
@@ -144,13 +148,14 @@ def _discover_offers(category_key: str, search_fields: dict | None) -> tuple[lis
                     # Borde (5.1): el precio de la oferta web pasa a centavos exactos.
                     "price_cents": offer["price_cents"],
                     "category": taxon,
-                    "merchant_id": _merchant_slug(offer["merchant"]),
+                    "merchant_id": merchant_id_from_url(offer["url"]),
                     "merchant": offer["merchant"],
                     "details": offer["details"],
                     "url": offer["url"],
                     "source": "web",
                 }
                 for index, offer in enumerate(offers)
+                if merchant_id_from_url(offer["url"]) is not None
             ]
             return found, "web"
     return [], "web"

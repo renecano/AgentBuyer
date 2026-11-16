@@ -108,8 +108,9 @@ def test_approve_runs_security_then_engine_and_updates_state(client, signed_post
     # Seguridad primero, engine después — y todas las reglas presentes.
     rules = rules_of(result)
     assert rules[:len(SECURITY_ORDER)] == SECURITY_ORDER
-    assert set(rules[len(SECURITY_ORDER):-1]) == ENGINE_RULES
-    assert rules[-1] == CONSENT_RULE
+    assert set(rules[len(SECURITY_ORDER):-2]) == ENGINE_RULES
+    # 5.3: tras el consentimiento, el firewall semántico revisa TODA compra aprobable.
+    assert rules[-2:] == [CONSENT_RULE, "semantic_firewall"]
 
     # El estado vivo se actualizó tras aprobar.
     live_state = client.get("/mandates/mnd_test_001").json()["live_state"]
