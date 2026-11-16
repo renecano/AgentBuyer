@@ -24,6 +24,8 @@ from mandate.sign import verify_signature
 from core.mandate_store import (
     mandate_store,
     get_mandate,
+    period_usage,
+    reserve_purchase,
     get_mandate_owner,
     get_mandate_signer,
     apply_approved_purchase,
@@ -503,10 +505,11 @@ def _verify_agent_and_constraints(attempt: PurchaseAttempt, mandate: Mandate, ch
     record = get_mandate(mandate.mandate_id)
     if record is None:
         return reject(mandate.mandate_id, "Mandate not found in live registry.")
+    month = period_usage(mandate.mandate_id)
     authorized, reason, constraint_checks, can_escalate = evaluate_mandate_constraints(
         mandate=mandate,
         attempt=attempt,
-        live_state=record["live_state"],
+        live_state={**record["live_state"], "month_uses": month["uses"], "month_spent_cents": month["spent_cents"]},
     )
     checks.extend(constraint_checks)
 
@@ -532,8 +535,15 @@ def _verify_agent_and_constraints(attempt: PurchaseAttempt, mandate: Mandate, ch
     dispute_token = f"dsp_{uuid.uuid4().hex[:12]}"
     # Borde de la línea estricta (legado): su intento está en unidades (5.1). El
     # engine ya rechazó cualquier monto que no se pueda expresar exacto en centavos.
-    if apply_approved_purchase(mandate.mandate_id, to_cents(attempt.amount, "amount")) is None:
-        return reject(mandate.mandate_id, "Mandate not found in live registry at settlement time.")
+    # 5.2: verificar y consumir en UNA operación atómica (límites del mes incluidos).
+    scope = mandate.scope.model_dump() if mandate.scope is not None else {}
+    lost_rule = reserve_purchase(mandate.mandate_id, to_cents(attempt.amount, "amount"), {
+        "max_executions_per_month": scope.get("max_executions_per_month"),
+        "monthly_budget_cents": to_cents(scope["monthly_budget"], "monthly_budget") if scope.get("monthly_budget") is not None else None,
+    })
+    if lost_rule is not None:
+        checks.append(_check("atomic_reservation", False, f"A concurrent purchase consumed the limit ({lost_rule})."))
+        return reject(mandate.mandate_id, f"Constraint violation at settlement time: {lost_rule}.")
     state_manager.record_attempt(mandate.mandate_id, attempt.nonce)
     result = _decide(
         attempt, mandate.mandate_id, VerificationStatus.APPROVED,

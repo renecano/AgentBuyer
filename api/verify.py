@@ -22,8 +22,9 @@ from core.money import is_cents
 
 from audit.log import append_entry
 from core.mandate_store import (
-    apply_approved_purchase,
     get_mandate,
+    period_usage,
+    reserve_purchase,
     get_mandate_owner,
     get_mandate_signer,
 )
@@ -327,7 +328,10 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="purchase debe ser un objeto.",
         )
-    engine_result = evaluate(mandate, live_state, engine_attempt)
+    # El engine ve también el uso del MES en curso (5.2: presupuesto mensual).
+    month = period_usage(mandate_id)
+    live_view = {**live_state, "month_uses": month["uses"], "month_spent_cents": month["spent_cents"]}
+    engine_result = evaluate(mandate, live_view, engine_attempt)
     verdict = engine_result["verdict"]
     checks = security_checks + engine_result["checks"]
 
@@ -388,8 +392,25 @@ def verify_attempt(attempt_purchase: dict[str, Any], *, scenario: Optional[str] 
             # Un escenario de demostración nunca compra (4.2).
             human_readable = "Escenario de demostración: el mandato lo aprobaría, pero no se realizó ninguna compra."
         else:
-            apply_approved_purchase(mandate_id, amount_cents)
-            human_readable = "Compra aprobada por el mandato."
+            # 5.2: verificar y consumir en UNA operación atómica sobre el estado vivo.
+            # Si otra compra simultánea se llevó el último uso o el presupuesto, esta
+            # no se aprueba: se re-evalúa con el estado fresco (normalmente ESCALATE).
+            constraints_now = mandate.get("constraints") or {}
+            lost_rule = reserve_purchase(mandate_id, amount_cents, constraints_now)
+            if lost_rule is None:
+                human_readable = "Compra aprobada por el mandato."
+            else:
+                fresh = get_mandate(mandate_id) or record
+                month = period_usage(mandate_id)
+                fresh_view = {**fresh["live_state"], "month_uses": month["uses"], "month_spent_cents": month["spent_cents"]}
+                engine_result = evaluate(fresh["mandate"], fresh_view, engine_attempt)
+                verdict = engine_result["verdict"] if engine_result["verdict"] != "APPROVE" else "REJECT"
+                checks = security_checks + engine_result["checks"] + [{
+                    "rule": "atomic_reservation", "pass": False,
+                    "detail": f"Otra compra simultánea consumió el límite ({lost_rule}) antes que esta.",
+                }]
+                human_readable = "La compra requiere aprobación humana." if verdict == "ESCALATE" else "Compra rechazada: el mandato ya no admite esta compra."
+                return finish(mandate_id, attempt_id, verdict, checks, human_readable, amount_cents=amount_cents)
     else:
         human_readable = "La compra requiere aprobación humana."
 

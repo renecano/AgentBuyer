@@ -30,6 +30,15 @@ MANDATE_OWNERS: Dict[str, Optional[str]] = {}
 #               titular). Ningún endpoint lo crea; desaparece con el seed (7.2, P-11).
 MANDATE_SIGNERS: Dict[str, dict] = {}
 
+# Uso del MES calendario en curso (UTC), por mandate_id (5.2): {"month": "YYYY-MM",
+# "uses": int, "spent_cents": int}. Aparte de live_state (la forma que lee React no
+# cambia). live_state.uses_count / amount_spent_cents son TOTALES de por vida (max_uses
+# es de por vida); estos son los del mes, para monthly_budget_cents y para
+# max_executions_per_month (línea estricta). Al cambiar de mes se reinician solos.
+# Por qué UTC: un mandato firmado no declara zona horaria y el servidor no debe
+# adivinarla; el corte es el mismo para todos y es verificable.
+MANDATE_PERIODS: Dict[str, dict] = {}
+
 
 def _utcnow() -> datetime:
     """Reloj del almacén (expiración). Los tests lo sustituyen: sin esperas reales."""
@@ -219,6 +228,7 @@ class MandateStore:
             MANDATES.clear()
             MANDATE_OWNERS.clear()
             MANDATE_SIGNERS.clear()
+            MANDATE_PERIODS.clear()
             from core.signed_mandates import used_nonces
             used_nonces.clear()
 
@@ -360,12 +370,82 @@ def reset_mandate(mandate_id: str) -> dict | None:
         "amount_spent_cents": 0,
         "revoked_at": None,
     }
+    MANDATE_PERIODS.pop(mandate_id, None)
     return get_mandate(mandate_id)
 
 
+def _current_month() -> str:
+    return _utcnow().strftime("%Y-%m")
+
+
+def _period_of(mandate_id: str) -> dict:
+    """Uso del mes en curso (lo reinicia si cambió el mes). Llamar con el lock tomado."""
+    month = _current_month()
+    period = MANDATE_PERIODS.get(mandate_id)
+    if period is None or period["month"] != month:
+        period = {"month": month, "uses": 0, "spent_cents": 0}
+        MANDATE_PERIODS[mandate_id] = period
+    return period
+
+
+def period_usage(mandate_id: str) -> dict:
+    """Copia del uso del mes en curso: {"month", "uses", "spent_cents"}."""
+    with mandate_store._lock:
+        return dict(_period_of(mandate_id))
+
+
+def _reservation_pause() -> None:
+    """Costura para los tests de concurrencia (5.2): no hace nada. Un test la
+    sustituye por una espera para ensanchar la carrera; con el lock no hay carrera."""
+
+
+def reserve_purchase(mandate_id: str, amount_cents: int, constraints: dict) -> Optional[str]:
+    """VERIFICAR Y CONSUMIR en una sola operación atómica (5.2).
+
+    Bajo el lock del almacén vuelve a mirar el estado VIVO (no la foto que evaluó el
+    engine): mandato activo, usos de por vida (max_uses), usos del mes
+    (max_executions_per_month) y presupuesto del mes (monthly_budget_cents). Si todo
+    cabe, consume el uso y el monto y devuelve None; si no, no toca nada y devuelve
+    la regla que lo impidió. Así dos compras simultáneas no pueden superar max_uses
+    ni el presupuesto: la segunda ve el uso de la primera.
+
+    Se llama al FINAL de la verificación, cuando ya nada puede rechazar la compra,
+    así que no hace falta "liberar" una reserva."""
+    from core.money import is_cents
+
+    if not is_cents(amount_cents) or amount_cents <= 0:
+        raise ValueError(f"reserve_purchase exige centavos enteros > 0 (recibido {amount_cents!r}).")
+    with mandate_store._lock:
+        record = MANDATES.get(mandate_id)
+        if record is None:
+            return "mandate_exists"
+        _apply_live_expiry(record)
+        live_state = record["live_state"]
+        if live_state["status"] != "active":
+            return "status"
+        period = _period_of(mandate_id)
+        max_uses = constraints.get("max_uses")
+        if isinstance(max_uses, int) and live_state["uses_count"] >= max_uses:
+            return "uses"
+        monthly_uses = constraints.get("max_executions_per_month")
+        if isinstance(monthly_uses, int) and period["uses"] >= monthly_uses:
+            return "uses"
+        budget = constraints.get("monthly_budget_cents")
+        if is_cents(budget) and period["spent_cents"] + amount_cents > budget:
+            return "monthly_budget"
+        _reservation_pause()
+        live_state["uses_count"] += 1
+        live_state["amount_spent_cents"] += amount_cents
+        period["uses"] += 1
+        period["spent_cents"] += amount_cents
+        return None
+
+
 def apply_approved_purchase(mandate_id: str, amount_cents: int) -> dict | None:
-    """ÚNICO punto que consume un uso y suma gasto, sea cual sea la línea que
-    aprobó la compra (api/verify, api/escalations o core/verify).
+    """Consume un uso y suma gasto SIN re-chequear límites: es el efecto de una
+    APROBACIÓN HUMANA de una escalación (api/escalations, core/verify.resolve_escalation),
+    que autoriza justo lo que el mandato no cubría. Las aprobaciones automáticas usan
+    reserve_purchase (5.2), que verifica y consume en la misma operación atómica.
 
     5.1 (P-09): el gasto es un entero de centavos. Un monto que no lo sea (float,
     negativo, cero, bool) es un error del llamador: se rechaza, no se redondea."""
@@ -380,4 +460,7 @@ def apply_approved_purchase(mandate_id: str, amount_cents: int) -> dict | None:
         live_state = record["live_state"]
         live_state["uses_count"] += 1
         live_state["amount_spent_cents"] += amount_cents
+        period = _period_of(mandate_id)
+        period["uses"] += 1
+        period["spent_cents"] += amount_cents
         return get_mandate(mandate_id)

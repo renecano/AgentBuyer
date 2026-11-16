@@ -68,10 +68,26 @@ def _check_label(rule: str, allowed: List[Any], presented: Any, word: str) -> di
 
 
 def _check_uses(constraints: dict, live_state: dict) -> dict:
-    max_uses = constraints.get("max_uses", constraints.get("max_executions_per_month"))
-    used = live_state.get("uses_count", 0)
-    ok = used < max_uses
-    return {"rule": "uses", "pass": ok, "detail": f"{used}/{max_uses}" if ok else f"usos agotados ({used}/{max_uses})"}
+    """max_uses: usos de POR VIDA (live_state.uses_count). max_executions_per_month
+    (línea estricta): usos del MES en curso (month_uses); si no viene el dato del mes
+    se usa el total, que nunca es menor (fail-closed) (5.2)."""
+    if "max_uses" in constraints:
+        limit, used = constraints["max_uses"], live_state.get("uses_count", 0)
+    else:
+        limit = constraints.get("max_executions_per_month")
+        used = live_state.get("month_uses", live_state.get("uses_count", 0))
+    ok = used < limit
+    return {"rule": "uses", "pass": ok, "detail": f"{used}/{limit}" if ok else f"usos agotados ({used}/{limit})"}
+
+
+def _check_monthly_budget(budget_cents: int, live_state: dict, amount_cents: int) -> dict:
+    """Presupuesto del MES calendario (UTC) en curso (5.2). Sin el dato del mes se usa
+    el gasto total, que nunca es menor (fail-closed)."""
+    spent = live_state.get("month_spent_cents", live_state.get("amount_spent_cents", 0))
+    ok = spent + amount_cents <= budget_cents
+    detail = (f"{format_money(spent + amount_cents)} <= {format_money(budget_cents)} este mes" if ok
+              else f"{format_money(spent)} gastado + {format_money(amount_cents)} supera el presupuesto mensual de {format_money(budget_cents)}")
+    return {"rule": "monthly_budget", "pass": ok, "detail": detail}
 
 
 def _check_price_below(condition: dict, price_cents: Any) -> dict:
@@ -137,6 +153,8 @@ def _evaluate(mandate: dict, live_state: dict, attempt: dict) -> Tuple[str, List
     checks.append(_check_label("merchant", constraints["allowed_merchants"], norm.get("merchant_id"), "permitido"))
     if any(key in constraints for key in ("max_uses", "max_executions_per_month")):
         checks.append(_check_uses(constraints, live_state))
+    if is_cents(constraints.get("monthly_budget_cents")):
+        checks.append(_check_monthly_budget(constraints["monthly_budget_cents"], live_state, amount))
 
     price_cents = (norm.get("metadata") or {}).get("price_cents", amount)
     for condition in conditions:
@@ -154,7 +172,8 @@ def _evaluate(mandate: dict, live_state: dict, attempt: dict) -> Tuple[str, List
     if not failed:
         return "APPROVE", checks, "Todas las restricciones satisfechas"
     names = {"amount": "Monto excede el máximo", "category": "Categoría no permitida",
-             "merchant": "Comercio no permitido", "uses": "Usos agotados"}
+             "merchant": "Comercio no permitido", "uses": "Usos agotados",
+             "monthly_budget": "Presupuesto mensual agotado"}
     reason = (
         "Requiere aprobación humana: falló " + ", ".join(check["rule"] for check in failed)
         + " (" + "; ".join(names.get(check["rule"], check["rule"]) for check in failed) + ")"
@@ -200,6 +219,7 @@ def evaluate_mandate_constraints(mandate, attempt, live_state: dict) -> Tuple[bo
         mandate_dict = {**mandate_dict, "constraints": {
             "currency": scope.get("currency"),
             "max_amount_per_purchase_cents": _cents_or_none(scope.get("max_amount_per_tx")),
+            "monthly_budget_cents": _cents_or_none(scope.get("monthly_budget")),
             "allowed_categories": scope.get("allowed_categories"),
             "allowed_merchants": scope.get("allowed_merchants"),
             "max_executions_per_month": scope.get("max_executions_per_month"),
