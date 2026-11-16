@@ -7,7 +7,7 @@ type AuditEvent = {
   attempt_id?: string; verdict?: "APPROVE" | "ESCALATE" | "REJECT"; summary: string;
 };
 type MandateRecord = {
-  live_state: { status: string; uses_count: number; amount_spent: number };
+  live_state: { status: string; uses_count: number; amount_spent_cents: number };
   mandate: { human?: { id?: string; display_name?: string }; constraints?: { max_uses?: number; currency?: string } };
 };
 type DisputeClaim = {
@@ -20,8 +20,9 @@ function formatDate(timestamp: string) {
   return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp));
 }
 
-function amount(value: number, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
+/** Centavos (5.1) → texto en la moneda, con centavos si los hay. */
+function amount(cents: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(cents / 100);
 }
 
 // Traduce el veredicto forense del árbitro a lenguaje para el titular.
@@ -140,7 +141,7 @@ export default function AccountView({ mandateId }: { mandateId: string }) {
         <div className="verdict-summary" aria-label="Decision summary"><span className="summary-approve">{verdictCounts.approve} approved</span><span className="summary-escalate">{verdictCounts.escalate} need approval</span><span className="summary-reject">{verdictCounts.reject} rejected</span></div>
         <section className="account-summary">
           <div><span>PERMISSION STATUS</span><b className={`account-status account-${status.toLowerCase()}`}>{status}</b></div>
-          <div><span>SPENT SO FAR</span><strong>{amount(mandate?.live_state.amount_spent ?? 0, mandate?.mandate.constraints?.currency)}</strong></div>
+          <div><span>SPENT SO FAR</span><strong>{amount(mandate?.live_state.amount_spent_cents ?? 0, mandate?.mandate.constraints?.currency)}</strong></div>
           <div><span>PURCHASES USED</span><strong>{mandate ? `${mandate.live_state.uses_count}/${mandate.mandate.constraints?.max_uses ?? "—"}` : "—"}</strong></div>
         </section>
         <section className="timeline-panel"><div className="panel-title"><span>SATURDAY'S DECISIONS</span><small>{events.length} EVENTS</small></div>

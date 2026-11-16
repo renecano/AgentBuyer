@@ -410,8 +410,9 @@ def test_semantic_firewall_receives_mandate_limit_from_scope(monkeypatch):
     _, result = agent.attempt_purchase(mandate, vuelaya_merchant.get_item("FLIGHT_MDZ_180"))
 
     assert result.status == VerificationStatus.APPROVED
-    assert seen["mandato_constraints"]["max_amount_per_purchase"] == 200.0
-    assert seen["precio_declarado"] == 180.0
+    # 5.3: la firma del firewall pasó a centavos (5.1): 200.00 de scope → 20000.
+    assert seen["mandate_constraints"]["max_amount_per_purchase_cents"] == 20000
+    assert seen["price_cents"] == 18000
 
 
 # ── Disputas: un "verification" rechazado no prueba autorización ────────────

@@ -113,7 +113,8 @@ def assert_mandate_record(record: dict) -> None:
 
     constraints = mandate["constraints"]
     assert isinstance(constraints, dict)
-    assert _is_number(constraints["max_amount_per_purchase"])
+    # 5.1 (P-09, cambio deliberado): dinero en centavos enteros; React convierte al mostrar.
+    assert _is_int(constraints["max_amount_per_purchase_cents"])
     assert isinstance(constraints["currency"], str)
     assert isinstance(constraints["allowed_categories"], list)
     assert all(isinstance(item, str) for item in constraints["allowed_categories"])
@@ -123,7 +124,7 @@ def assert_mandate_record(record: dict) -> None:
     assert isinstance(constraints["conditions"], list)
     for condition in constraints["conditions"]:
         assert isinstance(condition["type"], str)
-        assert _is_number(condition["value"])
+        assert _is_int(condition["value_cents"])
 
     search_fields = mandate["search_fields"]
     assert isinstance(search_fields, dict)
@@ -136,7 +137,7 @@ def assert_mandate_record(record: dict) -> None:
     assert live_state["status"] == live_state["status"].lower()
     assert live_state["status"] in LIVE_STATUSES
     assert _is_int(live_state["uses_count"])
-    assert _is_number(live_state["amount_spent"])
+    assert _is_int(live_state["amount_spent_cents"])
     assert live_state["revoked_at"] is None or _is_iso_timestamp(live_state["revoked_at"])
 
 
@@ -159,7 +160,7 @@ def assert_flight(flight: dict) -> None:
     """App.tsx `Flight`."""
     assert isinstance(flight["id"], str)
     assert isinstance(flight["route"], str)
-    assert _is_number(flight["price"])
+    assert _is_int(flight["price_cents"])
     assert isinstance(flight["category"], str)
     assert isinstance(flight["merchant_id"], str)
     assert isinstance(flight["merchant"], str)
@@ -196,7 +197,7 @@ def assert_dispute(dispute: dict) -> None:
 
 # ── Helpers de escenario (mismos payloads que envía React) ──────────────────
 
-def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_ID) -> dict:
+def demo_attempt(attempt_id: str, amount_cents: int, mandate_id: str = SEED_MANDATE_ID) -> dict:
     """Intento como lo presenta el comercio/agente a /verify. Desde el 4.2 React ya no
     llama /verify (antes: demoPurchase() en App.tsx); la demo usa /agent/run con un
     escenario. La forma de la respuesta sigue siendo la que React lee en run.verification."""
@@ -207,10 +208,10 @@ def demo_attempt(attempt_id: str, amount: float, mandate_id: str = SEED_MANDATE_
         "purchase": {
             "merchant_id": "mch_vuelaya",
             "category": "travel.flights",
-            "amount": amount,
+            "amount_cents": amount_cents,
             "currency": "USD",
             "description": "Contract test flight",
-            "metadata": {"price": amount, "source": "demo"},
+            "metadata": {"price_cents": amount_cents, "source": "demo"},
         },
     }
 
@@ -238,7 +239,7 @@ def populate_trail(client: TestClient) -> None:
     """Genera los tipos de evento que la UI renderiza: agent_run,
     verification, purchase_completed, DISPUTE_*, revocation."""
     run = run_agent(client)
-    assert verify_as_service(client, demo_attempt("att_contract_escalate", 300.0)).status_code == 200
+    assert verify_as_service(client, demo_attempt("att_contract_escalate", 30000)).status_code == 200
     assert client.post("/disputes/file", json={
         "attempt_id": run["attempt_id"],
         "mandate_id": SEED_MANDATE_ID,
@@ -284,13 +285,13 @@ def test_create_mandate_from_mandate_creator_shape(client, key_registrar, active
     for key in ("mandate_id", "human", "agent", "search_fields", "expires_at", "created_at", "nonce", "key_id", "signature"):
         assert stored[key] == payload[key], key
     # Los montos firmados (texto) quedan como números para el engine actual.
-    assert stored["constraints"]["max_amount_per_purchase"] == 150
-    assert stored["constraints"]["conditions"] == [{"type": "price_below", "value": 150}]
+    assert stored["constraints"]["max_amount_per_purchase_cents"] == 15000
+    assert stored["constraints"]["conditions"] == [{"type": "price_below", "value_cents": 15000}]
     assert stored["constraints"]["off_session_consent"] is True
     assert stored["payment_token"]["token_type"] == "SCOPED_VIRTUAL_TOKEN"
     assert stored["payment_token"]["bound_mandate_id"] == payload["mandate_id"]
     assert stored["payment_token"]["bound_message_hash"] == get_mandate_signer(payload["mandate_id"])["message_hash"]
-    assert record["live_state"] == {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None}
+    assert record["live_state"] == {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None}
 
     # El id del cliente es el que usa Mission Control a continuación (GET /mandates/{id}).
     follow_up = client.get(f"/mandates/{payload['mandate_id']}")
@@ -305,9 +306,13 @@ def test_create_mandate_from_mandate_creator_shape(client, key_registrar, active
 
 # ── POST /mandates/{id}/approve_escalation (App.tsx:336) ────────────────────
 
-EXPENSIVE_OFFERS = [
-    {"merchant": "VuelaYa", "price": 300.0, "currency": "USD",
-     "details": "BUE-COR premium", "url": "https://vuelaya.example/premium"},
+# 5.1 (cambio deliberado): el agente ya no intenta una oferta que no cabe en el
+# tope (antes esta oferta de 300 USD escalaba). La escalación real por el agente es la
+# del comercio fuera del mandato: la oferta cabe en el precio, pero el titular solo
+# autorizó a VuelaYa, así que el guardián le pregunta antes de comprar.
+OFF_MANDATE_OFFERS = [
+    {"merchant": "Despegar", "price": 120.0, "currency": "USD",
+     "details": "BUE-COR directo", "url": "https://despegar.example/1"},
 ]
 
 
@@ -319,7 +324,7 @@ EXPENSIVE_OFFERS = [
 def test_approve_escalation_shape(client, monkeypatch, decision, expected_verdict):
     """Mismo flujo que React: /agent/run escala, y reviewEscalation() envía
     {purchase_attempt_id, decision} esperando la forma `verification`."""
-    monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: json.dumps(EXPENSIVE_OFFERS))
+    monkeypatch.setattr(merchant_search, "_call_web_search", lambda prompt: json.dumps(OFF_MANDATE_OFFERS))
     run = run_agent(client)
     assert run["verification"]["verdict"] == "ESCALATE"  # garantiza que hay algo que revisar
 
@@ -379,9 +384,9 @@ def test_agent_run_without_offers_shape(client):
 @pytest.mark.parametrize(
     "attempt, expected_verdict",
     [
-        (demo_attempt("att_contract_approve", 100.0), "APPROVE"),
-        (demo_attempt("att_contract_escalate", 300.0), "ESCALATE"),
-        (demo_attempt("att_contract_reject", 100.0, mandate_id="mnd_contract_missing"), "REJECT"),
+        (demo_attempt("att_contract_approve", 10000), "APPROVE"),
+        (demo_attempt("att_contract_escalate", 30000), "ESCALATE"),
+        (demo_attempt("att_contract_reject", 10000, mandate_id="mnd_contract_missing"), "REJECT"),
     ],
     ids=["approve", "escalate", "reject"],
 )

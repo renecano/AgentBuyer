@@ -33,7 +33,7 @@ from shared.schemas import MandateStatus, VerificationStatus
 # 4.2 (P-03): /verify es la verificación del comercio/agente: credencial `service`.
 pytestmark = pytest.mark.usefixtures("service_key")
 
-LIVE_STATE_KEYS = {"status", "uses_count", "amount_spent", "revoked_at"}
+LIVE_STATE_KEYS = {"status", "uses_count", "amount_spent_cents", "revoked_at"}  # 5.1: centavos
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +97,7 @@ def test_strict_purchase_is_visible_in_get_mandate(auth_headers):
         live_state = client.get(f"/mandates/{mandate_id}", headers=auth_headers).json()["live_state"]
 
     assert set(live_state) == LIVE_STATE_KEYS
-    assert live_state == {"status": "active", "uses_count": 1, "amount_spent": 130.0, "revoked_at": None}
+    assert live_state == {"status": "active", "uses_count": 1, "amount_spent_cents": 13000, "revoked_at": None}
     assert isinstance(live_state["uses_count"], int) and not isinstance(live_state["uses_count"], bool)
 
 
@@ -107,7 +107,7 @@ def test_strict_approval_counts_exactly_once():
     agent.attempt_purchase(mandate, vuelaya_merchant.get_item("HOTEL_COR_90"))  # categoría fuera → escala, no consume
 
     assert live(mandate.mandate_id)["uses_count"] == 1
-    assert live(mandate.mandate_id)["amount_spent"] == 130.0
+    assert live(mandate.mandate_id)["amount_spent_cents"] == 13000
 
 
 def test_hitl_approval_on_strict_line_updates_live_state():
@@ -120,7 +120,7 @@ def test_hitl_approval_on_strict_line_updates_live_state():
 
     assert resolution.status == VerificationStatus.APPROVED
     assert live(mandate.mandate_id)["uses_count"] == 1
-    assert live(mandate.mandate_id)["amount_spent"] == 300.0
+    assert live(mandate.mandate_id)["amount_spent_cents"] == 30000
 
 
 # ── Una sola verdad para ambos pipelines ────────────────────────────────────
@@ -130,12 +130,12 @@ def test_both_pipelines_consume_and_read_the_same_counters():
     límites de la estricta, y viceversa: no hay dos contadores que diverjan."""
     mandate, agent = strict_mandate(max_executions_per_month=2)
 
-    apply_approved_purchase(mandate.mandate_id, 40.0)  # lo que hacen api/verify y api/escalations
+    apply_approved_purchase(mandate.mandate_id, 4000)  # lo que hacen api/verify y api/escalations (centavos)
     assert live(mandate.mandate_id)["uses_count"] == 1
 
     _, second = agent.attempt_purchase(mandate, vuelaya_merchant.get_item("FLIGHT_COR_130"))
     assert second.status == VerificationStatus.APPROVED
-    assert live(mandate.mandate_id) == {"status": "active", "uses_count": 2, "amount_spent": 170.0, "revoked_at": None}
+    assert live(mandate.mandate_id) == {"status": "active", "uses_count": 2, "amount_spent_cents": 17000, "revoked_at": None}
 
     _, third = agent.attempt_purchase(mandate, vuelaya_merchant.get_item("FLIGHT_COR_130"))
     assert third.authorized is False
@@ -191,7 +191,7 @@ def test_expiry_is_exposed_without_a_prior_strict_read(client, auth_headers, sig
 
     verification = verify_as_service(client, {
         "attempt_id": "att_live_expired", "mandate_id": "mnd_live_expired", "presented_by_agent": "agt_saturday",
-        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
+        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000, "metadata": {"price_cents": 10000}},
     }).json()
     assert verification["verdict"] == "REJECT"
     assert next(check for check in verification["checks"] if check["rule"] == "status")["pass"] is False
@@ -218,7 +218,7 @@ def test_expired_seed_is_still_rejected(monkeypatch, tmp_path):
         verification = verify_as_service(client, {
             "attempt_id": "att_expired_seed", "mandate_id": seed_id,
             "presented_by_agent": seeds[0]["agent"]["id"],
-            "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "metadata": {"price": 100.0}},
+            "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000, "metadata": {"price_cents": 10000}},
         }).json()
         assert verification["verdict"] == "REJECT"
         assert next(check for check in verification["checks"] if check["rule"] == "status")["pass"] is False

@@ -7,7 +7,6 @@ mandato — una persona jamás puede aprobar sobre un mandato revocado/expirado.
 """
 
 from datetime import datetime, timezone
-from numbers import Real
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from api.security import Principal, require_mandate_access
 from audit.log import append_entry, get_trail_events
 from core.mandate_store import apply_approved_purchase, get_mandate, get_mandate_signer
+from core.money import is_cents
 from core.signed_mandates import KIND_HUMAN, verify_signing_key_active
 
 
@@ -105,14 +105,14 @@ def approve_escalation(
     }
 
     if decision == "approve":
-        amount = verification.get("amount")
-        if not isinstance(amount, Real) or isinstance(amount, bool):
+        amount_cents = verification.get("amount_cents")
+        if not is_cents(amount_cents) or amount_cents <= 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="La escalación no registró un monto verificable; no se puede aprobar.",
             )
         # Exactamente el mismo efecto que un APPROVE del flujo normal.
-        apply_approved_purchase(mandate_id, amount)
+        apply_approved_purchase(mandate_id, amount_cents)
         verdict = "APPROVE"
         human_readable = "Compra aprobada por revisión humana tras la escalación."
         append_entry(

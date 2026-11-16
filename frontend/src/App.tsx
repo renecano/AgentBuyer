@@ -11,13 +11,15 @@ import { checkDetailLabel, checkRuleLabel, displayName, localizedText, saturdayS
 type LiveState = {
   status: "active" | "revoked" | "expired";
   uses_count: number;
-  amount_spent: number;
+  amount_spent_cents: number;
   revoked_at: string | null;
 };
 
-type Condition = { type: string; value: number };
+// 5.1 (P-09): el backend manda todo el dinero en CENTAVOS enteros; aquí solo se
+// convierte a dólares para mostrarlo (amount()). Las comparaciones se hacen en centavos.
+type Condition = { type: string; value_cents: number };
 type Constraints = {
-  max_amount_per_purchase?: number;
+  max_amount_per_purchase_cents?: number;
   currency?: string;
   allowed_categories?: string[];
   allowed_merchants?: string[];
@@ -37,7 +39,7 @@ type MandateRecord = {
   live_state: LiveState;
 };
 
-type Flight = { id: string; route: string; price: number; category: string; merchant_id: string; merchant?: string; details?: string; url?: string; source?: "web" };
+type Flight = { id: string; route: string; price_cents: number; category: string; merchant_id: string; merchant?: string; details?: string; url?: string; source?: "web" };
 type Check = { rule: string; pass: boolean; detail: string };
 type Verification = { attempt_id?: string; mandate_id?: string; verdict: "APPROVE" | "ESCALATE" | "REJECT"; checks: Check[]; human_readable?: string };
 type AgentRun = {
@@ -73,8 +75,9 @@ function verdictState(verdict: Verification["verdict"]): SaturdayState {
   return verdict === "APPROVE" ? "approve" : verdict === "ESCALATE" ? "escalate" : "reject";
 }
 
-function amount(value?: number, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value ?? 0);
+/** Centavos → texto en la moneda. Muestra los centavos si los hay: $139.99 no es $140. */
+function amount(cents?: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format((cents ?? 0) / 100);
 }
 
 function wait(milliseconds: number) {
@@ -88,7 +91,7 @@ function merchantName(flight?: Flight | null) {
 
 function toastFor(run: AgentRun, result: Verification): Omit<Toast, "id"> {
   const flight = run.selected_flight;
-  const purchaseAmount = flight?.price;
+  const purchaseAmount = flight?.price_cents;
   const merchant = merchantName(flight);
   if (result.verdict === "APPROVE") return { tone: "approve", message: `💳 Payment approved — ${amount(purchaseAmount)} at ${merchant}` };
   if (result.verdict === "ESCALATE") return { tone: "escalate", message: `⏸ Needs your approval — ${amount(purchaseAmount)} at ${merchant}` };
@@ -144,11 +147,11 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
 
   const constraints = mandate?.mandate.constraints ?? {};
   const priceLimit = useMemo(
-    () => constraints.conditions?.find((condition) => condition.type === "price_below")?.value,
+    () => constraints.conditions?.find((condition) => condition.type === "price_below")?.value_cents,
     [constraints.conditions],
   );
   const evaluationLimit = Math.min(
-    constraints.max_amount_per_purchase ?? Number.POSITIVE_INFINITY,
+    constraints.max_amount_per_purchase_cents ?? Number.POSITIVE_INFINITY,
     priceLimit ?? Number.POSITIVE_INFINITY,
   );
   // El copy se adapta a la categoría del mandato (vuelos u hoteles).
@@ -602,7 +605,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             <span className={`status-pill status-${status}`}>{statusLabel}</span>
           </div>
           <div className="limit-grid">
-            <div><span>MAX PER PURCHASE</span><strong>{amount(constraints.max_amount_per_purchase, constraints.currency)}</strong></div>
+            <div><span>MAX PER PURCHASE</span><strong>{amount(constraints.max_amount_per_purchase_cents, constraints.currency)}</strong></div>
             <div><span>CATEGORY</span><strong>{constraints.allowed_categories?.[0] ? displayName(constraints.allowed_categories[0]) : "—"}</strong></div>
             <div><span>MERCHANT</span><strong>{constraints.allowed_merchants?.[0] ? displayName(constraints.allowed_merchants[0]) : "—"}</strong></div>
             <div><span>USES</span><strong>{mandate ? `${mandate.live_state.uses_count}/${constraints.max_uses ?? "—"}` : "—"}</strong></div>
@@ -640,15 +643,15 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
                   : verdict === "APPROVE"
                     ? { tone: "approve", text: "✓ Approved" }
                     : { tone: "reject", text: "✕ Blocked" };
-              const withinLimit = chosen.price < (priceLimit ?? Number.POSITIVE_INFINITY)
-                && chosen.price <= (constraints.max_amount_per_purchase ?? Number.POSITIVE_INFINITY);
+              const withinLimit = chosen.price_cents < (priceLimit ?? Number.POSITIVE_INFINITY)
+                && chosen.price_cents <= (constraints.max_amount_per_purchase_cents ?? Number.POSITIVE_INFINITY);
               return (
                 <>
                   <motion.article className={`flight-hero ${withinLimit ? "" : "flight-hero-risk"}`} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
                     <p className="hero-kicker">{isHotels ? "SATURDAY PICKED THIS HOTEL FOR YOU" : "SATURDAY PICKED THIS FLIGHT FOR YOU"}</p>
                     <div className="hero-main">
                       <strong className="hero-route">{chosen.route.replace("->", " → ")}</strong>
-                      <strong className="hero-price">{amount(chosen.price)}</strong>
+                      <strong className="hero-price">{amount(chosen.price_cents)}</strong>
                     </div>
                     <p className="hero-merchant">{merchantName(chosen)}{chosen.details ? ` · ${chosen.details}` : ""}</p>
                     <p className="hero-reason">{withinLimit ? "The cheapest option that meets your price condition." : "No option met your limit; it attempted the cheapest one available."}</p>
@@ -660,7 +663,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
                       {others.map((flight) => (
                         <div className="other-option" key={flight.id}>
                           <span>{merchantName(flight)}{flight.details ? ` · ${flight.details}` : ""}</span>
-                          <b>{amount(flight.price)}</b>
+                          <b>{amount(flight.price_cents)}</b>
                         </div>
                       ))}
                     </div>
@@ -673,12 +676,12 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             {(phase === "evaluating" || phase === "choosing" || phase === "verifying") && (
               <div className="flight-list">
                 {flights.map((flight) => {
-                  const passesLimit = flight.price <= (constraints.max_amount_per_purchase ?? Number.POSITIVE_INFINITY)
-                    && flight.price < (priceLimit ?? Number.POSITIVE_INFINITY);
+                  const passesLimit = flight.price_cents <= (constraints.max_amount_per_purchase_cents ?? Number.POSITIVE_INFINITY)
+                    && flight.price_cents < (priceLimit ?? Number.POSITIVE_INFINITY);
                   return (
                     <motion.article className={`flight-card ${passesLimit ? "flight-eligible" : "flight-ineligible"}`} key={flight.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
                       <div><p>{flight.route.replace("->", " → ")}</p><span>{merchantName(flight)}</span><em>{passesLimit ? "within your limit" : `exceeds ${amount(evaluationLimit, constraints.currency)}`}</em></div>
-                      <div className="flight-price"><strong>{amount(flight.price)}</strong></div>
+                      <div className="flight-price"><strong>{amount(flight.price_cents)}</strong></div>
                     </motion.article>
                   );
                 })}
@@ -688,12 +691,12 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
             {phase === "idle" && flights.length > 0 && !activity?.selected_flight && (
               <div className="flight-list">
                 {flights.map((flight) => {
-                  const passesLimit = flight.price <= (constraints.max_amount_per_purchase ?? Number.POSITIVE_INFINITY)
-                    && flight.price < (priceLimit ?? Number.POSITIVE_INFINITY);
+                  const passesLimit = flight.price_cents <= (constraints.max_amount_per_purchase_cents ?? Number.POSITIVE_INFINITY)
+                    && flight.price_cents < (priceLimit ?? Number.POSITIVE_INFINITY);
                   return (
                     <motion.article className={`flight-card ${passesLimit ? "flight-eligible" : "flight-ineligible"}`} key={flight.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
                       <div><p>{flight.route.replace("->", " → ")}</p><span>{merchantName(flight)}</span><em>{passesLimit ? "offer discovered" : `exceeds ${amount(evaluationLimit, constraints.currency)}`}</em></div>
-                      <div className="flight-price"><strong>{amount(flight.price)}</strong></div>
+                      <div className="flight-price"><strong>{amount(flight.price_cents)}</strong></div>
                     </motion.article>
                   );
                 })}
@@ -761,7 +764,7 @@ function MissionControl({ mandateId, onCreateNew, onNavigate, autoStartDemoAt, o
           {activity ? (
             <div className="activity-content">
               <p>{localizedText(activity.human_readable ?? activity.verification?.human_readable ?? "Saturday finished its evaluation.")}</p>
-              {activity.selected_flight && <span>Attempt: <b>{activity.selected_flight.route}</b> · {amount(activity.selected_flight.price)} · {activity.purchase_completed ? "purchase completed" : "purchase did not proceed"}</span>}
+              {activity.selected_flight && <span>Attempt: <b>{activity.selected_flight.route}</b> · {amount(activity.selected_flight.price_cents)} · {activity.purchase_completed ? "purchase completed" : "purchase did not proceed"}</span>}
             </div>
           ) : <p className="empty-copy">{status === "revoked" ? "The mandate was revoked. The agent's next attempt will be recorded here." : "The discovery-and-decision story will appear here."}</p>}
         </section>

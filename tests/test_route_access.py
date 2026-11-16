@@ -70,11 +70,11 @@ def two_users(signed_poster):
     return "mnd_mine", "mnd_theirs"
 
 
-def verify(client, mandate_id: str, attempt_id: str, amount: float = 100.0) -> dict:
+def verify(client, mandate_id: str, attempt_id: str, amount_cents: int = 10000) -> dict:
     return verify_as_service(client, {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
-        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": amount,
-                     "currency": "USD", "metadata": {"price": amount}},
+        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": amount_cents,
+                     "currency": "USD", "metadata": {"price_cents": amount_cents}},
     }).json()
 
 
@@ -217,7 +217,7 @@ def test_audit_reset_is_registered_once(client):
 # ── Escalaciones sobre mandatos que ya no son válidos ───────────────────────
 
 def escalated(client, mandate_id: str) -> str:
-    result = verify(client, mandate_id, "att_big", amount=300.0)
+    result = verify(client, mandate_id, "att_big", amount_cents=30000)
     assert result["verdict"] == "ESCALATE"
     return "att_big"
 

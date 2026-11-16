@@ -57,8 +57,8 @@ def mallory(client, key_registrar) -> MandateSigner:
 def purchase(mandate_id: str, attempt_id: str = "att_attack") -> dict:
     return {
         "attempt_id": attempt_id, "mandate_id": mandate_id, "presented_by_agent": "agt_saturday",
-        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0,
-                     "currency": "USD", "metadata": {"price": 100.0}},
+        "purchase": {"merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000,
+                     "currency": "USD", "metadata": {"price_cents": 10000}},
     }
 
 
@@ -165,7 +165,7 @@ def test_replay_de_una_creacion(client, marta):
 # ── Lo guardado después de firmar ───────────────────────────────────────────
 
 @pytest.mark.parametrize("path, value", [
-    ("constraints.max_amount_per_purchase", 99999),
+    ("constraints.max_amount_per_purchase_cents", 9999900),
     ("constraints.allowed_merchants", ["mch_mallory"]),
     ("constraints.off_session_consent", True),
     ("search_fields.destination", "MIA"),

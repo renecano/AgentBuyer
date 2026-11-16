@@ -109,8 +109,8 @@ def attempt(mandate_id: str, attempt_id: str = "att_1", **purchase) -> dict:
         "mandate_id": mandate_id,
         "presented_by_agent": "agt_saturday",
         "purchase": {
-            "merchant_id": "mch_vuelaya", "category": "travel.flights", "amount": 100.0, "currency": "USD",
-            "metadata": {"price": 100.0}, **purchase,
+            "merchant_id": "mch_vuelaya", "category": "travel.flights", "amount_cents": 10000, "currency": "USD",
+            "metadata": {"price_cents": 10000}, **purchase,
         },
     }
 
@@ -305,7 +305,8 @@ def test_montos_se_leen_como_decimal_no_como_float(signer):
     response = signer.client.post("/mandates", content=raw.encode("utf-8"),
                                   headers={**signer.headers, "Content-Type": "application/json"})
     assert response.status_code == 201, response.text
-    assert response.json()["mandate"]["constraints"]["max_amount_per_purchase"] == 150.1
+    # Se guarda lo firmado, en centavos enteros (5.1): 150.10 → 15010, sin float.
+    assert response.json()["mandate"]["constraints"]["max_amount_per_purchase_cents"] == 15010
 
 
 # ── Ventana de created_at y anti-replay ─────────────────────────────────────
@@ -398,8 +399,8 @@ def test_el_seed_es_el_unico_sello_y_su_token_lo_emite_el_servidor(client, activ
 # ── /verify sobre lo guardado ───────────────────────────────────────────────
 
 TAMPERS = {
-    "max_amount": lambda m: m["constraints"].__setitem__("max_amount_per_purchase", 9999),
-    "price_below": lambda m: m["constraints"]["conditions"][0].__setitem__("value", 9999),
+    "max_amount": lambda m: m["constraints"].__setitem__("max_amount_per_purchase_cents", 999900),
+    "price_below": lambda m: m["constraints"]["conditions"][0].__setitem__("value_cents", 999900),
     "merchants": lambda m: m["constraints"]["allowed_merchants"].append("mch_otro"),
     "categories": lambda m: m["constraints"]["allowed_categories"].append("travel.hotels"),
     "max_uses": lambda m: m["constraints"].__setitem__("max_uses", 99),
@@ -461,7 +462,7 @@ def test_cambiar_lo_guardado_por_otra_version_firmada_da_reject(signer, client):
     assert signer.post(rival).status_code == 409
 
     stored = MANDATES[accepted["mandate_id"]]["mandate"]
-    stored["constraints"]["max_amount_per_purchase"] = 5000
+    stored["constraints"]["max_amount_per_purchase_cents"] = 500000
     stored.update(nonce=rival["nonce"], created_at=rival["created_at"], signature=rival["signature"])
 
     result = verify(client, accepted["mandate_id"])
@@ -551,8 +552,8 @@ def test_sin_consentimiento_off_session_toda_compra_escala(signer, client):
 def test_con_consentimiento_el_flujo_es_el_normal(signer, client):
     body = signer.create()
     assert verify(client, body["mandate_id"])["verdict"] == "APPROVE"
-    over = verify_as_service(client, attempt(body["mandate_id"], attempt_id="att_2", amount=500.0,
-                                               metadata={"price": 500.0})).json()
+    over = verify_as_service(client, attempt(body["mandate_id"], attempt_id="att_2", amount_cents=50000,
+                                               metadata={"price_cents": 50000})).json()
     assert over["verdict"] == "ESCALATE"  # fuera de límites: escala como siempre
 
 
@@ -561,7 +562,7 @@ def test_con_consentimiento_el_flujo_es_el_normal(signer, client):
 def strict_attempt(mandate_id: str, currency: str = "USD") -> PurchaseAttempt:
     return PurchaseAttempt(
         attempt_id="att_strict", mandate_id=mandate_id, agent_id="agt_saturday", merchant_id="mch_vuelaya",
-        category="travel.flights", amount=100.0, currency=currency, timestamp=stamp(NOW),
+        category="travel.flights", amount=100.0, currency=currency, timestamp=stamp(NOW),  # modelo legado: unidades
         nonce=secrets.token_hex(16), signature="", agent_signature="",
     )
 
@@ -576,7 +577,7 @@ def test_linea_estricta_verifica_la_firma_humana(signer):
     assert valid.authorized is False
     assert next(item for item in valid.checks if item["rule"] == "agent_signature_valid")["pass"] is False
 
-    MANDATES[body["mandate_id"]]["mandate"]["constraints"]["max_amount_per_purchase"] = 9999
+    MANDATES[body["mandate_id"]]["mandate"]["constraints"]["max_amount_per_purchase_cents"] = 999900
     tampered = strict_verify_purchase(strict_attempt(body["mandate_id"]))
     assert tampered.authorized is False
     assert next(item for item in tampered.checks if item["rule"] == "human_signature_valid")["pass"] is False
@@ -678,7 +679,7 @@ def test_mandato_sin_firmante_registrado_se_rechaza_aunque_su_firma_legada_verif
     MANDATES["mnd_no_signer"] = {
         "mandate": {"mandate_id": "mnd_no_signer", "agent": {"id": "agt_saturday"}, "constraints": constraints,
                     "human_pubkey": pub, "signature": sign_payload(priv, constraints)},
-        "live_state": {"status": "active", "uses_count": 0, "amount_spent": 0, "revoked_at": None},
+        "live_state": {"status": "active", "uses_count": 0, "amount_spent_cents": 0, "revoked_at": None},
     }
     result = verify(client, "mnd_no_signer")
     assert result["verdict"] == "REJECT"

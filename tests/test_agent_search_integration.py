@@ -84,7 +84,7 @@ def test_agent_run_uses_web_offers_when_search_fields_present(client, signed_pos
     assert result["purchase_completed"] is True
     # Eligió la más barata de las ofertas web reales, no del catálogo mock.
     assert result["selected_flight"]["merchant_id"] == "mch_kayak"
-    assert result["selected_flight"]["price"] == 54.71
+    assert result["selected_flight"]["price_cents"] == 5471
     assert result["attempt"]["purchase"]["metadata"]["source"] == "web"
 
 
@@ -147,7 +147,7 @@ def test_agent_run_buys_hotels_with_stored_fields(client, signed_poster, monkeyp
     assert "hotels in Cordoba" in prompts[0]
     assert result["purchase_completed"] is True
     assert result["selected_flight"]["merchant_id"] == "mch_despegar"
-    assert result["selected_flight"]["price"] == 74.5
+    assert result["selected_flight"]["price_cents"] == 7450
     assert result["selected_flight"]["category"] == "travel.hotels"
     assert result["attempt"]["purchase"]["category"] == "travel.hotels"
     assert "3 nights" in result["selected_flight"]["route"]

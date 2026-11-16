@@ -144,7 +144,7 @@ def test_public_mandate_record_shape_is_unchanged(client, signed_poster, auth_he
     for mandate_id, headers in ((SEED_ID, seed_owner_headers), (strict_id, auth_headers)):
         record = client.get(f"/mandates/{mandate_id}", headers=headers).json()
         assert set(record) == {"mandate", "live_state"}
-        assert set(record["live_state"]) == {"status", "uses_count", "amount_spent", "revoked_at"}
+        assert set(record["live_state"]) == {"status", "uses_count", "amount_spent_cents", "revoked_at"}
         assert not any("owner" in key for key in _keys_deep(record))
 
     # El email del token no aparece en la respuesta del mandato firmado.

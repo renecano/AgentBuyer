@@ -68,7 +68,7 @@ def make_mandate(mandate_id: str = "mnd_test_001", **overrides) -> dict:
 def make_attempt(
     mandate_id: str = "mnd_test_001",
     agent_id: str = "agt_test",
-    amount: float = 130.0,
+    amount_cents: int = 13000,
     category: str = "travel.flights",
     merchant_id: str = "mch_vuelaya",
     attempt_id: str = "att_test_001",
@@ -80,9 +80,9 @@ def make_attempt(
         "purchase": {
             "merchant_id": merchant_id,
             "category": category,
-            "amount": amount,
+            "amount_cents": amount_cents,
             "currency": "USD",
-            "metadata": {"price": amount},
+            "metadata": {"price_cents": amount_cents},
         },
     }
 
@@ -108,13 +108,14 @@ def test_approve_runs_security_then_engine_and_updates_state(client, signed_post
     # Seguridad primero, engine después — y todas las reglas presentes.
     rules = rules_of(result)
     assert rules[:len(SECURITY_ORDER)] == SECURITY_ORDER
-    assert set(rules[len(SECURITY_ORDER):-1]) == ENGINE_RULES
-    assert rules[-1] == CONSENT_RULE
+    assert set(rules[len(SECURITY_ORDER):-2]) == ENGINE_RULES
+    # 5.3: tras el consentimiento, el firewall semántico revisa TODA compra aprobable.
+    assert rules[-2:] == [CONSENT_RULE, "semantic_firewall"]
 
     # El estado vivo se actualizó tras aprobar.
     live_state = client.get("/mandates/mnd_test_001").json()["live_state"]
     assert live_state["uses_count"] == 1
-    assert live_state["amount_spent"] == 130.0
+    assert live_state["amount_spent_cents"] == 13000
 
 
 def test_uses_exhaust_after_three_approvals(client, signed_poster):
@@ -134,12 +135,12 @@ def test_uses_exhaust_after_three_approvals(client, signed_poster):
 
 def test_escalate_does_not_touch_live_state(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
-    result = verify_as_service(client, make_attempt(amount=300.0)).json()
+    result = verify_as_service(client, make_attempt(amount_cents=30000)).json()
 
     assert result["verdict"] == "ESCALATE"
     live_state = client.get("/mandates/mnd_test_001").json()["live_state"]
     assert live_state["uses_count"] == 0
-    assert live_state["amount_spent"] == 0
+    assert live_state["amount_spent_cents"] == 0
 
 
 # ── Seguridad primero: el engine ni se entera ────────────────────────────────
@@ -211,7 +212,7 @@ def test_engine_escalation_reports_engine_checks_alongside_security(client, sign
 def test_verification_events_are_recorded(client, signed_poster):
     create_mandate(signed_poster, make_mandate())
     verify_as_service(client, make_attempt())
-    verify_as_service(client, make_attempt(amount=300.0, attempt_id="att_2"))
+    verify_as_service(client, make_attempt(amount_cents=30000, attempt_id="att_2"))
 
     verdicts = [event["verdict"] for event in get_trail_events() if event["type"] == "verification"]
     assert verdicts == ["APPROVE", "ESCALATE"]
@@ -250,7 +251,7 @@ def test_cardholder_signed_mandate_passes_real_ed25519_verification(client, sign
     assert signature_check == {"rule": "signature", "pass": True,
                                "detail": "Firma humana Ed25519 válida (llave registrada del titular)."}
 
-    mandate_store.MANDATES["mnd_signed"]["mandate"]["constraints"]["max_amount_per_purchase"] = 99999
+    mandate_store.MANDATES["mnd_signed"]["mandate"]["constraints"]["max_amount_per_purchase_cents"] = 9999900
     tampered = verify_as_service(client, make_attempt(mandate_id="mnd_signed", attempt_id="att_signed_2")).json()
     assert tampered["verdict"] == "REJECT"
     assert next(check for check in tampered["checks"] if check["rule"] == "signature")["pass"] is False

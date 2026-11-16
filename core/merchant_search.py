@@ -14,17 +14,20 @@ verificación no cambia en nada.
 Nunca lanza excepciones hacia el caller: ante cualquier falla (API caída,
 JSON malformado, categoría desconocida) devuelve [] y deja el detalle en el log.
 
-Requiere OPENAI_API_KEY en .env (cargado con python-dotenv).
+Requiere OPENAI_API_KEY (variable de entorno; .env se carga con python-dotenv). Modelo: core/llm.py.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 
 from dotenv import load_dotenv
+
+from core.llm import get_llm
+from core.merchant_identity import merchant_id_from_url
+from core.money import MoneyError, to_cents
 
 load_dotenv()
 
@@ -147,16 +150,10 @@ def _build_prompt(category: str, fields: dict, max_results: int) -> str:
 
 
 def _call_web_search(prompt: str) -> str:
-    """Única frontera con la API de OpenAI — los tests mockean esta función."""
-    from openai import OpenAI
-
-    client = OpenAI()  # lee OPENAI_API_KEY del entorno (.env ya cargado)
-    response = client.responses.create(
-        model=os.environ.get("OPENAI_MODEL", "gpt-5.6"),
-        tools=[{"type": "web_search"}],
-        input=prompt,
-    )
-    return response.output_text
+    """Única frontera con el LLM (los tests simulan esta función). 5.3: va por el
+    cliente único (core/llm.py: modelo verificado, timeout, sin claves en logs). Un
+    fallo lanza LLMError, que search_merchant_offers convierte en "sin ofertas"."""
+    return get_llm().web_search(prompt)
 
 
 def _parse_offers(raw: str, max_results: int) -> list[dict]:
@@ -186,15 +183,20 @@ def _parse_offers(raw: str, max_results: int) -> list[dict]:
         if not isinstance(item, dict) or not OFFER_KEYS.issubset(item):
             logger.warning("merchant_search: oferta descartada por shape inválido: %r", item)
             continue
+        # Borde (5.1, P-09): el precio que devuelve la web pasa a CENTAVOS exactos. Un
+        # precio negativo, con más de 2 decimales o no numérico se descarta: no se redondea.
         try:
-            price = float(item["price"])
-        except (TypeError, ValueError):
-            logger.warning("merchant_search: precio no numérico descartado: %r", item.get("price"))
+            price_cents = to_cents(item["price"], "price")
+        except MoneyError:
+            logger.warning("merchant_search: precio no representable en centavos descartado: %r", item.get("price"))
+            continue
+        if price_cents <= 0:
+            logger.warning("merchant_search: precio no positivo descartado: %r", item.get("price"))
             continue
         offers.append(
             {
                 "merchant": str(item["merchant"]),
-                "price": price,
+                "price_cents": price_cents,
                 "currency": str(item["currency"]).upper(),
                 "details": str(item["details"]),
                 "url": str(item["url"]),
@@ -206,7 +208,7 @@ def _parse_offers(raw: str, max_results: int) -> list[dict]:
 def search_merchant_offers(category: str, fields: dict, max_results: int = 3) -> list[dict]:
     """Busca ofertas reales para la categoría usando OpenAI web search.
 
-    Devuelve [{"merchant": str, "price": float, "currency": str,
+    Devuelve [{"merchant": str, "price_cents": int, "currency": str,
     "details": str, "url": str}, ...] — siempre una lista, nunca lanza.
     """
     try:
@@ -226,11 +228,6 @@ def search_merchant_offers(category: str, fields: dict, max_results: int = 3) ->
         return []
 
 
-def _merchant_slug(merchant: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", merchant.lower()).strip("_") or "desconocido"
-    return f"mch_{slug}"
-
-
 def offer_to_attempt(
     offer: dict,
     category: str,
@@ -244,11 +241,12 @@ def offer_to_attempt(
         "mandate_id": mandate_id,
         "presented_by_agent": agent_id,
         "purchase": {
-            "merchant_id": _merchant_slug(offer["merchant"]),
+            # 5.3: identidad del comercio = dominio de la URL, no el nombre que afirma el LLM.
+            "merchant_id": merchant_id_from_url(offer["url"]),
             "category": CATEGORY_TAXONOMY.get(category, category),
-            "amount": offer["price"],
+            "amount_cents": offer["price_cents"],
             "currency": offer["currency"],
             "description": offer["details"],
-            "metadata": {"price": offer["price"], "url": offer["url"]},
+            "metadata": {"price_cents": offer["price_cents"], "url": offer["url"]},
         },
     }
