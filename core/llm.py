@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RETRIES = 1
+# Presupuesto por request (P-15): tope de tokens de salida. Las respuestas estructuradas
+# son de unos cientos de tokens y la búsqueda devuelve una lista JSON corta; una respuesta
+# que choca con el tope llega incompleta y se trata como inusable (fail-closed).
+DEFAULT_MAX_OUTPUT_TOKENS = 2000
 
 
 def _env_non_negative_int(name: str, default: int) -> int:
@@ -66,6 +70,7 @@ class LLMConfig:
     model: str
     timeout_seconds: int
     max_retries: int
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -74,6 +79,7 @@ class LLMConfig:
             model=model,
             timeout_seconds=env_positive_int("LLM_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
             max_retries=_env_non_negative_int("LLM_MAX_RETRIES", DEFAULT_MAX_RETRIES),
+            max_output_tokens=env_positive_int("LLM_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
         )
 
 
@@ -96,7 +102,8 @@ class OpenAIResponsesClient:
         import openai
 
         try:
-            return self._client.responses.create(model=self._config.model, **kwargs)
+            response = self._client.responses.create(
+                model=self._config.model, max_output_tokens=self._config.max_output_tokens, **kwargs)
         except openai.APITimeoutError:
             logger.warning("llm %s: timeout (model=%s)", operation, self._config.model)
             raise LLMError("timeout", "The AI service did not answer in time.") from None
@@ -106,6 +113,11 @@ class OpenAIResponsesClient:
         except openai.APIError as error:
             logger.warning("llm %s: %s (model=%s)", operation, type(error).__name__, self._config.model)
             raise LLMError("upstream", "The AI service could not be reached.") from None
+        if getattr(response, "status", None) == "incomplete":
+            # Cortada por el presupuesto de tokens (u otra causa): no se usa a medias.
+            logger.warning("llm %s: incomplete answer (model=%s)", operation, self._config.model)
+            raise LLMError("malformed", "The AI service returned an incomplete answer.")
+        return response
 
     def structured(self, *, system: str, user: str, schema_name: str, schema: dict) -> dict:
         response = self._call(

@@ -75,6 +75,16 @@ def test_config_defaults_to_the_verified_model_and_is_overridable(monkeypatch):
         LLMConfig.from_env()
 
 
+def test_every_request_has_an_output_token_budget(monkeypatch):
+    """P-15: presupuesto por request. Configurable; mal formado → error, no se adivina."""
+    assert LLMConfig.from_env().max_output_tokens == 2000
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "300")
+    assert LLMConfig.from_env().max_output_tokens == 300
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "0")
+    with pytest.raises(ValueError):
+        LLMConfig.from_env()
+
+
 def sdk_client(monkeypatch, behaviour):
     client = OpenAIResponsesClient(SECRET, LLMConfig("gpt-6-luna", 5, 0))
     calls = []
@@ -112,11 +122,25 @@ def test_malformed_structured_answer_is_an_error(monkeypatch, output_text):
     assert raised.value.kind == "malformed"
 
 
+@pytest.mark.parametrize("operation", ["structured", "web_search"])
+def test_an_answer_cut_by_the_token_budget_is_not_used(monkeypatch, operation):
+    """Una respuesta incompleta (p. ej. choca con max_output_tokens) puede ser JSON válido
+    a medias o texto truncado: no se usa."""
+    client, _ = sdk_client(monkeypatch, lambda: type("R", (), {"status": "incomplete", "output_text": '{"verdict": "APPROVE"}'})())
+    with pytest.raises(LLMError) as raised:
+        if operation == "structured":
+            client.structured(system="s", user="u", schema_name="x", schema={"type": "object"})
+        else:
+            client.web_search("find flights")
+    assert raised.value.kind == "malformed"
+
+
 def test_structured_and_web_search_requests_have_the_right_shape(monkeypatch):
     client, calls = sdk_client(monkeypatch, lambda: type("R", (), {"output_text": '{"ok": true}'})())
     assert client.structured(system="sys", user="usr", schema_name="audit", schema={"type": "object"}) == {"ok": True}
     client.web_search("find flights")
     structured, search = calls
+    assert structured["max_output_tokens"] == search["max_output_tokens"] == 2000
     assert structured["model"] == "gpt-6-luna" and structured["text"]["format"]["type"] == "json_schema"
     assert structured["text"]["format"]["strict"] is True
     assert search["tools"] == [{"type": "web_search"}] and search["tool_choice"] == "required"
